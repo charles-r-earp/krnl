@@ -1,0 +1,13 @@
+[package]
+name = "test-device"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+crate-type = ["dylib"]
+
+[dependencies]
+spirv-std = { git = "https://github.com/EmbarkStudios/rust-gpu" }
+glam = { version =  "0.21.2", default-features = false, features = ["libm"] }
+krnl-core = { path = "../../../../krnl-core" }

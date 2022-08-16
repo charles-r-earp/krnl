@@ -1,0 +1,9 @@
+[package]
+name = "krnl-builder"
+version = "0.0.1"
+authors = ["Charles R Earp <charles.r.earp@gmail.com>"]
+edition = "2021"
+publish = false
+
+[dependencies]
+spirv-builder = { git = "https://github.com/EmbarkStudios/rust-gpu/" }
