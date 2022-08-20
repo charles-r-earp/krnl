@@ -8,5 +8,7 @@ pub use krnl_types::scalar;
 #[doc(inline)]
 pub use krnl_macros::kernel;
 
+pub mod mem;
+
 #[doc(hidden)]
 pub mod __private;

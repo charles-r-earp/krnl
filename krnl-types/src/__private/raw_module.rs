@@ -23,6 +23,7 @@ pub struct RawKernelInfo {
     pub safety: Safety,
     pub slice_infos: Vec<SliceInfo>,
     pub push_infos: Vec<PushInfo>,
+    pub elementwise: bool,
     pub threads: Vec<u32>,
     pub spirv: Option<Spirv>,
 }
@@ -55,6 +56,7 @@ pub struct SliceInfo {
     pub name: String,
     pub scalar_type: ScalarType,
     pub mutability: Mutability,
+    pub elementwise: bool,
 }
 
 #[derive(Eq, PartialEq, Serialize, Deserialize, Debug)]

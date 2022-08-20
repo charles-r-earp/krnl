@@ -8,7 +8,7 @@ use num_traits::{NumAssign, NumCast};
 #[cfg(not(target_arch = "spirv"))]
 use serde::{Deserialize, Serialize};
 #[cfg(not(target_arch = "spirv"))]
-use std::fmt::{Debug, Display};
+use std::{fmt::{Debug, Display}, str::FromStr};
 
 mod sealed {
     #[cfg(feature = "half")]
@@ -30,6 +30,19 @@ mod sealed {
     impl_sealed! {f16, bf16}
 }
 use sealed::Sealed;
+
+#[cfg(not(target_arch = "spirv"))]
+pub mod error {
+    use super::*;
+
+    #[derive(Debug, thiserror::Error)]
+    #[error("unknown ScalarType `{}`", .input)]
+    pub struct ScalarTypeFromStrError {
+        pub(super) input: String,
+    }
+}
+#[cfg(not(target_arch = "spirv"))]
+use error::*;
 
 /// Numerical types supported in autograph.
 #[allow(missing_docs)]
@@ -91,6 +104,33 @@ impl ScalarType {
             U64 => "u64",
             I64 => "i64",
             F64 => "f64",
+        }
+    }
+}
+
+#[cfg(not(target_arch = "spirv"))]
+impl FromStr for ScalarType {
+    type Err = ScalarTypeFromStrError;
+    fn from_str(input: &str) -> Result<Self, Self::Err> {
+        use ScalarType::*;
+        match input {
+            "U8" | "u8" => Ok(U8),
+            "I8" | "i8" => Ok(I8),
+            "U16" | "u16" => Ok(U16),
+            "I16" | "i16" => Ok(I16),
+            #[cfg(feature = "half")]
+            "F16" | "f16" => Ok(F16),
+            #[cfg(feature = "half")]
+            "BF16" | "bf16" => Ok(BF16),
+            "U32" | "u32" => Ok(U32),
+            "I32" | "i32" => Ok(I32),
+            "F32" | "f32" => Ok(F32),
+            "U64" | "u64" => Ok(U64),
+            "I64" | "i64" => Ok(I64),
+            "F64" | "f64" => Ok(F64),
+            _ => Err(ScalarTypeFromStrError {
+                input: input.to_string(),
+            })
         }
     }
 }

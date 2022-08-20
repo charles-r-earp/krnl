@@ -19,7 +19,6 @@ type Result<T, E = anyhow::Error> = std::result::Result<T, E>;
 pub struct ModuleBuilder {
     crate_path: PathBuf,
     target: String,
-    //name: Option<String>,
 }
 
 impl ModuleBuilder {
@@ -29,34 +28,20 @@ impl ModuleBuilder {
         ModuleBuilder {
             crate_path,
             target,
-            //name: None,
         }
     }
-    /*pub fn name(mut self, name: impl Into<String>) -> Self {
-        self.name.replace(name.into());
-        self
-    }*/
     pub fn build(self) -> Result<Module> {
         let crate_path = self.crate_path.canonicalize()?;
         let target = if self.target.starts_with("spirv-") {
             self.target
         } else {
-            format!("spirv-unknonw-{}", self.target)
+            format!("spirv-unknown-{}", self.target)
         };
         let crate_path_hash = {
             let mut h = DefaultHasher::new();
             crate_path.hash(&mut h);
             h.finish()
         };
-        /*let name = if let Some(name) = self.name {
-            name
-        } else {
-            crate_path
-            .file_stem()
-            .ok_or_else(|| anyhow!("`crate_path` is empty!"))?
-            .to_string_lossy()
-            .into_owned()
-        };*/
         let name = crate_path
             .file_stem()
             .ok_or_else(|| anyhow!("`crate_path` is empty!"))?
