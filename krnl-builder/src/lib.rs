@@ -1,81 +1,155 @@
-use krnl_core::__private::{
-    KRNL_MODULE_PATH,
-    serde::Serialize,
-    bincode,
-    raw_module::{RawModule, Target}};
-use std::{path::{Path, PathBuf}, process::Command, fs, hash_map::DefaultHasher};
 use anyhow::{anyhow, bail};
-use spirv_builder::SpirvBuilder;
+use krnl_types::{
+    __private::raw_module::{RawModule, Spirv},
+    kernel::Module,
+};
+use spirv::Capability;
+use spirv_builder::{MetadataPrintout, SpirvBuilder};
+use std::{
+    collections::{hash_map::DefaultHasher, HashSet},
+    fs,
+    hash::{Hash, Hasher},
+    path::{Path, PathBuf},
+    process::Command,
+    sync::Arc,
+};
 
-type Result<T, E = anhow::error> = Result<T, E>;
+type Result<T, E = anyhow::Error> = std::result::Result<T, E>;
 
-pub mod builder {
-    pub struct ModuleBuilder {
-        pub(super) crate_path: PathBuf,
-        pub(super) target: Option<Target>,
-    }
-}
-use builder::ModuleBuilder;
-
-pub struct Module {
-    raw: RawModule,
-}
-
-impl Module {
-    pub fn builder(crate_path: impl AsRef<Path>) -> ModuleBuilder {
-        ModuleBuilder {
-            crate_path: crate_path.as_ref().to_owned(),
-            target: None,
-        }
-    }
+pub struct ModuleBuilder {
+    crate_path: PathBuf,
+    target: String,
+    //name: Option<String>,
 }
 
 impl ModuleBuilder {
-    pub fn vulkan(mut self, version: (u32, u32)) -> Self {
-        self.target.replace(Target::Vulkan(version.0, version.1));
-    }
-    pub fn build(self) -> Result<Module> {
-        use std::env;
-        let ModuleBuilder {
+    pub fn new(crate_path: impl AsRef<Path>, target: impl Into<String>) -> Self {
+        let crate_path = crate_path.as_ref().to_owned();
+        let target = target.into();
+        ModuleBuilder {
             crate_path,
             target,
-        } = self.raw;
-        let target = target.unwrap_or_else(|| anyhow!("No target specified! Hint: Use .vulkan() to set the vulkan version."))?;
-        if env::var(KRNL_MODULE_PATH).is_ok() {
-            bail!("Cannot build while building another module!");
+            //name: None,
         }
-        let source = fs::read(manifest_dir.join("src").join("lib.rs"))?;
-        let source_hash = {
+    }
+    /*pub fn name(mut self, name: impl Into<String>) -> Self {
+        self.name.replace(name.into());
+        self
+    }*/
+    pub fn build(self) -> Result<Module> {
+        let crate_path = self.crate_path.canonicalize()?;
+        let target = if self.target.starts_with("spirv-") {
+            self.target
+        } else {
+            format!("spirv-unknonw-{}", self.target)
+        };
+        let crate_path_hash = {
             let mut h = DefaultHasher::new();
-            source.hash(&mut h);
+            crate_path.hash(&mut h);
             h.finish()
         };
-        let name = crate_path.file_stem().ok_or_else(|| anyhow!("`crate_path` is empty!"))?
+        /*let name = if let Some(name) = self.name {
+            name
+        } else {
+            crate_path
+            .file_stem()
+            .ok_or_else(|| anyhow!("`crate_path` is empty!"))?
+            .to_string_lossy()
+            .into_owned()
+        };*/
+        let name = crate_path
+            .file_stem()
+            .ok_or_else(|| anyhow!("`crate_path` is empty!"))?
             .to_string_lossy()
             .into_owned();
-        let name_with_hash = format!("{name}{source_hash}");
-        let manifest_dir = env::var("CARGO_MANIFEST_DIR")?;
-        let target_dir = PathBuf::from(manifest_dir).join("target");
-        let krnl_dir = target_dir.join(".krnl");
-        let krnl_module_path = krnl_dir.join(name_with_hash).with_extension(".bincode");
-        let krnl_module_path_string = krnl_module_path.to_string_lossy();
-        fs::create_dir_all(&krnl_dir);
+        let name_with_hash = format!("{name}{crate_path_hash}");
+        let manifest_dir = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR")?);
+        let krnl_dir = PathBuf::from(manifest_dir).join("target").join(".krnl");
+        let target_dir = krnl_dir.join("target").join(&target).join(&name_with_hash);
+        fs::create_dir_all(&target_dir)?;
+        let modules_dir = krnl_dir.join("modules");
+        fs::create_dir_all(&modules_dir)?;
+        let module_path = modules_dir.join(&name_with_hash).with_extension("bincode");
+        let saved_modules_dir = krnl_dir.join("saved-modules");
+        fs::create_dir_all(&saved_modules_dir)?;
+        let saved_module_path = saved_modules_dir.join(&name_with_hash).with_extension("bincode");
         let raw_module = RawModule {
-            source,
             name,
             target,
             kernels: Default::default(),
         };
-        dbg!(krnl_module_path);
-        panic!();
-        fs::write(krnl_module_path, bincode::serialize(&raw_module)?)?;
-        let status = Command::new("cargo check")
-            .current_dir(&crate_path)
-            .env(KRNL_MODULE_PATH, &krnl_module_path_string)
+        let saved_module: Option<RawModule> = if saved_module_path.exists() {
+            let bytes = fs::read(&saved_module_path)?;
+            Some(bincode::deserialize(&bytes)?)
+        } else {
+            None
+        };
+        {
+            let bytes = bincode::serialize(&raw_module)?;
+            fs::write(&module_path, &bytes)?;
+        }
+        let status = Command::new("cargo")
+            .args(&[
+                "check",
+                "--manifest-path",
+                &*crate_path.join("Cargo.toml").to_string_lossy(),
+                "--target-dir",
+                &*target_dir.to_string_lossy(),
+            ])
+            .env("KRNL_MODULE_PATH", &*module_path.to_string_lossy())
             .status()?;
-        if !status.is_success() {
+        if !status.success() {
             bail!("cargo check failed!");
         }
-        todo!()
+        let bytes = fs::read(&module_path)?;
+        let mut raw_module: RawModule = bincode::deserialize(&bytes)?;
+        if !raw_module.kernels.is_empty() {
+            {
+                let bytes = bincode::serialize(&raw_module)?;
+                fs::write(&saved_module_path, &bytes)?;
+            }
+            let mut compile_options_set = HashSet::with_capacity(raw_module.kernels.len());
+            for kernel in raw_module.kernels.values() {
+                let compile_options = CompileOptions {
+                    target: kernel.target.clone(),
+                    capabilities: kernel.capabilities.clone(),
+                    extensions: kernel.extensions.clone(),
+                };
+                compile_options_set.insert(compile_options);
+            }
+            for options in compile_options_set.iter() {
+                let mut builder =
+                    SpirvBuilder::new(&crate_path, &options.target)
+                        .multimodule(true)
+                        .print_metadata(MetadataPrintout::None);
+                for cap in options.capabilities.iter().copied() {
+                    builder = builder.capability(cap);
+                }
+                for ext in options.extensions.iter().cloned() {
+                    builder = builder.extension(ext);
+                }
+                for (entry, spv_path) in builder.build()?.module.unwrap_multi() {
+                    let spv = fs::read(spv_path)?;
+                    if let Some(mut kernel) = raw_module.kernels.get_mut(entry) {
+                        let kernel = Arc::get_mut(&mut kernel).unwrap();
+                        kernel.spirv.replace(Spirv {
+                            words: bytemuck::cast_slice(&spv).to_vec(),
+                        });
+                    } else {
+                        bail!("Found unexpected entry_point {entry:?}!");
+                    }
+                }
+            }
+            Ok(Module::__from_raw(Arc::new(raw_module)))
+        } else {
+            Ok(Module::__from_raw(Arc::new(saved_module.unwrap_or(raw_module))))
+        }
     }
+}
+
+#[derive(Debug, PartialEq, Eq, Hash)]
+struct CompileOptions {
+    target: String,
+    capabilities: Vec<Capability>,
+    extensions: Vec<String>,
 }

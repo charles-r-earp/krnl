@@ -681,14 +681,24 @@ mod tests {
     use super::*;
 
     #[test]
-    fn buffer_alloc_device() -> Result<()> {
+    fn buffer_from_vec() -> Result<()> {
+        let x_vec = vec![1u32, 2, 3, 4];
+        let buffer = Buffer::from_vec(x_vec.clone());
+        let y_vec = buffer.into_vec()?.block()?;
+        assert_eq!(x_vec, y_vec);
+        Ok(())
+    }
+
+    #[cfg(feature = "device")]
+    #[test]
+    fn buffer_into_device() -> Result<()> {
         let device = Device::new(0)?;
-        let buffer = Buffer::from_vec(vec![1u32, 2, 3, 4])
+        let x_vec = vec![1u32, 2, 3, 4];
+        let buffer = Buffer::from_vec(x_vec.clone())
             .into_device(device)?
             .block()?;
-        let vec = buffer.into_vec()?.block()?;
-        dbg!(vec);
-        panic!();
+        let y_vec = buffer.into_vec()?.block()?;
+        assert_eq!(x_vec, y_vec);
         Ok(())
     }
 }

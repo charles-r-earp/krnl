@@ -6,6 +6,9 @@
 )]
 #![deny(warnings)]
 
+extern crate spirv_std;
+
 use krnl_core::kernel;
 
-#[kernel(threads(1))] pub fn foo() {}
+#[kernel(threads(1))]
+pub fn foo() {}

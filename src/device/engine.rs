@@ -8,7 +8,7 @@ use spirv::Capability;
 use std::{
     collections::{HashMap, VecDeque},
     future::Future,
-    iter::once,
+    iter::{once, Peekable},
     pin::Pin,
     ptr::NonNull,
     sync::{
@@ -219,9 +219,7 @@ pub(crate) struct Engine {
     //storage_allocator: StorageAllocator,
     //shader_modules: DashMap<ModuleId, Arc<ShaderModule>, FxBuildHasher>,
     //compute_cache: DashMap<(ModuleId, EntryId), ComputeCache, FxBuildHasher>,
-    op_sender: Sender<Op>,
-    done: Arc<AtomicBool>,
-    runner_result: Arc<RwLock<Result<(), Arc<anyhow::Error>>>>,
+    runner: Arc<Runner>,
 }
 
 impl Engine {
@@ -258,25 +256,29 @@ impl Engine {
         let buffer_allocator = BufferAllocator::new(device.clone())?;
         //let shader_modules = DashMap::<_, _, FxBuildHasher>::default();
         //let compute_cache = DashMap::<_, _, FxBuildHasher>::default();
-        let (op_sender, op_receiver) = bounded(1_000);
-        let done = Arc::new(AtomicBool::new(false));
-        let runner_result = Arc::new(RwLock::new(Ok(())));
-        let mut runner = Runner::new(queue, op_receiver, done.clone(), runner_result.clone())?;
-        std::thread::Builder::new()
-            .name(format!("device{}", index))
-            .spawn(move || runner.run())?;
+        let runner = Runner::new(queue)?;
         Ok(Arc::new(Self {
             device,
             buffer_allocator,
             //shader_modules,
             //compute_cache,
-            op_sender,
-            done,
-            runner_result,
+            runner,
         }))
     }
     pub(crate) fn index(&self) -> usize {
         self.device.physical_device().index()
+    }
+    fn send_op(&self, op: Op) -> Result<()> {
+        use std::{
+            error::Error,
+            marker::{Send, Sync},
+        };
+        let result = self.runner.result.read().clone();
+        if let Err(e) = result {
+            return Err(anyhow::Error::msg(e));
+        }
+        self.runner.op_channel.sender.send(op).unwrap();
+        Ok(())
     }
     // # Safety
     // Uninitialized.
@@ -313,7 +315,7 @@ impl Engine {
                 src,
                 dst: buffer.inner.clone(),
             };
-            self.op_sender.send(Op::Upload(upload))?;
+            self.send_op(Op::Upload(upload))?;
             Ok(Some(buffer))
         }
     }
@@ -324,10 +326,10 @@ impl Engine {
             src,
             dst: dst.clone(),
         };
-        self.op_sender.send(Op::Download(download))?;
+        self.send_op(Op::Download(download))?;
         Ok(HostBufferFuture {
             host_buffer: Some(dst),
-            runner_result: self.runner_result.clone(),
+            runner_result: self.runner.result.clone(),
         })
     }
 }
@@ -885,16 +887,23 @@ enum Op {
 
 struct Frame {
     queue: Arc<Queue>,
+    done: Arc<AtomicBool>,
+    result: Arc<RwLock<Result<(), Arc<anyhow::Error>>>>,
     command_pool: UnsafeCommandPool,
-    command_buffer: Option<(UnsafeCommandPoolAlloc, UnsafeCommandBuffer)>,
-    semaphore: Semaphore,
+    command_pool_alloc: Option<UnsafeCommandPoolAlloc>,
+    command_buffer: Option<UnsafeCommandBuffer>,
+    semaphore: Arc<Semaphore>,
     fence: Fence,
     ops: Vec<Op>,
-    barriers: HashMap<(usize, DeviceSize), AccessFlags>,
 }
 
 impl Frame {
-    fn new(queue: Arc<Queue>) -> Result<Self, anyhow::Error> {
+    const MAX_OPS: usize = 1_000;
+    fn new(
+        queue: Arc<Queue>,
+        done: Arc<AtomicBool>,
+        result: Arc<RwLock<Result<(), Arc<anyhow::Error>>>>,
+    ) -> Result<Self, anyhow::Error> {
         let device = queue.device();
         let command_pool_info = UnsafeCommandPoolCreateInfo {
             queue_family_index: queue.family().id(),
@@ -903,7 +912,7 @@ impl Frame {
             ..UnsafeCommandPoolCreateInfo::default()
         };
         let command_pool = UnsafeCommandPool::new(device.clone(), command_pool_info)?;
-        let semaphore = Semaphore::from_pool(device.clone())?;
+        let semaphore = Arc::new(Semaphore::from_pool(device.clone())?);
         let fence = Fence::new(
             device.clone(),
             FenceCreateInfo {
@@ -911,44 +920,92 @@ impl Frame {
                 ..Default::default()
             },
         )?;
-        let ops = Vec::new();
-        let barriers = HashMap::default();
+        let ops = Vec::with_capacity(Self::MAX_OPS);
         Ok(Self {
             queue,
+            done,
+            result,
             command_pool,
+            command_pool_alloc: None,
             command_buffer: None,
             semaphore,
             fence,
             ops,
-            barriers,
         })
     }
-    fn poll(&mut self) -> Result<bool> {
-        if self.fence.is_signaled()? {
-            self.ops.clear();
-            Ok(true)
-        } else {
-            Ok(false)
+    fn submit(&mut self, wait_semaphore: Option<&Semaphore>) -> Result<()> {
+        debug_assert!(self.fence.is_signaled()?);
+        self.fence.reset()?;
+        let mut submit_builder = SubmitCommandBufferBuilder::new();
+        if let Some(wait_semaphore) = wait_semaphore {
+            unsafe {
+                submit_builder.add_wait_semaphore(
+                    &wait_semaphore,
+                    PipelineStages {
+                        bottom_of_pipe: true,
+                        ..Default::default()
+                    },
+                );
+            }
         }
+        unsafe {
+            submit_builder.add_command_buffer(&self.command_buffer.as_ref().unwrap());
+        }
+        self.semaphore = Arc::new(Semaphore::from_pool(self.queue.device().clone())?);
+        unsafe {
+            submit_builder.add_signal_semaphore(&self.semaphore);
+            submit_builder.set_fence_signal(&self.fence);
+        }
+        submit_builder.submit(&self.queue)?;
+        Ok(())
     }
-    fn submit<'a>(
-        &mut self,
-        ops: Vec<Op>,
-        wait_semaphores: impl Iterator<Item = &'a Semaphore>,
-    ) -> Result<()> {
-        self.fence.wait(None).unwrap();
-        self.fence.reset();
+    fn poll(&mut self) -> Result<()> {
+        self.fence.wait(None)?;
+        self.ops.clear();
+        self.command_pool_alloc = None;
         self.command_buffer = None;
+        Ok(())
+    }
+}
+
+impl Drop for Frame {
+    fn drop(&mut self) {
+        if !self.done.load(Ordering::SeqCst) {
+            let index = self.queue.device().physical_device().index();
+            let mut result = self.result.write();
+            if result.is_ok() {
+                *result = Err(Arc::new(anyhow!("Device({}) panicked!", index)));
+            }
+        }
+        self.queue.wait().unwrap();
+    }
+}
+
+struct Encoder {
+    frame: Frame,
+    cb_builder: UnsafeCommandBufferBuilder,
+    barriers: HashMap<(usize, DeviceSize), AccessFlags>,
+    n_sets: usize,
+    n_descriptors: usize,
+}
+
+impl Encoder {
+    const MAX_SETS: usize = 1_000;
+    const MAX_DESCRIPTORS: usize = Self::MAX_SETS * 2;
+    fn new(mut frame: Frame) -> Result<Self> {
+        debug_assert!(frame.fence.is_signaled()?);
+        frame.command_pool_alloc = None;
+        frame.command_buffer = None;
         let release_resources = false;
         unsafe {
-            self.command_pool.reset(release_resources)?;
+            frame.command_pool.reset(release_resources)?;
         }
-        let command_pool_alloc = self
+        let command_pool_alloc = frame
             .command_pool
             .allocate_command_buffers(Default::default())?
             .next()
             .unwrap();
-        let mut cb_builder = unsafe {
+        let cb_builder = unsafe {
             UnsafeCommandBufferBuilder::new(
                 &command_pool_alloc,
                 CommandBufferBeginInfo {
@@ -957,7 +1014,21 @@ impl Frame {
                 },
             )?
         };
-        for op in ops.iter() {
+        frame.command_pool_alloc.replace(command_pool_alloc);
+        let barriers = HashMap::default();
+        Ok(Self {
+            frame,
+            cb_builder,
+            barriers,
+            n_sets: 0,
+            n_descriptors: 0,
+        })
+    }
+    fn extend(&mut self, op_iter: &mut Peekable<impl Iterator<Item = Op>>) -> Result<()> {
+        while let Some(op) = op_iter.peek() {
+            if self.is_full() {
+                break;
+            }
             match op {
                 Op::Upload(upload) => {
                     let barrier = upload.barrier();
@@ -967,14 +1038,14 @@ impl Frame {
                         .unwrap_or(AccessFlags::none());
                     if prev_access != AccessFlags::none() {
                         unsafe {
-                            cb_builder.pipeline_barrier(&DependencyInfo {
+                            self.cb_builder.pipeline_barrier(&DependencyInfo {
                                 buffer_memory_barriers: [barrier].into_iter().collect(),
                                 ..Default::default()
                             })
                         }
                     }
                     unsafe {
-                        cb_builder.copy_buffer(&upload.copy_buffer_info());
+                        self.cb_builder.copy_buffer(&upload.copy_buffer_info());
                     }
                 }
                 Op::Download(download) => unsafe {
@@ -985,111 +1056,170 @@ impl Frame {
                         .unwrap_or(barrier.destination_access);
                     if prev_access != barrier.destination_access {
                         unsafe {
-                            cb_builder.pipeline_barrier(&DependencyInfo {
+                            self.cb_builder.pipeline_barrier(&DependencyInfo {
                                 buffer_memory_barriers: [barrier].into_iter().collect(),
                                 ..Default::default()
                             })
                         }
                     }
                     unsafe {
-                        cb_builder.copy_buffer(&download.copy_buffer_info());
+                        self.cb_builder.copy_buffer(&download.copy_buffer_info());
                     }
                 },
             }
+            self.frame.ops.push(op_iter.next().unwrap());
         }
-        let command_buffer = cb_builder.build()?;
-        let mut submit_builder = SubmitCommandBufferBuilder::new();
-        for semaphore in wait_semaphores {
-            unsafe {
-                submit_builder.add_wait_semaphore(
-                    semaphore,
-                    PipelineStages {
-                        bottom_of_pipe: true,
-                        ..Default::default()
-                    },
-                );
-            }
-        }
-        unsafe {
-            submit_builder.add_command_buffer(&command_buffer);
-        }
-        self.semaphore = Semaphore::from_pool(self.queue.device().clone())?;
-        unsafe {
-            submit_builder.add_signal_semaphore(&self.semaphore);
-            submit_builder.set_fence_signal(&self.fence);
-        }
-        submit_builder.submit(&self.queue)?;
-        self.command_buffer
-            .replace((command_pool_alloc, command_buffer));
-        self.ops = ops;
         Ok(())
+    }
+    fn finish(mut self) -> Result<Frame> {
+        self.frame.command_buffer.replace(self.cb_builder.build()?);
+        Ok(self.frame)
+    }
+    fn is_full(&self) -> bool {
+        self.frame.ops.len() >= Frame::MAX_OPS
+            || self.n_sets >= Self::MAX_SETS
+            || self.n_descriptors >= Self::MAX_DESCRIPTORS
+    }
+    fn is_empty(&self) -> bool {
+        self.frame.ops.is_empty()
+    }
+}
+
+struct Channel<T> {
+    sender: Sender<T>,
+    receiver: Receiver<T>,
+}
+
+impl<T> Channel<T> {
+    fn bounded(len: usize) -> Self {
+        let (sender, receiver) = bounded(len);
+        Self { sender, receiver }
     }
 }
 
 struct Runner {
     queue: Arc<Queue>,
-    op_receiver: Receiver<Op>,
-    ready: VecDeque<Frame>,
-    pending: VecDeque<Frame>,
     done: Arc<AtomicBool>,
+    op_channel: Channel<Op>,
+    encode_channel: Channel<Frame>,
+    submit_channel: Channel<Frame>,
+    poll_channel: Channel<Frame>,
     result: Arc<RwLock<Result<(), Arc<anyhow::Error>>>>,
 }
 
 impl Runner {
-    fn new(
-        queue: Arc<Queue>,
-        op_receiver: Receiver<Op>,
-        done: Arc<AtomicBool>,
-        result: Arc<RwLock<Result<(), Arc<anyhow::Error>>>>,
-    ) -> Result<Self, anyhow::Error> {
-        let nframes = 3;
-        let mut ready = VecDeque::with_capacity(nframes);
-        for _ in 0..nframes {
-            ready.push_back(Frame::new(queue.clone())?);
-        }
-        let pending = VecDeque::with_capacity(ready.len());
-        Ok(Self {
+    fn new(queue: Arc<Queue>) -> Result<Arc<Self>> {
+        let index = queue.device().physical_device().index();
+        let op_channel = Channel::bounded(1_000);
+        let encode_channel = Channel::bounded(3);
+        let submit_channel = Channel::bounded(1);
+        let poll_channel = Channel::bounded(1);
+        let runner = Arc::new(Self {
             queue,
-            op_receiver,
-            ready,
-            pending,
-            done,
-            result,
-        })
-    }
-    fn run(&mut self) {
-        let result = self.run_impl();
-        if let Err(e) = result {
-            *self.result.write() = Err(Arc::new(e));
+            done: Arc::new(AtomicBool::new(false)),
+            op_channel,
+            encode_channel,
+            submit_channel,
+            poll_channel,
+            result: Arc::new(RwLock::new(Ok(()))),
+        });
+        let mut ready_frames = VecDeque::with_capacity(3);
+        for _ in 0..3 {
+            let frame = Frame::new(
+                runner.queue.clone(),
+                runner.done.clone(),
+                runner.result.clone(),
+            )?;
+            ready_frames.push_back(frame);
         }
+        {
+            let runner = runner.clone();
+            std::thread::Builder::new()
+                .name(format!("krnl-device{}-encode", index))
+                .spawn(move || {
+                    if let Err(e) = runner.encode(ready_frames) {
+                        let mut result = runner.result.write();
+                        if result.is_ok() {
+                            *result = Err(Arc::new(e));
+                        }
+                    }
+                })?;
+        }
+        {
+            let runner = runner.clone();
+            std::thread::Builder::new()
+                .name(format!("krnl-device{}-submit", index))
+                .spawn(move || {
+                    if let Err(e) = runner.submit() {
+                        let mut result = runner.result.write();
+                        if result.is_ok() {
+                            *result = Err(Arc::new(e));
+                        }
+                    }
+                })?;
+        }
+        {
+            let runner = runner.clone();
+            std::thread::Builder::new()
+                .name(format!("krnl-device{}-poll", index))
+                .spawn(move || {
+                    if let Err(e) = runner.poll() {
+                        let mut result = runner.result.write();
+                        if result.is_ok() {
+                            *result = Err(Arc::new(e));
+                        }
+                    }
+                })?;
+        }
+        Ok(runner)
     }
-    fn run_impl(&mut self) -> Result<()> {
+    fn encode(&self, mut ready_frames: VecDeque<Frame>) -> Result<()> {
         let mut last_submit = Instant::now();
-        let n_ops = 1_000;
-        let mut ops = Vec::with_capacity(n_ops);
-        while !self.done.load(Ordering::Acquire) {
-            if let Some(frame) = self.pending.front_mut() {
-                if frame.poll()? {
-                    self.ready.push_back(self.pending.pop_front().unwrap());
+        let mut encoder = None;
+        let mut op_iter = self.op_channel.receiver.try_iter().peekable();
+        while !self.done.load(Ordering::Relaxed) {
+            ready_frames.extend(self.encode_channel.receiver.try_iter());
+            if encoder.is_none() {
+                if let Some(frame) = ready_frames.pop_front() {
+                    encoder.replace(Encoder::new(frame)?);
                 }
             }
-            ops.extend(
-                self.op_receiver
-                    .try_iter()
-                    .take(n_ops.checked_sub(ops.len()).unwrap_or(0)),
-            );
-            if !ops.is_empty() {
-                let pending0 =
-                    self.pending.is_empty() && last_submit.elapsed() > Duration::from_millis(1);
-                let pending1 = self.pending.len() == 1 && ops.len() >= n_ops;
-                if pending0 || pending1 {
-                    let mut frame = self.ready.pop_front().unwrap();
-                    let wait_semaphores = self.pending.iter().map(|x| &x.semaphore);
-                    let ops = core::mem::replace(&mut ops, Vec::with_capacity(n_ops));
-                    frame.submit(ops, wait_semaphores)?;
-                    self.pending.push_back(frame);
+            if let Some(encoder_mut) = encoder.as_mut() {
+                if op_iter.peek().is_none() {
+                    op_iter = self.op_channel.receiver.try_iter().peekable();
+                }
+                encoder_mut.extend(&mut op_iter);
+                if (ready_frames.len() >= 2
+                    && last_submit.elapsed().as_millis() >= 1
+                    && !encoder_mut.is_empty())
+                    || (ready_frames.len() >= 1 && encoder_mut.is_full())
+                {
+                    let frame = encoder.take().unwrap().finish()?;
+                    self.submit_channel.sender.send(frame).unwrap();
                     last_submit = Instant::now();
                 }
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        Ok(())
+    }
+    fn submit(&self) -> Result<()> {
+        let mut wait_semaphore: Option<Arc<Semaphore>> = None;
+        while !self.done.load(Ordering::Relaxed) {
+            for mut frame in self.submit_channel.receiver.try_iter() {
+                frame.submit(wait_semaphore.take().as_deref())?;
+                wait_semaphore.replace(frame.semaphore.clone());
+                self.poll_channel.sender.send(frame).unwrap();
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        Ok(())
+    }
+    fn poll(&self) -> Result<()> {
+        while !self.done.load(Ordering::Relaxed) {
+            for mut frame in self.poll_channel.receiver.try_iter() {
+                frame.poll()?;
+                self.encode_channel.sender.send(frame).unwrap();
             }
             std::thread::sleep(Duration::from_millis(1));
         }
@@ -1099,10 +1229,6 @@ impl Runner {
 
 impl Drop for Runner {
     fn drop(&mut self) {
-        if !self.done.load(Ordering::SeqCst) {
-            let index = self.queue.device().physical_device().index();
-            *self.result.write() = Err(Arc::new(anyhow!("Device({}) panicked!", index)));
-        }
-        self.queue.wait().unwrap();
+        self.done.store(true, Ordering::SeqCst);
     }
 }

@@ -1,7 +1,54 @@
-use core::marker::PhantomData;
-use krnl_core::module::{KernelInfo, Module, PushInfo, Safety, SliceInfo, Spirv};
-use std::sync::Arc;
+/*!
+```
+use krnl::{krnl_core, kernel::module, scalar::Scalar, buffer::{Slice, SliceMut}, result::Result};
 
+#[module(
+    target("vulkan1.1"),
+    dependency("krnl-core", path = "krnl-core"),
+    dependency("spirv-std", git = "https://github.com/EmbarkStudios/rust-gpu"),
+    attr(cfg_attr(
+        target_arch = "spirv",
+        no_std,
+        feature(register_attr),
+        register_attr(spirv),
+        deny(warnings),
+    )),
+)]
+pub mod axpy {
+    #[cfg(target_arch = "spirv")]
+    extern crate spirv_std;
+
+    use krnl_core::{scalar::Scalar, kernel};
+
+    pub fn axpy<T: Scalar>(x: &T, alpha: T, y: &mut T) {
+        *y += alpha * *x;
+    }
+
+    #[kernel(elementwise, threads(256))]
+    pub fn axpy_f32(x: &f32, alpha: f32, y: &mut f32) {
+        axpy(x, alpha, y);
+    }
+}
+
+fn main() -> Result<()> {
+    axpy::module().unwrap();
+    Ok(())
+}
+```
+*/
+use core::marker::PhantomData;
+use krnl_core::__private::raw_module::{
+    PushInfo, RawKernelInfo, RawModule, Safety, SliceInfo, Spirv,
+};
+use std::{collections::HashMap, sync::Arc};
+
+#[doc(inline)]
+pub use krnl_types::kernel::{KernelInfo, Module};
+
+#[doc(inline)]
+pub use krnl_macros::module;
+
+/*
 pub mod error {
     use super::*;
 
@@ -100,3 +147,21 @@ impl<'a, S, const N: usize> Kernel<'a, S, N> {
         todo!()
     }
 }
+
+pub struct Module {
+    kernels: HashMap<String, Arc<KernelInfo>>,
+}
+
+impl<'de> Deserialize<'de> for Module {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de> {
+        let raw_module = RawModule::deserialize(deserializer)?;
+        let kernels = raw_module.kernels.into_iter()
+            .map(|(name, info)| (name, Arc::new(info)))
+        Ok(Self {
+            kernels,
+        })
+    }
+}
+*/

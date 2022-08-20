@@ -6,9 +6,9 @@ use derive_more::Display;
 use half::{bf16, f16};
 use num_traits::{NumAssign, NumCast};
 #[cfg(not(target_arch = "spirv"))]
-use std::fmt::{Debug, Display};
+use serde::{Deserialize, Serialize};
 #[cfg(not(target_arch = "spirv"))]
-use serde::{Serialize, Deserialize};
+use std::fmt::{Debug, Display};
 
 mod sealed {
     #[cfg(feature = "half")]
@@ -35,7 +35,10 @@ use sealed::Sealed;
 #[allow(missing_docs)]
 #[non_exhaustive]
 #[derive(Clone, Copy, Eq, PartialEq)]
-#[cfg_attr(not(target_arch = "spirv"), derive(Debug, Display, Serialize, Deserialize))]
+#[cfg_attr(
+    not(target_arch = "spirv"),
+    derive(Debug, Display, Serialize, Deserialize)
+)]
 #[cfg_attr(target_arch = "spirv", repr(u32))]
 pub enum ScalarType {
     U8,
@@ -95,7 +98,18 @@ impl ScalarType {
 /// Base trait for numerical types.
 #[cfg(not(target_arch = "spirv"))]
 pub trait Scalar:
-    Default + NumCast + NumAssign + Pod + Debug + Display + Serialize + for<'de> Deserialize<'de> + PartialEq + Sealed
+    Default
+    + Copy
+    + 'static
+    + NumCast
+    + NumAssign
+    + Pod
+    + Debug
+    + Display
+    + Serialize
+    + for<'de> Deserialize<'de>
+    + PartialEq
+    + Sealed
 {
     /// The [`ScalarType`] of the scalar.
     fn scalar_type() -> ScalarType;
@@ -108,7 +122,7 @@ pub trait Scalar:
 }
 
 #[cfg(target_arch = "spirv")]
-pub trait Scalar: Default + NumCast + NumAssign + PartialEq + Sealed {
+pub trait Scalar: Default + Copy + 'static + NumCast + NumAssign + PartialEq + Sealed {
     /// The [`ScalarType`] of the scalar.
     fn scalar_type() -> ScalarType;
 }

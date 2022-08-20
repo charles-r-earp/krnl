@@ -8,6 +8,5 @@ publish = false
 crate-type = ["dylib"]
 
 [dependencies]
-spirv-std = { git = "https://github.com/EmbarkStudios/rust-gpu" }
-glam = { version =  "0.21.2", default-features = false, features = ["libm"] }
 krnl-core = { path = "../../../../krnl-core" }
+spirv-std = { git = "https://github.com/EmbarkStudios/rust-gpu" }

@@ -1,26 +1,25 @@
 use crate::scalar::ScalarType;
+use serde::{Deserialize, Serialize};
 use spirv::Capability;
-use std::{collections::HashMap, fmt::{self, Debug}};
-use serde::{Serialize, Deserialize};
+use std::{
+    collections::HashMap,
+    fmt::{self, Debug},
+    sync::Arc,
+};
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Eq, PartialEq, Serialize, Deserialize, Debug)]
 pub struct RawModule {
-    pub source: String,
     pub name: String,
-    pub target: Target,
-    pub kernels: HashMap<String, KernelInfo>,
+    pub target: String,
+    pub kernels: HashMap<String, Arc<RawKernelInfo>>,
 }
 
-#[derive(Clone, Copy, Serialize, Deserialize, Debug)]
-pub enum Target {
-    Vulkan(u32, u32),
-}
-
-#[derive(Serialize, Deserialize, Debug)]
-pub struct KernelInfo {
+#[derive(Eq, PartialEq, Serialize, Deserialize, Debug)]
+pub struct RawKernelInfo {
     pub name: String,
-    pub target: Target,
+    pub target: String,
     pub capabilities: Vec<Capability>,
+    pub extensions: Vec<String>,
     pub safety: Safety,
     pub slice_infos: Vec<SliceInfo>,
     pub push_infos: Vec<PushInfo>,
@@ -28,16 +27,14 @@ pub struct KernelInfo {
     pub spirv: Option<Spirv>,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Eq, PartialEq, Serialize, Deserialize)]
 pub struct Spirv {
     pub words: Vec<u32>,
 }
 
 impl Debug for Spirv {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        f.debug_struct("Spirv")
-            .field("words", &format!("{}B", &self.words.len()))
-            .finish()
+        write!(f, "Spirv({}B)", self.words.len() * 4)
     }
 }
 
@@ -53,14 +50,14 @@ pub enum Mutability {
     Mutable,
 }
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Eq, PartialEq, Serialize, Deserialize, Debug)]
 pub struct SliceInfo {
     pub name: String,
     pub scalar_type: ScalarType,
     pub mutability: Mutability,
 }
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Eq, PartialEq, Serialize, Deserialize, Debug)]
 pub struct PushInfo {
     pub name: String,
     pub scalar_type: ScalarType,
