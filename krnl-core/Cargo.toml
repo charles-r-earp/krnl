@@ -6,9 +6,13 @@ edition = "2021"
 publish = false
 
 [features]
+spirv-panic = []
 half = ["krnl-types/half"]
 
 [dependencies]
 krnl-types = { path = "../krnl-types" }
 krnl-macros = { path = "../krnl-macros" }
 glam = { version = "0.21.3", default-features = false, features = ["libm"] }
+
+[profile.dev.package.krnl-macros]
+opt-level = 0

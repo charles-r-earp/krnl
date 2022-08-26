@@ -45,7 +45,7 @@ pub enum Safety {
     Unsafe,
 }
 
-#[derive(Clone, Copy, Eq, PartialEq, Serialize, Deserialize, Debug)]
+#[derive(Clone, Copy, Eq, PartialEq, Serialize, Deserialize, Debug, derive_more::IsVariant)]
 pub enum Mutability {
     Immutable,
     Mutable,

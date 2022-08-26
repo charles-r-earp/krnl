@@ -1,5 +1,5 @@
 /*!
-```
+```text
 use krnl::{krnl_core, kernel::module, scalar::Scalar, buffer::{Slice, SliceMut}, result::Result};
 
 #[module(

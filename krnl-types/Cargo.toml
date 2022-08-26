@@ -12,7 +12,7 @@ bytemuck = "1.4.1"
 spirv = { version = "0.2.0", features = ["serialize", "deserialize"] }
 serde = { version = "1.0.143", features = ["derive", "rc"] }
 thiserror = "1.0.32"
-derive_more = { version = "0.99.11", default-features = false, features = ["display"] }
+derive_more = { version = "0.99.11", default-features = false, features = ["display", "is_variant"] }
 
 [target."cfg(target_arch = \"spirv\")".dependencies]
 num-traits = { version = "0.2.14", default-features = false }

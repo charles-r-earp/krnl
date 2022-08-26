@@ -8,7 +8,10 @@ use num_traits::{NumAssign, NumCast};
 #[cfg(not(target_arch = "spirv"))]
 use serde::{Deserialize, Serialize};
 #[cfg(not(target_arch = "spirv"))]
-use std::{fmt::{Debug, Display}, str::FromStr};
+use std::{
+    fmt::{Debug, Display},
+    str::FromStr,
+};
 
 mod sealed {
     #[cfg(feature = "half")]
@@ -130,7 +133,7 @@ impl FromStr for ScalarType {
             "F64" | "f64" => Ok(F64),
             _ => Err(ScalarTypeFromStrError {
                 input: input.to_string(),
-            })
+            }),
         }
     }
 }

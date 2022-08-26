@@ -3,6 +3,11 @@ name = "krnl"
 version = "0.0.1"
 authors = ["Charles R Earp <charles.r.earp@gmail.com>"]
 edition = "2021"
+homepage = "https://github.com/charles-r-earp/krnl"
+keywords = ["kernel", "compute", "vulkan", "gpu"]
+license = "MIT/Apache-2.0"
+readme = "README.md"
+repository = "https://github.com/charles-r-earp/krnl"
 publish = false
 
 [dependencies]
@@ -34,3 +39,6 @@ ash = { version = "0.33.3", optional = true }
 device = ["dep:vulkano", "dep:ash-molten", "dep:ash", "dep:crossbeam-channel", "dep:futures-lite"]
 half = ["krnl-core/half", "dep:half"]
 build = ["krnl-macros/build"]
+
+[profile.dev.package.krnl-macros]
+opt-level = 0

@@ -1,10 +1,14 @@
-#[cfg(feature = "device")]
-use crate::device::{DeviceBase, DeviceBuffer, HostBuffer};
 use crate::{
     device::{Device, DeviceInner},
     future::BlockableFuture,
     result::Result,
     scalar::{Scalar, ScalarType},
+};
+#[cfg(feature = "device")]
+use crate::{
+    device::{DeviceBase, DeviceBuffer, HostBuffer},
+    kernel::module,
+    krnl_core,
 };
 use core::{marker::PhantomData, mem::size_of};
 use futures_util::future::ready;
@@ -674,6 +678,22 @@ impl<T: Scalar, S: DataOwned<Elem = T>> BufferBase<S> {
         self.data.to_device_mut(device)
     }
 }
+
+/*
+#[cfg(feature = "device")]
+#[module(target("vulkan1.1"))]
+mod kernels {
+    use krnl_core::{kernel, glam::UVec3, mem::GlobalMut};
+
+    #[kernel(threads(256))]
+    pub fn fill_u32(#[builtin] global_id: UVec3, x: u32, y: &mut GlobalMut<[u32]>) {
+        let y = unsafe { y.global_mut() };
+        if (global_id.x as usize) < y.len() {
+            y[global_id.x] = x;
+        }
+    }
+}
+*/
 
 #[cfg(test)]
 mod tests {
