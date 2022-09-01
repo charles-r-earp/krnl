@@ -1,7 +1,7 @@
-use anyhow::{anyhow, bail};
+use anyhow::{format_err, bail};
 use krnl_types::{
+    kernel::{Module, VulkanVersion},
     __private::raw_module::{RawModule, Spirv},
-    kernel::Module,
 };
 use spirv::Capability;
 use spirv_builder::{MetadataPrintout, SpirvBuilder};
@@ -14,29 +14,44 @@ use std::{
     sync::Arc,
 };
 
+#[doc(inline)]
+pub use krnl_types::kernel;
+
 type Result<T, E = anyhow::Error> = std::result::Result<T, E>;
+
+fn target_from_version(vulkan_version: VulkanVersion) -> String {
+    let VulkanVersion {
+        major,
+        minor,
+        patch
+    } = vulkan_version;
+    if patch == 0 {
+        format!("spirv-unknown-vulkan{major}.{minor}")
+    } else {
+        format!("spirv-unknown-vulkan{major}.{minor}.{patch}")
+    }
+}
 
 pub struct ModuleBuilder {
     crate_path: PathBuf,
-    target: String,
+    vulkan_version: VulkanVersion,
 }
 
 impl ModuleBuilder {
-    pub fn new(crate_path: impl AsRef<Path>, target: impl Into<String>) -> Self {
+    pub fn new(crate_path: impl AsRef<Path>) -> Self {
         let crate_path = crate_path.as_ref().to_owned();
-        let target = target.into();
         ModuleBuilder {
             crate_path,
-            target,
+            vulkan_version: VulkanVersion::default(),
         }
+    }
+    pub fn vulkan(mut self, vulkan_version: VulkanVersion) -> Self {
+        self.vulkan_version = vulkan_version;
+        self
     }
     pub fn build(self) -> Result<Module> {
         let crate_path = self.crate_path.canonicalize()?;
-        let target = if self.target.starts_with("spirv-") {
-            self.target
-        } else {
-            format!("spirv-unknown-{}", self.target)
-        };
+        let target = target_from_version(self.vulkan_version);
         let crate_path_hash = {
             let mut h = DefaultHasher::new();
             crate_path.hash(&mut h);
@@ -44,7 +59,7 @@ impl ModuleBuilder {
         };
         let name = crate_path
             .file_stem()
-            .ok_or_else(|| anyhow!("`crate_path` is empty!"))?
+            .ok_or_else(|| format_err!("`crate_path` is empty!"))?
             .to_string_lossy()
             .into_owned();
         let name_with_hash = format!("{name}{crate_path_hash}");
@@ -60,7 +75,7 @@ impl ModuleBuilder {
         let saved_module_path = saved_modules_dir.join(&name_with_hash).with_extension("bincode");
         let raw_module = RawModule {
             name,
-            target,
+            vulkan_version: self.vulkan_version,
             kernels: Default::default(),
         };
         let saved_module: Option<RawModule> = if saved_module_path.exists() {
@@ -96,15 +111,16 @@ impl ModuleBuilder {
             let mut compile_options_set = HashSet::with_capacity(raw_module.kernels.len());
             for kernel in raw_module.kernels.values() {
                 let compile_options = CompileOptions {
-                    target: kernel.target.clone(),
+                    vulkan_version: kernel.vulkan_version,
                     capabilities: kernel.capabilities.clone(),
                     extensions: kernel.extensions.clone(),
                 };
                 compile_options_set.insert(compile_options);
             }
             for options in compile_options_set.iter() {
+                let target = target_from_version(options.vulkan_version);
                 let mut builder =
-                    SpirvBuilder::new(&crate_path, &options.target)
+                    SpirvBuilder::new(&crate_path, &target)
                         .multimodule(true)
                         .print_metadata(MetadataPrintout::None);
                 for cap in options.capabilities.iter().copied() {
@@ -134,7 +150,7 @@ impl ModuleBuilder {
 
 #[derive(Debug, PartialEq, Eq, Hash)]
 struct CompileOptions {
-    target: String,
+    vulkan_version: VulkanVersion,
     capabilities: Vec<Capability>,
     extensions: Vec<String>,
 }

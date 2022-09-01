@@ -1,5 +1,6 @@
 use crate::__private::raw_module::{RawKernelInfo, RawModule};
 use std::sync::Arc;
+use serde::{Serialize, Deserialize};
 
 pub mod error {
     use super::*;
@@ -11,7 +12,34 @@ pub mod error {
         pub(super) module: Arc<RawModule>,
     }
 }
-use error::KernelNotFound;
+use error::*;
+
+#[derive(Clone, Copy, Eq, PartialEq, PartialOrd, Ord, Hash, Serialize, Deserialize, Debug)]
+pub struct VulkanVersion {
+    pub major: u32,
+    pub minor: u32,
+    pub patch: u32,
+}
+
+impl VulkanVersion {
+    pub fn from_major_minor(major: u32, minor: u32) -> Self {
+        Self {
+            major,
+            minor,
+            patch: 0,
+        }
+    }
+}
+
+impl Default for VulkanVersion {
+    fn default() -> Self {
+        Self {
+            major: 1,
+            minor: 0,
+            patch: 0,
+        }
+    }
+}
 
 #[derive(Debug)]
 pub struct Module {
@@ -27,23 +55,23 @@ impl Module {
     pub fn __raw(&self) -> &Arc<RawModule> {
         &self.raw
     }
-    pub fn kernel(&self, kernel: impl Into<String>) -> Result<KernelInfo, KernelNotFound> {
-        let name = kernel.into();
-        if let Some(info) = self.raw.kernels.get(&name) {
+    pub fn kernel_info(&self, kernel: impl AsRef<str>) -> Result<KernelInfo, KernelNotFound> {
+        let kernel = kernel.as_ref();
+        if let Some(info) = self.raw.kernels.get(&*kernel) {
             Ok(KernelInfo {
                 module: self.raw.clone(),
                 info: info.clone(),
             })
         } else {
             Err(KernelNotFound {
-                name,
+                name: kernel.to_string(),
                 module: self.raw.clone(),
             })
         }
     }
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct KernelInfo {
     module: Arc<RawModule>,
     info: Arc<RawKernelInfo>,

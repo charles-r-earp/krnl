@@ -1,18 +1,21 @@
 use crate::{
-    device::{Device, DeviceInner},
+    device::{Device, DeviceInner, DeviceKind},
     future::BlockableFuture,
-    result::Result,
-    scalar::{Scalar, ScalarType},
+    scalar::{Scalar, ScalarType, ScalarElem},
 };
 #[cfg(feature = "device")]
 use crate::{
     device::{DeviceBase, DeviceBuffer, HostBuffer},
-    kernel::module,
+    kernel::{module, Kernel},
     krnl_core,
 };
 use core::{marker::PhantomData, mem::size_of};
 use futures_util::future::ready;
 use std::{pin::Pin, sync::Arc};
+use anyhow::Result;
+
+#[doc(inline)]
+pub use krnl_types::kernel::{Module, KernelInfo};
 
 type PinBox<T> = Pin<Box<T>>;
 
@@ -88,10 +91,10 @@ pub struct RawSlice {
 }
 
 impl RawSlice {
-    fn len(&self) -> usize {
+    pub(crate) fn len(&self) -> usize {
         self.inner.len() / self.scalar_type.size()
     }
-    fn is_empty(&self) -> bool {
+    pub(crate) fn is_empty(&self) -> bool {
         self.inner.len() == 0
     }
     fn from_bytes(scalar_type: ScalarType, bytes: &[u8]) -> Self {
@@ -137,6 +140,14 @@ impl RawSlice {
             RawSliceInner::Device(_) => todo!(),
         }
     }
+    #[cfg(feature = "device")]
+    pub(crate) fn device_buffer(&self) -> Option<&Arc<DeviceBuffer>> {
+        if let RawSliceInner::Device(Some(x)) = &self.inner {
+            Some(x)
+        } else {
+            None
+        }
+    }
     fn split_at(&self, mid: usize) -> (Self, Self) {
         todo!()
         /*
@@ -167,7 +178,7 @@ impl RawSlice {
     ) -> Result<PinBox<dyn BlockableFuture<Output = Result<RawBuffer>>>> {
         if self.len() == 0 {
             Ok(Box::pin(ready(unsafe {
-                RawBuffer::alloc(device, self.scalar_type, 0)
+                RawBuffer::uninit(device, self.scalar_type, 0)
             })))
         } else if self.device == device {
             Ok(Box::pin(ready(self.to_raw_buffer())))
@@ -216,7 +227,7 @@ pub struct RawBuffer {
 }
 
 impl RawBuffer {
-    unsafe fn alloc(device: Device, scalar_type: ScalarType, len: usize) -> Result<Self> {
+    unsafe fn uninit(device: Device, scalar_type: ScalarType, len: usize) -> Result<Self> {
         match &device.inner {
             DeviceInner::Host => {
                 let mut buffer = match scalar_type.size() {
@@ -320,75 +331,80 @@ impl Drop for RawBuffer {
 }
 
 mod sealed {
-    pub trait SealedData {}
-}
-use sealed::SealedData;
+    use super::*;
 
-pub trait Data: Sized + SealedData {
+    #[doc(hidden)]
+    pub trait RawData: Sized {
+        #[doc(hidden)]
+        fn as_raw_slice(&self) -> &RawSlice;
+        #[doc(hidden)]
+        fn into_raw_buffer(self) -> Result<RawBuffer> {
+            self.as_raw_slice().to_raw_buffer()
+        }
+        #[doc(hidden)]
+        fn to_arc_raw_buffer(&self) -> Result<Arc<RawBuffer>> {
+            self.as_raw_slice().to_raw_buffer().map(Arc::new)
+        }
+        #[doc(hidden)]
+        fn into_arc_raw_buffer(self) -> Result<Arc<RawBuffer>> {
+            self.into_raw_buffer().map(Arc::new)
+        }
+        #[doc(hidden)]
+        fn into_device(
+            self,
+            device: Device,
+        ) -> Result<PinBox<dyn BlockableFuture<Output = Result<RawBuffer>>>> {
+            if self.as_raw_slice().device == device {
+                Ok(Box::pin(ready(self.into_raw_buffer())))
+            } else {
+                self.as_raw_slice().to_device(device)
+            }
+        }
+    }
+
+    pub trait RawDataMut: RawData {
+        #[doc(hidden)]
+        fn as_raw_slice_mut(&mut self) -> &mut RawSlice;
+    }
+
+    pub trait RawDataOwned: RawData {
+        #[doc(hidden)]
+        fn from_raw_buffer(raw: RawBuffer) -> Self;
+        #[doc(hidden)]
+        fn set_raw_buffer(&mut self, raw: RawBuffer);
+        #[doc(hidden)]
+        fn to_device_mut(
+            &mut self,
+            device: Device,
+        ) -> Result<PinBox<dyn BlockableFuture<Output = Result<()>> + '_>> {
+            if self.as_raw_slice().device == device {
+                Ok(Box::pin(ready(Ok(()))))
+            } else {
+                let fut = self.as_raw_slice().to_device(device)?;
+                Ok(Box::pin(async move {
+                    self.set_raw_buffer(fut.await?);
+                    Ok(())
+                }))
+            }
+        }
+    }
+}
+use sealed::*;
+
+pub trait Data: RawData {
     type Elem: Scalar;
-    #[doc(hidden)]
-    fn as_raw_slice(&self) -> &RawSlice;
-    #[doc(hidden)]
-    fn into_raw_buffer(self) -> Result<RawBuffer> {
-        self.as_raw_slice().to_raw_buffer()
-    }
-    #[doc(hidden)]
-    fn to_arc_raw_buffer(&self) -> Result<Arc<RawBuffer>> {
-        self.as_raw_slice().to_raw_buffer().map(Arc::new)
-    }
-    #[doc(hidden)]
-    fn into_arc_raw_buffer(self) -> Result<Arc<RawBuffer>> {
-        self.into_raw_buffer().map(Arc::new)
-    }
-    #[doc(hidden)]
-    fn into_device(
-        self,
-        device: Device,
-    ) -> Result<PinBox<dyn BlockableFuture<Output = Result<RawBuffer>>>> {
-        if self.as_raw_slice().device == device {
-            Ok(Box::pin(ready(self.into_raw_buffer())))
-        } else {
-            self.as_raw_slice().to_device(device)
-        }
-    }
 }
 
-pub trait DataMut: Data {
-    #[doc(hidden)]
-    fn as_raw_slice_mut(&mut self) -> &mut RawSlice;
-}
+pub trait DataMut: Data + RawDataMut {}
 
-pub trait DataOwned: Data {
-    #[doc(hidden)]
-    fn from_raw_buffer(raw: RawBuffer) -> Self;
-    #[doc(hidden)]
-    fn set_raw_buffer(&mut self, raw: RawBuffer);
-    #[doc(hidden)]
-    fn to_device_mut(
-        &mut self,
-        device: Device,
-    ) -> Result<PinBox<dyn BlockableFuture<Output = Result<()>> + '_>> {
-        if self.as_raw_slice().device == device {
-            Ok(Box::pin(ready(Ok(()))))
-        } else {
-            let fut = self.as_raw_slice().to_device(device)?;
-            Ok(Box::pin(async move {
-                self.set_raw_buffer(fut.await?);
-                Ok(())
-            }))
-        }
-    }
-}
+pub trait DataOwned: Data + RawDataOwned {}
 
 pub struct BufferRepr<T: Scalar> {
     raw: RawBuffer,
     _m: PhantomData<T>,
 }
 
-impl<T: Scalar> SealedData for BufferRepr<T> {}
-
-impl<T: Scalar> Data for BufferRepr<T> {
-    type Elem = T;
+impl<T: Scalar> RawData for BufferRepr<T> {
     fn as_raw_slice(&self) -> &RawSlice {
         &self.raw
     }
@@ -397,13 +413,19 @@ impl<T: Scalar> Data for BufferRepr<T> {
     }
 }
 
-impl<T: Scalar> DataMut for BufferRepr<T> {
+impl<T: Scalar> Data for BufferRepr<T> {
+    type Elem = T;
+}
+
+impl<T: Scalar> RawDataMut for BufferRepr<T> {
     fn as_raw_slice_mut(&mut self) -> &mut RawSlice {
         &mut self.raw
     }
 }
 
-impl<T: Scalar> DataOwned for BufferRepr<T> {
+impl<T: Scalar> DataMut for BufferRepr<T> {}
+
+impl<T: Scalar> RawDataOwned for BufferRepr<T> {
     fn from_raw_buffer(raw: RawBuffer) -> Self {
         debug_assert_eq!(raw.scalar_type, T::scalar_type());
         Self {
@@ -417,19 +439,22 @@ impl<T: Scalar> DataOwned for BufferRepr<T> {
     }
 }
 
+impl<T: Scalar> DataOwned for BufferRepr<T> {}
+
 #[derive(Clone)]
 pub struct SliceRepr<'a, T: Scalar> {
     raw: RawSlice,
     _m: PhantomData<&'a T>,
 }
 
-impl<T: Scalar> SealedData for SliceRepr<'_, T> {}
-
-impl<T: Scalar> Data for SliceRepr<'_, T> {
-    type Elem = T;
+impl<T: Scalar> RawData for SliceRepr<'_, T> {
     fn as_raw_slice(&self) -> &RawSlice {
         &self.raw
     }
+}
+
+impl<T: Scalar> Data for SliceRepr<'_, T> {
+    type Elem = T;
 }
 
 pub struct SliceMutRepr<'a, T: Scalar> {
@@ -437,20 +462,23 @@ pub struct SliceMutRepr<'a, T: Scalar> {
     _m: PhantomData<&'a mut T>,
 }
 
-impl<T: Scalar> SealedData for SliceMutRepr<'_, T> {}
-
-impl<T: Scalar> Data for SliceMutRepr<'_, T> {
-    type Elem = T;
+impl<T: Scalar> RawData for SliceMutRepr<'_, T> {
     fn as_raw_slice(&self) -> &RawSlice {
         &self.raw
     }
 }
 
-impl<T: Scalar> DataMut for SliceMutRepr<'_, T> {
+impl<T: Scalar> Data for SliceMutRepr<'_, T> {
+    type Elem = T;
+}
+
+impl<T: Scalar> RawDataMut for SliceMutRepr<'_, T> {
     fn as_raw_slice_mut(&mut self) -> &mut RawSlice {
         &mut self.raw
     }
 }
+
+impl<T: Scalar> DataMut for SliceMutRepr<'_, T> {}
 
 #[derive(Clone)]
 pub struct ArcBufferRepr<T: Scalar> {
@@ -458,10 +486,7 @@ pub struct ArcBufferRepr<T: Scalar> {
     _m: PhantomData<T>,
 }
 
-impl<T: Scalar> SealedData for ArcBufferRepr<T> {}
-
-impl<T: Scalar> Data for ArcBufferRepr<T> {
-    type Elem = T;
+impl<T: Scalar> RawData for ArcBufferRepr<T> {
     fn as_raw_slice(&self) -> &RawSlice {
         &self.raw
     }
@@ -479,7 +504,11 @@ impl<T: Scalar> Data for ArcBufferRepr<T> {
     }
 }
 
-impl<T: Scalar> DataOwned for ArcBufferRepr<T> {
+impl<T: Scalar> Data for ArcBufferRepr<T> {
+    type Elem = T;
+}
+
+impl<T: Scalar> RawDataOwned for ArcBufferRepr<T> {
     fn from_raw_buffer(raw: RawBuffer) -> Self {
         debug_assert_eq!(raw.scalar_type, T::scalar_type());
         Self {
@@ -493,15 +522,14 @@ impl<T: Scalar> DataOwned for ArcBufferRepr<T> {
     }
 }
 
+impl<T: Scalar> DataOwned for ArcBufferRepr<T> {}
+
 pub enum CowBufferRepr<'a, T: Scalar> {
     Buffer(BufferRepr<T>),
     Slice(SliceRepr<'a, T>),
 }
 
-impl<T: Scalar> SealedData for CowBufferRepr<'_, T> {}
-
-impl<T: Scalar> Data for CowBufferRepr<'_, T> {
-    type Elem = T;
+impl<T: Scalar> RawData for CowBufferRepr<'_, T> {
     fn as_raw_slice(&self) -> &RawSlice {
         match self {
             Self::Buffer(buffer) => buffer.as_raw_slice(),
@@ -516,7 +544,11 @@ impl<T: Scalar> Data for CowBufferRepr<'_, T> {
     }
 }
 
-impl<T: Scalar> DataOwned for CowBufferRepr<'static, T> {
+impl<T: Scalar> Data for CowBufferRepr<'_, T> {
+    type Elem = T;
+}
+
+impl<T: Scalar> RawDataOwned for CowBufferRepr<'_, T> {
     fn from_raw_buffer(raw: RawBuffer) -> Self {
         Self::Buffer(BufferRepr::from_raw_buffer(raw))
     }
@@ -524,6 +556,168 @@ impl<T: Scalar> DataOwned for CowBufferRepr<'static, T> {
         *self = Self::Buffer(BufferRepr::from_raw_buffer(raw));
     }
 }
+
+impl<T: Scalar> DataOwned for CowBufferRepr<'_, T> {}
+
+
+pub trait ScalarData: RawData {}
+pub trait ScalarDataMut: ScalarData + RawDataMut {}
+pub trait ScalarDataOwned: ScalarData + RawDataOwned {}
+
+pub struct ScalarBufferRepr {
+    raw: RawBuffer,
+}
+
+impl RawData for ScalarBufferRepr {
+    fn as_raw_slice(&self) -> &RawSlice {
+        &self.raw
+    }
+    fn into_raw_buffer(self) -> Result<RawBuffer> {
+        Ok(self.raw)
+    }
+}
+
+impl ScalarData for ScalarBufferRepr {}
+
+impl RawDataMut for ScalarBufferRepr {
+    fn as_raw_slice_mut(&mut self) -> &mut RawSlice {
+        &mut self.raw
+    }
+}
+
+impl ScalarDataMut for ScalarBufferRepr {}
+
+impl RawDataOwned for ScalarBufferRepr {
+    fn from_raw_buffer(raw: RawBuffer) -> Self {
+        Self {
+            raw,
+        }
+    }
+    fn set_raw_buffer(&mut self, raw: RawBuffer) {
+        self.raw = raw;
+    }
+}
+
+impl ScalarDataOwned for ScalarBufferRepr {}
+
+#[derive(Clone)]
+pub struct ScalarSliceRepr<'a> {
+    raw: RawSlice,
+    _m: PhantomData<&'a ()>,
+}
+
+impl RawData for ScalarSliceRepr<'_> {
+    fn as_raw_slice(&self) -> &RawSlice {
+        &self.raw
+    }
+}
+
+impl ScalarData for ScalarSliceRepr<'_> {}
+
+pub struct ScalarSliceMutRepr<'a> {
+    raw: RawSlice,
+    _m: PhantomData<&'a ()>,
+}
+
+impl RawData for ScalarSliceMutRepr<'_> {
+    fn as_raw_slice(&self) -> &RawSlice {
+        &self.raw
+    }
+}
+
+impl ScalarData for ScalarSliceMutRepr<'_> {}
+
+impl RawDataMut for ScalarSliceMutRepr<'_> {
+    fn as_raw_slice_mut(&mut self) -> &mut RawSlice {
+        &mut self.raw
+    }
+}
+
+impl ScalarDataMut for ScalarSliceMutRepr<'_> {}
+
+#[derive(Clone)]
+pub struct ScalarArcBufferRepr {
+    raw: Arc<RawBuffer>,
+}
+
+impl RawData for ScalarArcBufferRepr {
+    fn as_raw_slice(&self) -> &RawSlice {
+        &self.raw
+    }
+    fn into_raw_buffer(self) -> Result<RawBuffer> {
+        match Arc::try_unwrap(self.raw) {
+            Ok(raw) => Ok(raw),
+            Err(raw) => raw.to_raw_buffer(),
+        }
+    }
+    fn to_arc_raw_buffer(&self) -> Result<Arc<RawBuffer>> {
+        Ok(self.raw.clone())
+    }
+    fn into_arc_raw_buffer(self) -> Result<Arc<RawBuffer>> {
+        Ok(self.raw)
+    }
+}
+
+impl ScalarData for ScalarArcBufferRepr {}
+
+impl RawDataOwned for ScalarArcBufferRepr {
+    fn from_raw_buffer(raw: RawBuffer) -> Self {
+        Self {
+            raw: Arc::new(raw),
+        }
+    }
+    fn set_raw_buffer(&mut self, raw: RawBuffer) {
+        self.raw = Arc::new(raw);
+    }
+}
+
+impl ScalarDataOwned for ScalarArcBufferRepr {}
+
+pub enum ScalarCowBufferRepr<'a> {
+    Buffer(ScalarBufferRepr),
+    Slice(ScalarSliceRepr<'a>),
+}
+
+impl RawData for ScalarCowBufferRepr<'_> {
+    fn as_raw_slice(&self) -> &RawSlice {
+        match self {
+            Self::Buffer(buffer) => buffer.as_raw_slice(),
+            Self::Slice(slice) => slice.as_raw_slice(),
+        }
+    }
+    fn into_raw_buffer(self) -> Result<RawBuffer> {
+        match self {
+            Self::Buffer(buffer) => buffer.into_raw_buffer(),
+            Self::Slice(slice) => slice.into_raw_buffer(),
+        }
+    }
+}
+
+impl ScalarData for ScalarCowBufferRepr<'_> {}
+
+impl RawDataOwned for ScalarCowBufferRepr<'_> {
+    fn from_raw_buffer(raw: RawBuffer) -> Self {
+        Self::Buffer(ScalarBufferRepr::from_raw_buffer(raw))
+    }
+    fn set_raw_buffer(&mut self, raw: RawBuffer) {
+        *self = Self::Buffer(ScalarBufferRepr::from_raw_buffer(raw));
+    }
+}
+
+impl ScalarDataOwned for ScalarCowBufferRepr<'_> {}
+
+#[cfg(feature = "device")]
+#[module(vulkan(1, 1))]
+mod kernels {
+    #[allow(unused_imports)]
+    use krnl_core::kernel;
+
+    #[kernel(threads(256), elementwise)]
+    pub fn fill_u32(y: &mut u32, x: u32) {
+        *y = x;
+    }
+}
+
 
 #[derive(Clone)]
 pub struct BufferBase<S: Data> {
@@ -545,6 +739,9 @@ impl<T: Scalar, S: Data<Elem = T>> BufferBase<S> {
     }
     pub fn len(&self) -> usize {
         self.data.as_raw_slice().len() * self.scalar_type().size()
+    }
+    pub fn is_empty(&self) -> bool {
+        self.data.as_raw_slice().is_empty()
     }
     pub fn as_slice(&self) -> Slice<T> {
         Slice {
@@ -658,6 +855,30 @@ impl<T: Scalar, S: DataMut<Elem = T>> BufferBase<S> {
         };
         (a, b)
     }
+    pub fn fill(&mut self, elem: T) -> Result<()> {
+        if !self.is_empty() {
+            match self.device().kind() {
+                DeviceKind::Host => {
+                    for y in self.as_host_slice_mut()?.iter_mut() {
+                        *y = elem;
+                    }
+                }
+                #[cfg(feature = "device")]
+                DeviceKind::Device => {
+                    let kernel_info = kernels::module()?
+                        .kernel_info("fill_u32")?;
+                    Kernel::builder(self.device().clone(), kernel_info)
+                        .build()?
+                        .dispatch_builder()
+                        .slice_mut("y", self.as_slice_mut())
+                        .push("x", elem)
+                        .build()?
+                        .dispatch()?;
+                }
+            }
+        }
+        Ok(())
+    }
 }
 
 impl<T: Scalar, S: DataOwned<Elem = T>> BufferBase<S> {
@@ -666,10 +887,27 @@ impl<T: Scalar, S: DataOwned<Elem = T>> BufferBase<S> {
             data: S::from_raw_buffer(RawBuffer::from_vec(vec)),
         }
     }
-    unsafe fn alloc(device: Device, len: usize) -> Result<Self, anyhow::Error> {
+    pub unsafe fn uninit(device: Device, len: usize) -> Result<Self> {
         Ok(Self {
-            data: S::from_raw_buffer(unsafe { RawBuffer::alloc(device, T::scalar_type(), len)? }),
+            data: S::from_raw_buffer(unsafe { RawBuffer::uninit(device, T::scalar_type(), len)? }),
         })
+    }
+    pub fn from_elem(device: Device, len: usize, elem: T) -> Result<Self> {
+        match device.kind() {
+            DeviceKind::Host => {
+                Ok(Self::from_vec(vec![elem; len]))
+            }
+            #[cfg(feature = "device")]
+            DeviceKind::Device => {
+                let mut buffer = unsafe {
+                    Buffer::uninit(device, len)?
+                };
+                buffer.fill(elem)?;
+                Ok(Self {
+                    data: S::from_raw_buffer(buffer.data.raw),
+                })
+            }
+        }
     }
     pub fn to_device_mut(
         &mut self,
@@ -679,21 +917,95 @@ impl<T: Scalar, S: DataOwned<Elem = T>> BufferBase<S> {
     }
 }
 
-/*
-#[cfg(feature = "device")]
-#[module(target("vulkan1.1"))]
-mod kernels {
-    use krnl_core::{kernel, glam::UVec3, mem::GlobalMut};
+#[derive(Clone)]
+pub struct ScalarBufferBase<S: ScalarData> {
+    data: S,
+}
 
-    #[kernel(threads(256))]
-    pub fn fill_u32(#[builtin] global_id: UVec3, x: u32, y: &mut GlobalMut<[u32]>) {
-        let y = unsafe { y.global_mut() };
-        if (global_id.x as usize) < y.len() {
-            y[global_id.x] = x;
+pub type ScalarBuffer = ScalarBufferBase<ScalarBufferRepr>;
+pub type ScalarSlice<'a> = ScalarBufferBase<ScalarSliceRepr<'a>>;
+pub type ScalarSliceMut<'a> = ScalarBufferBase<ScalarSliceMutRepr<'a>>;
+pub type ScalarArcBuffer = ScalarBufferBase<ScalarArcBufferRepr>;
+pub type ScalarCowBuffer<'a> = ScalarBufferBase<ScalarCowBufferRepr<'a>>;
+
+/*
+impl<S: ScalarDataOwned> ScalarBufferBase<S> {
+    pub unsafe fn uninit(device: Device, len: usize, scalar_type: ScalarType) -> Result<Self> {
+        todo!()
+    }
+    pub fn from_vec<T: Scalar>(vec: Vec<T>) -> Self {
+        Self {
+            data: S::from_raw_buffer(RawBuffer::from_vec(vec)),
+        }
+    }
+    pub fn from_scalar_elem(device: Device, len: usize, elem: ScalarElem) -> Result<Self> {
+        match device.kind() {
+            DeviceKind::Host => {
+                use ScalarElem::*;
+                match elem {
+                    U32(x) => Ok(Self::from_vec(vec![x; len])),
+                    _ => todo!(),
+                }
+            }
+            #[cfg(feature = "device")]
+            DeviceKind::Device => {
+                unsafe {
+                    let mut buffer = Self::uninit(device.clone(), len, elem.scalar_type())?;
+                    let kernel_info = kernels::module()?
+                        .kernel_info("fill_u32")?;
+                    Kernel::builder(device, kernel_info)
+                        .build()?
+                        .dispatch_builder()
+                        .global_threads(len)
+                        .scalar_slice_mut("y", buffer.as_scalar_slice_mut())
+                        .push("n", len as u32)
+                        .push("x", elem)
+                        .unsafe_()
+                        .build()?
+                        .dispatch()?;
+                    Ok(buffer)
+                }
+            }
+        }
+    }
+}*/
+
+impl ScalarSlice<'_> {
+    // for DispatchBuilder
+    pub(crate) fn into_raw_slice(self) -> RawSlice {
+        self.data.raw
+    }
+}
+
+
+impl ScalarSliceMut<'_> {
+    // for DispatchBuilder
+    pub(crate) fn into_raw_slice_mut(self) -> RawSlice {
+        self.data.raw
+    }
+}
+
+impl<'a, T: Scalar> From<Slice<'a, T>> for ScalarSlice<'a> {
+    fn from(slice: Slice<'a, T>) -> Self {
+        Self {
+            data: ScalarSliceRepr {
+                raw: slice.data.raw,
+                _m: PhantomData::default(),
+            }
         }
     }
 }
-*/
+
+impl<'a, T: Scalar> From<SliceMut<'a, T>> for ScalarSliceMut<'a> {
+    fn from(slice: SliceMut<'a, T>) -> Self {
+        Self {
+            data: ScalarSliceMutRepr {
+                raw: slice.data.raw,
+                _m: PhantomData::default(),
+            }
+        }
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -721,4 +1033,19 @@ mod tests {
         assert_eq!(x_vec, y_vec);
         Ok(())
     }
+
+    #[cfg(feature = "device")]
+    #[test]
+    fn buffer_zero_device() -> Result<()> {
+        let device = Device::new(0)?;
+        let x_vec = vec![1u32, 2, 3, 4];
+        let mut buffer = Buffer::from_vec(x_vec.clone())
+            .into_device(device)?
+            .block()?;
+        buffer.fill(0)?;
+        let y_vec = buffer.into_vec()?.block()?;
+        assert_eq!(&y_vec, &vec![0; y_vec.len()]);
+        Ok(())
+    }
+
 }

@@ -47,7 +47,7 @@ pub mod error {
 #[cfg(not(target_arch = "spirv"))]
 use error::*;
 
-/// Numerical types supported in autograph.
+/// Numerical types supported in krnl.
 #[allow(missing_docs)]
 #[non_exhaustive]
 #[derive(Clone, Copy, Eq, PartialEq)]
@@ -138,12 +138,141 @@ impl FromStr for ScalarType {
     }
 }
 
+#[cfg(not(target_arch = "spirv"))]
+#[derive(Clone, Copy, PartialEq, Debug, Serialize, Deserialize)]
+pub enum ScalarElem {
+    U8(u8),
+    I8(i8),
+    U16(u16),
+    I16(i16),
+    #[cfg(feature = "half")]
+    F16(f16),
+    #[cfg(feature = "half")]
+    BF16(bf16),
+    U32(u32),
+    I32(i32),
+    F32(f32),
+    U64(u64),
+    I64(i64),
+    F64(f64),
+}
+
+#[cfg(not(target_arch = "spirv"))]
+impl ScalarElem {
+    pub fn scalar_type(&self) -> ScalarType {
+        use ScalarType as T;
+        use ScalarElem::*;
+        match self {
+            U8(_) => T::U8,
+            I8(_) => T::I8,
+            /*U16(u16),
+            I16(i16),
+            #[cfg(feature = "half")]
+            F16(f16),
+            #[cfg(feature = "half")]
+            BF16(bf16),*/
+            U32(_) => T::U32,
+            /*I32(i32),
+            F32(f32),
+            U64(u64),
+            I64(i64),
+            F64(f64),*/
+            _ => todo!()
+        }
+    }
+}
+
+#[cfg(not(target_arch = "spirv"))]
+impl From<u8> for ScalarElem {
+    fn from(x: u8) -> Self {
+        Self::U8(x)
+    }
+}
+
+#[cfg(not(target_arch = "spirv"))]
+impl From<i8> for ScalarElem {
+    fn from(x: i8) -> Self {
+        Self::I8(x)
+    }
+}
+
+#[cfg(not(target_arch = "spirv"))]
+impl From<u16> for ScalarElem {
+    fn from(x: u16) -> Self {
+        Self::U16(x)
+    }
+}
+
+#[cfg(not(target_arch = "spirv"))]
+impl From<i16> for ScalarElem {
+    fn from(x: i16) -> Self {
+        Self::I16(x)
+    }
+}
+
+#[cfg(all(not(target_arch = "spirv"), feature = "half"))]
+impl From<f16> for ScalarElem {
+    fn from(x: f16) -> Self {
+        Self::F16(x)
+    }
+}
+
+#[cfg(all(not(target_arch = "spirv"), feature = "half"))]
+impl From<bf16> for ScalarElem {
+    fn from(x: bf16) -> Self {
+        Self::BF16(x)
+    }
+}
+
+#[cfg(not(target_arch = "spirv"))]
+impl From<u32> for ScalarElem {
+    fn from(x: u32) -> Self {
+        Self::U32(x)
+    }
+}
+
+#[cfg(not(target_arch = "spirv"))]
+impl From<i32> for ScalarElem {
+    fn from(x: i32) -> Self {
+        Self::I32(x)
+    }
+}
+
+#[cfg(not(target_arch = "spirv"))]
+impl From<f32> for ScalarElem {
+    fn from(x: f32) -> Self {
+        Self::F32(x)
+    }
+}
+
+#[cfg(not(target_arch = "spirv"))]
+impl From<u64> for ScalarElem {
+    fn from(x: u64) -> Self {
+        Self::U64(x)
+    }
+}
+
+#[cfg(not(target_arch = "spirv"))]
+impl From<i64> for ScalarElem {
+    fn from(x: i64) -> Self {
+        Self::I64(x)
+    }
+}
+
+#[cfg(not(target_arch = "spirv"))]
+impl From<f64> for ScalarElem {
+    fn from(x: f64) -> Self {
+        Self::F64(x)
+    }
+}
+
 /// Base trait for numerical types.
 #[cfg(not(target_arch = "spirv"))]
 pub trait Scalar:
     Default
     + Copy
     + 'static
+    + Into<ScalarElem>
     + NumCast
     + NumAssign
     + Pod

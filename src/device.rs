@@ -1,13 +1,11 @@
-use crate::result::Result;
 use spirv::Capability;
 use std::fmt::{self, Debug};
+use anyhow::Result;
 
 #[cfg(feature = "device")]
 pub(crate) mod engine;
 #[cfg(feature = "device")]
-pub(crate) use engine::ArcEngine as DeviceBase;
-#[cfg(feature = "device")]
-pub(crate) use engine::{DeviceBuffer, HostBuffer};
+pub(crate) use engine::{ArcEngine as DeviceBase, DeviceBuffer, DeviceBufferInner, HostBuffer, KernelCache, Compute};
 
 pub mod error {
 
@@ -49,6 +47,22 @@ pub(crate) enum DeviceInner {
     Device(DeviceBase),
 }
 
+impl DeviceInner {
+    pub(crate) fn kind(&self) -> DeviceKind {
+        match self {
+            Self::Host => DeviceKind::Host,
+            #[cfg(feature = "device")]
+            Self::Device(_) => DeviceKind::Device,
+        }
+    }
+}
+
+pub(crate) enum DeviceKind {
+    Host,
+    #[cfg(feature = "device")]
+    Device,
+}
+
 #[derive(Clone, PartialEq, Eq)]
 pub struct Device {
     pub(crate) inner: DeviceInner,
@@ -75,6 +89,9 @@ impl Device {
         {
             Err(DeviceUnavailable::new().into())
         }
+    }
+    pub(crate) fn kind(&self) -> DeviceKind {
+        self.inner.kind()
     }
     pub(crate) fn is_host(&self) -> bool {
         self.inner.is_host()

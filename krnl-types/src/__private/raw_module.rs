@@ -1,4 +1,4 @@
-use crate::scalar::ScalarType;
+use crate::{scalar::ScalarType, kernel::VulkanVersion};
 use serde::{Deserialize, Serialize};
 use spirv::Capability;
 use std::{
@@ -10,19 +10,20 @@ use std::{
 #[derive(Eq, PartialEq, Serialize, Deserialize, Debug)]
 pub struct RawModule {
     pub name: String,
-    pub target: String,
+    pub vulkan_version: VulkanVersion,
     pub kernels: HashMap<String, Arc<RawKernelInfo>>,
 }
 
 #[derive(Eq, PartialEq, Serialize, Deserialize, Debug)]
 pub struct RawKernelInfo {
     pub name: String,
-    pub target: String,
+    pub vulkan_version: VulkanVersion,
     pub capabilities: Vec<Capability>,
     pub extensions: Vec<String>,
     pub safety: Safety,
     pub slice_infos: Vec<SliceInfo>,
     pub push_infos: Vec<PushInfo>,
+    pub num_push_words: u32,
     pub elementwise: bool,
     pub threads: Vec<u32>,
     pub spirv: Option<Spirv>,

@@ -6,6 +6,7 @@ use derive_syn_parse::Parse;
 use krnl_types::{
     __private::raw_module::{Mutability, PushInfo, RawKernelInfo, RawModule, Safety, SliceInfo},
     scalar::ScalarType,
+    kernel::VulkanVersion,
 };
 use proc_macro::TokenStream;
 use proc_macro2::{Span, TokenStream as TokenStream2};
@@ -75,8 +76,8 @@ struct KernelAttributes {
 #[derive(Parse, Debug)]
 struct KernelAttribute {
     ident: Ident,
-    #[parse_if(ident.to_string() == "target")]
-    target: Option<Target>,
+    #[parse_if(ident.to_string() == "vulkan")]
+    vulkan: Option<Vulkan>,
     #[parse_if(ident.to_string() == "threads")]
     threads: Option<Threads>,
     #[parse_if(matches!(ident.to_string().as_str(), "capabilities" | "extensions"))]
@@ -84,12 +85,30 @@ struct KernelAttribute {
 }
 
 #[derive(Parse, Debug)]
-struct Target {
-    #[allow(unused)]
+struct Vulkan {
     #[paren]
     paren: Paren,
     #[inside(paren)]
-    target: LitStr,
+    #[call(Punctuated::parse_terminated)]
+    version: Punctuated<LitInt, Comma>,
+}
+
+impl Vulkan {
+    fn vulkan_version(&self) -> Result<VulkanVersion> {
+        if self.version.len() == 0 || self.version.len() > 3 {
+            return Err(Error::new(self.paren.span, "expected `(major, [minor, patch])`"));
+        }
+        let mut vulkan_version = VulkanVersion::default();
+        for (i, lit) in self.version.iter().enumerate() {
+            match i {
+                0 => vulkan_version.major = lit.base10_parse()?,
+                1 => vulkan_version.minor = lit.base10_parse()?,
+                2 => vulkan_version.patch = lit.base10_parse()?,
+                _ => unreachable!(),
+            }
+        }
+        Ok(vulkan_version)
+    }
 }
 
 #[derive(Parse, Debug)]
@@ -108,7 +127,7 @@ struct TargetFeatureList {
     #[paren]
     paren: Paren,
     #[inside(paren)]
-    #[call(Punctuated::parse_separated_nonempty)]
+    #[call(Punctuated::parse_terminated)]
     features: Punctuated<LitStr, Comma>,
 }
 
@@ -258,6 +277,7 @@ static BUILTINS: &[(&str, &str)] = &[
 #[derive(Debug)]
 struct KernelMeta {
     info: RawKernelInfo,
+    has_vulkan_version: bool,
     thread_lits: Punctuated<LitInt, Comma>,
     builtins: HashSet<&'static str>,
     outer_args: Punctuated<TypedArg, Comma>,
@@ -276,24 +296,24 @@ impl KernelMeta {
         };
         let mut info = RawKernelInfo {
             name: kernel.ident.to_string(),
-            target: String::new(),
+            vulkan_version: VulkanVersion::default(),
             capabilities: Vec::new(),
             extensions: Vec::new(),
             safety,
             slice_infos: Vec::new(),
             push_infos: Vec::new(),
+            num_push_words: 0,
             elementwise: false,
             threads: Vec::new(),
             spirv: None,
         };
+        let mut has_vulkan_version = false;
         let mut thread_lits = Punctuated::<LitInt, Comma>::new();
         for attr in kernel_attr.attr.iter() {
             let attr_string = attr.ident.to_string();
-            if let Some(target) = attr.target.as_ref() {
-                if !info.target.is_empty() {
-                    return Err(Error::new_spanned(&attr.ident, "can only have one target"));
-                }
-                info.target = target.target.value();
+            if let Some(vulkan) = attr.vulkan.as_ref() {
+                info.vulkan_version = vulkan.vulkan_version()?;
+                has_vulkan_version = true;
             } else if attr_string == "elementwise" {
                 info.elementwise = true;
             } else if let Some(threads) = attr.threads.as_ref() {
@@ -349,36 +369,6 @@ impl KernelMeta {
         let mut push_consts = Vec::<(ScalarType, TypedArg)>::new();
         let mut set_lit = LitInt::new("0", Span::call_site());
         let mut binding = 0;
-
-        /*
-        fn add_slice_arg(ident: &Ident, mut_token: Option<&Mut>, elem_ty: &Ident, elementwise: bool, binding: &mut usize, set_lit: &mut LitInt) -> Result<(SliceInfo, TypedArg, TypedArg)> {
-            let elem_string = elem_ty.to_string();
-            let scalar_type = ScalarType::from_str(&elem_string)
-                .map_err(|_| Error::new_spanned(&elem_ty, "expected a scalar"))?;
-            let mutability = if mut_token.is_some() {
-                Mutability::Mutable
-            } else {
-                Mutability::Immutable
-            };
-            let slice_info = SliceInfo {
-                name: ident.to_string(),
-                scalar_type,
-                mutability,
-                elementwise,
-            };
-            set_lit.set_span(ident.span());
-            let binding_lit = LitInt::new(&binding.to_string(), ident.span());
-            let outer_arg = parse_quote! {
-                #[spirv(descriptor_set = #set_lit, binding = #binding_lit, storage_buffer)]
-                #ident: & #mut_token [#elem_ty]
-            };
-            *binding += 1;
-            let inner_arg = parse_quote! {
-                #ident: & #mut_token #elem_ty
-            };
-            Ok((slice_info, outer_arg, inner_arg))
-        }*/
-
         for arg in kernel.args.iter() {
             let arg_ident = &arg.ident;
             let ident_string = arg_ident.to_string();
@@ -651,6 +641,7 @@ impl KernelMeta {
             });
             offset += scalar_type.size() as u32;
         }
+        info.num_push_words = offset / 4 + if offset % 4 != 0 { 1 } else { 0 };
         let mut push_consts = push_consts
             .into_iter()
             .rev()
@@ -673,6 +664,7 @@ impl KernelMeta {
         };
         Ok(Self {
             info,
+            has_vulkan_version,
             thread_lits,
             builtins,
             outer_args,
@@ -859,8 +851,8 @@ fn kernel_impl(attr: TokenStream, item: TokenStream) -> Result<TokenStream> {
         let bytes = fs::read(&module_path).into_syn_result(span)?;
         let mut raw_module: RawModule = bincode::deserialize(&bytes).into_syn_result(span)?;
         let mut info = meta.info;
-        if info.target.is_empty() {
-            info.target = raw_module.target.clone();
+        if !meta.has_vulkan_version {
+            info.vulkan_version = raw_module.vulkan_version;
         }
         raw_module.kernels.insert(info.name.clone(), Arc::new(info));
         let bytes = bincode::serialize(&raw_module).into_syn_result(span)?;
@@ -879,34 +871,34 @@ pub fn kernel(attr: TokenStream, item: TokenStream) -> TokenStream {
 }
 
 #[derive(Parse, Debug)]
-struct ModuleArgs {
+struct ModuleAttributes {
     #[call(Punctuated::parse_terminated)]
-    args: Punctuated<ModuleArg, Comma>,
+    attr: Punctuated<ModuleAttribute, Comma>,
 }
 
 #[derive(Parse, Debug)]
-struct ModuleArg {
+struct ModuleAttribute {
     ident: Ident,
-    #[allow(unused)]
-    #[paren]
-    paren: Paren,
-    #[inside(paren)]
-    #[parse_if(ident.to_string() == "target")]
-    target: Option<LitStr>,
-    #[inside(paren)]
+    #[parse_if(ident.to_string() == "vulkan")]
+    vulkan: Option<Vulkan>,
     #[parse_if(ident.to_string() == "dependency")]
     dependency: Option<Dependency>,
-    #[inside(paren)]
     #[parse_if(ident.to_string() == "attr")]
-    attr: Option<TokenStream2>,
+    attr: Option<ModuleAttr>,
 }
 
 #[derive(Parse, Debug)]
 struct Dependency {
+    #[allow(unused)]
+    #[paren]
+    paren: Paren,
+    #[inside(paren)]
     name: LitStr,
+    #[inside(paren)]
     #[allow(unused)]
     comma: Comma,
-    #[call(Punctuated::parse_separated_nonempty)]
+    #[inside(paren)]
+    #[call(Punctuated::parse_terminated)]
     key_values: Punctuated<DependencyKeyValue, Comma>,
 }
 
@@ -1000,8 +992,17 @@ impl DependencyValueList {
     }
 }
 
+#[derive(Parse, Debug)]
+struct ModuleAttr {
+    #[allow(unused)]
+    #[paren]
+    paren: Paren,
+    #[inside(paren)]
+    tokens: TokenStream2,
+}
+
 #[cfg(feature = "build")]
-fn build_module(module_args: ModuleArgs, module: &ItemMod, invocation_hash: u64) -> Result<()> {
+fn build_module(module_attr: ModuleAttributes, module: &ItemMod, invocation_hash: u64) -> Result<()> {
     use std::process::Command;
 
     let source_path = proc_macro::Span::call_site().source_file().path();
@@ -1013,10 +1014,10 @@ fn build_module(module_args: ModuleArgs, module: &ItemMod, invocation_hash: u64)
     let builder_dir = krnl_dir.join("builder");
 
     let toolchain_toml = r#"[toolchain]
-channel = "nightly-2022-05-29"
+channel = "nightly-2022-07-04"
 components = ["rust-src", "rustc-dev", "llvm-tools-preview"]"#;
 
-    if !builder_dir.exists() {
+    if true /* !builder_dir.exists() */ {
         if !builder_dir.exists() {
             fs::create_dir(&builder_dir).into_syn_result(span)?;
         }
@@ -1037,16 +1038,21 @@ bincode = "1.3.3"
         if !src_dir.exists() {
             fs::create_dir(&src_dir).into_syn_result(span)?;
         }
-        let main = r#"use krnl_builder::ModuleBuilder;
+        let main = r#"use krnl_builder::{ModuleBuilder, kernel::VulkanVersion};
 use std::str::FromStr;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = std::env::args().collect::<Vec<_>>();
     let crate_path = &args[1];
-    let target = &args[2];
-    let hash = u64::from_str(&args[3])?;
-    let module_path = &args[4];
-    let module = ModuleBuilder::new(crate_path, target)
+    let vulkan_version = VulkanVersion {
+        major: u32::from_str(&args[2])?,
+        minor: u32::from_str(&args[3])?,
+        patch: u32::from_str(&args[4])?,
+    };
+    let hash = u64::from_str(&args[5])?;
+    let module_path = &args[6];
+    let module = ModuleBuilder::new(crate_path)
+        .vulkan(vulkan_version)
         .build()?;
     let mut bytes = hash.to_be_bytes().to_vec();
     bincode::serialize_into(&mut bytes, &module.__raw())?;
@@ -1078,7 +1084,6 @@ crate-type = ["dylib"]
 "#,
     );
 
-    let mut target = None;
     let mut tokens = quote! {
         #![cfg_attr(
             target_arch = "spirv",
@@ -1089,27 +1094,27 @@ crate-type = ["dylib"]
         )]
     };
 
+    let mut vulkan_version = None;
     let mut has_krnl_core_dep = false;
-
-    for arg in module_args.args.iter() {
-        if let Some(target_arg) = arg.target.as_ref() {
-            if target.is_some() {
-                return Err(Error::new_spanned(&arg.ident, "can only have one target"));
-            }
-            target.replace(target_arg.value());
-        } else if let Some(dep) = arg.dependency.as_ref() {
+    for attr in module_attr.attr.iter() {
+        if let Some(vulkan) = attr.vulkan.as_ref() {
+            vulkan_version.replace(vulkan.vulkan_version()?);
+        } else if let Some(dep) = attr.dependency.as_ref() {
             if dep.name.value() == "krn-core" {
                 has_krnl_core_dep = true;
             }
             manifest.push_str(&dep.to_toml_string()?);
             manifest.push('\n');
-        } else if let Some(attr) = arg.attr.as_ref() {
+        } else if let Some(attr) = attr.attr.as_ref() {
+            let attr = &attr.tokens;
             quote! {
                 #![#attr]
             }
             .to_tokens(&mut tokens);
         }
     }
+    let vulkan_version = vulkan_version
+        .ok_or_else(|| Error::new(span, "expected a default vulkan version, ie `vulkan(1, 1)`"))?;
     if !has_krnl_core_dep {
         let krnl_core_path = PathBuf::from("krnl-core")
             .canonicalize()
@@ -1130,8 +1135,7 @@ crate-type = ["dylib"]
 
     fs::write(crate_dir.join("Cargo.toml"), manifest).into_syn_result(span)?;
 
-    let target = target
-        .ok_or_else(|| Error::new(span, "expected a default target, ie target(\"vulkan1.1\")"))?;
+
 
     let src_dir = crate_dir.join("src");
     if !src_dir.exists() {
@@ -1155,7 +1159,9 @@ crate-type = ["dylib"]
             "--release",
             "--",
             &*crate_dir.to_string_lossy(),
-            &target,
+            &vulkan_version.major.to_string(),
+            &vulkan_version.minor.to_string(),
+            &vulkan_version.patch.to_string(),
             &invocation_hash.to_string(),
             &*module_path.to_string_lossy(),
         ])
@@ -1174,7 +1180,7 @@ crate-type = ["dylib"]
 
 fn module_impl(attr: TokenStream, item: TokenStream) -> Result<TokenStream> {
     #[allow(unused)]
-    let module_args: ModuleArgs = syn::parse(attr.clone())?;
+    let module_attr: ModuleAttributes = syn::parse(attr.clone())?;
     let mut module: ItemMod = syn::parse(item.clone())?;
     let attr = TokenStream2::from(attr);
     let item = TokenStream2::from(item);
@@ -1186,68 +1192,49 @@ fn module_impl(attr: TokenStream, item: TokenStream) -> Result<TokenStream> {
     let invocation_hash = get_hash(&invocation);
     #[cfg(feature = "build")]
     {
-        build_module(module_args, &module, invocation_hash)?;
-    }
-    let import_krnl = if crate_is_krnl() {
-        Some(quote! {
-            #[cfg(not(doc))]
-            mod krnl {
-                pub use crate::*;
-            }
-        })
-    } else {
-        None
-    };
-    let module_name = module.ident.to_string();
-    let panic_msg = format!("module `{module_name}` has been modified, rebuild with `cargo +nightly build --features krnl/build`");
-    let module_fn_body = quote! {
-        #import_krnl
-        use krnl::{bincode, kernel::Module, krnl_core::__private::raw_module::RawModule};
-        use ::std::sync::Arc;
-
-        static BYTES: &[u8] = {
-            let bytes = include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/.krnl/modules/", file!(), "/", #module_name, ".bincode"));
-            let hash_bytes = [
-                bytes[0],
-                bytes[1],
-                bytes[2],
-                bytes[3],
-                bytes[4],
-                bytes[5],
-                bytes[6],
-                bytes[7],
-            ];
-            let hash = u64::from_be_bytes(hash_bytes);
-            if hash != #invocation_hash {
-                panic!(#panic_msg);
-            }
-            bytes.as_slice()
-        };
-        let raw_module: RawModule = bincode::deserialize(&BYTES[8..])?;
-        Ok(Module::__from_raw(Arc::new(raw_module)))
-    };
-    if let Some(content) = module.content.as_mut() {
-        if crate_is_krnl() {
-            content.1.push(parse_quote! {
-                #[cfg(not(test))]
-                pub fn module() -> anyhow::Result<crate::kernel::Module> {
-                    #module_fn_body
-                }
-            });
-            content.1.push(parse_quote! {
-                #[cfg(test)]
-                pub fn module() -> ::krnl::anyhow::Result<::krnl::kernel::Module> {
-                    #module_fn_body
-                }
-            });
-        } else {
-            content.1.push(parse_quote! {
-                pub fn module() -> ::krnl::anyhow::Result<::krnl::kernel::Module> {
-                    #module_fn_body
-                }
-            });
+        if std::env::var("CARGO_PRIMARY_PACKAGE").is_ok() {
+            build_module(module_attr, &module, invocation_hash)?;
         }
     }
+    let module_name = module.ident.to_string();
+    let panic_msg = format!("module `{module_name}` has been modified, rebuild with `cargo +nightly build --features krnl/build`");
+    let krnl = if crate_is_krnl() {
+        quote! {
+            crate
+        }
+    } else {
+        quote! {
+            ::krnl
+        }
+    };
+    let module_fn = parse_quote! {
+        pub fn module() -> #krnl::anyhow::Result<#krnl::kernel::Module> {
+            use #krnl::{bincode, kernel::Module, krnl_core::__private::raw_module::RawModule};
+            use ::std::sync::Arc;
+
+            static BYTES: &[u8] = {
+                let bytes = include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/.krnl/modules/", file!(), "/", #module_name, ".bincode"));
+                let hash_bytes = [
+                    bytes[0],
+                    bytes[1],
+                    bytes[2],
+                    bytes[3],
+                    bytes[4],
+                    bytes[5],
+                    bytes[6],
+                    bytes[7],
+                ];
+                let hash = u64::from_be_bytes(hash_bytes);
+                if hash != #invocation_hash {
+                    panic!(#panic_msg);
+                }
+                bytes.as_slice()
+            };
+            let raw_module: RawModule = bincode::deserialize(&BYTES[8..])?;
+            Ok(Module::__from_raw(Arc::new(raw_module)))
+        }
+    };
+    module.content.as_mut().expect("module.context.is_some()").1.push(module_fn);
     Ok(module.to_token_stream().into())
 }
 
