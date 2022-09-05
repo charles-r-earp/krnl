@@ -2,6 +2,8 @@
 
 #[cfg(not(target_arch = "spirv"))]
 pub mod kernel;
+#[cfg(not(target_arch = "spirv"))]
+pub mod version;
 pub mod scalar;
 
 #[doc(hidden)]

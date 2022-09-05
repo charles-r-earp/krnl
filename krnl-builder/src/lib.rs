@@ -1,6 +1,7 @@
 use anyhow::{format_err, bail};
 use krnl_types::{
-    kernel::{Module, VulkanVersion},
+    version::Version,
+    kernel::Module,
     __private::raw_module::{RawModule, Spirv},
 };
 use spirv::Capability;
@@ -16,11 +17,13 @@ use std::{
 
 #[doc(inline)]
 pub use krnl_types::kernel;
+#[doc(inline)]
+pub use krnl_types::version;
 
 type Result<T, E = anyhow::Error> = std::result::Result<T, E>;
 
-fn target_from_version(vulkan_version: VulkanVersion) -> String {
-    let VulkanVersion {
+fn target_from_version(vulkan_version: Version) -> String {
+    let Version {
         major,
         minor,
         patch
@@ -34,7 +37,7 @@ fn target_from_version(vulkan_version: VulkanVersion) -> String {
 
 pub struct ModuleBuilder {
     crate_path: PathBuf,
-    vulkan_version: VulkanVersion,
+    vulkan_version: Option<Version>,
 }
 
 impl ModuleBuilder {
@@ -42,16 +45,19 @@ impl ModuleBuilder {
         let crate_path = crate_path.as_ref().to_owned();
         ModuleBuilder {
             crate_path,
-            vulkan_version: VulkanVersion::default(),
+            vulkan_version: None,
         }
     }
-    pub fn vulkan(mut self, vulkan_version: VulkanVersion) -> Self {
-        self.vulkan_version = vulkan_version;
+    pub fn vulkan(mut self, vulkan_version: Version) -> Self {
+        self.vulkan_version.replace(vulkan_version);
         self
     }
     pub fn build(self) -> Result<Module> {
         let crate_path = self.crate_path.canonicalize()?;
-        let target = target_from_version(self.vulkan_version);
+        let vulkan_version = self.vulkan_version.ok_or_else(|| {
+            format_err!("No vulkan version specified! Use `.vulkan()` to set the version of vulkan to use, for example `.vulkan(Version::from_major_minor(1, 1))`.")
+        })?;
+        let target = target_from_version(vulkan_version);
         let crate_path_hash = {
             let mut h = DefaultHasher::new();
             crate_path.hash(&mut h);
@@ -75,7 +81,7 @@ impl ModuleBuilder {
         let saved_module_path = saved_modules_dir.join(&name_with_hash).with_extension("bincode");
         let raw_module = RawModule {
             name,
-            vulkan_version: self.vulkan_version,
+            vulkan_version,
             kernels: Default::default(),
         };
         let saved_module: Option<RawModule> = if saved_module_path.exists() {
@@ -150,7 +156,7 @@ impl ModuleBuilder {
 
 #[derive(Debug, PartialEq, Eq, Hash)]
 struct CompileOptions {
-    vulkan_version: VulkanVersion,
+    vulkan_version: Version,
     capabilities: Vec<Capability>,
     extensions: Vec<String>,
 }

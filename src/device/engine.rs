@@ -1,5 +1,5 @@
 #![allow(unused)]
-use krnl_types::{__private::raw_module::{RawKernelInfo, Mutability}, kernel::{VulkanVersion, KernelInfo}};
+use krnl_types::{__private::raw_module::{RawKernelInfo, Mutability}, kernel::KernelInfo, version::Version};
 use crate::{device::DeviceOptions, scalar::Scalar};
 use anyhow::{format_err, Result};
 use crossbeam_channel::{bounded, Receiver, Sender};
@@ -23,6 +23,7 @@ use std::{
 };
 use dashmap::DashMap;
 use vulkano::{
+    Version as VulkanoVersion,
     buffer::{
         cpu_access::ReadLock,
         cpu_pool::CpuBufferPoolChunk,
@@ -49,7 +50,7 @@ use vulkano::{
         physical::{MemoryType, PhysicalDevice, PhysicalDeviceType, QueueFamily},
         Device, DeviceCreateInfo, DeviceExtensions, DeviceOwned, Features, Queue, QueueCreateInfo,
     },
-    instance::{Instance, InstanceCreateInfo, InstanceCreationError, InstanceExtensions, Version},
+    instance::{Instance, InstanceCreateInfo, InstanceCreationError, InstanceExtensions, Version as InstanceVersion},
     memory::{
         pool::StdMemoryPool, DeviceMemory, DeviceMemoryAllocationError, MappedDeviceMemory,
         MemoryAllocateInfo,
@@ -90,49 +91,31 @@ mod molten {
 #[cfg(any(target_os = "ios", target_os = "macos"))]
 use molten::AshMoltenLoader;
 
-struct Backend {
-    instance: Arc<Instance>,
-    engines: Vec<Mutex<Weak<Engine>>>,
-}
-
-impl Backend {
-    fn get_or_try_init() -> Result<&'static Self, InstanceCreationError> {
-        static BACKEND: OnceCell<Backend> = OnceCell::new();
-        BACKEND.get_or_try_init(|| {
-            let engine_name = Some("krnl".to_string());
-            let engine_version = Version {
-                major: u32::from_str(env!("CARGO_PKG_VERSION_MAJOR")).unwrap(),
-                minor: u32::from_str(env!("CARGO_PKG_VERSION_MINOR")).unwrap(),
-                patch: u32::from_str(env!("CARGO_PKG_VERSION_PATCH")).unwrap(),
-            };
-            #[allow(unused_mut)]
-            let mut instance = Instance::new(InstanceCreateInfo {
-                engine_name: engine_name.clone(),
+fn instance() -> Result<Arc<Instance>> {
+    let engine_name = Some("krnl".to_string());
+    let engine_version = InstanceVersion::from_str(env!("CARGO_PKG_VERSION"))?;
+    #[allow(unused_mut)]
+    let mut instance = Instance::new(InstanceCreateInfo {
+        engine_name: engine_name.clone(),
+        engine_version,
+        enumerate_portability: true,
+        .. InstanceCreateInfo::default()
+    });
+    #[cfg(any(target_os = "ios", target_os = "macos"))]
+    {
+        use vulkano::instance::loader::FunctionPointers;
+        if instance.is_err() {
+            let info = InstanceCreateInfo {
+                engine_name,
                 engine_version,
+                function_pointers: Some(FunctionPointers::new(Box::new(AshMoltenLoader))),
                 enumerate_portability: true,
-                .. InstanceCreateInfo::default()
-            });
-            #[cfg(any(target_os = "ios", target_os = "macos"))]
-            {
-                use vulkano::instance::loader::FunctionPointers;
-                if instance.is_err() {
-                    let info = InstanceCreateInfo {
-                        engine_name,
-                        engine_version,
-                        function_pointers: Some(FunctionPointers::new(Box::new(AshMoltenLoader))),
-                        enumerate_portability: true,
-                        ..InstanceCreateInfo::default()
-                    };
-                    instance = Instance::new(info);
-                }
-            }
-            let instance = instance?;
-            let engines = PhysicalDevice::enumerate(&instance)
-                .map(|_| Mutex::default())
-                .collect();
-            Ok(Self { instance, engines })
-        })
+                ..InstanceCreateInfo::default()
+            };
+            instance = Instance::new(info);
+        }
     }
+    Ok(instance?)
 }
 
 fn spirv_capability_to_vulkano_capability(input: Capability) -> Result<VulkanoCapability> {
@@ -243,19 +226,15 @@ pub(crate) struct Engine {
 
 impl Engine {
     fn new(index: usize, options: &DeviceOptions) -> Result<Arc<Self>, anyhow::Error> {
-        let backend = Backend::get_or_try_init()?;
+        let instance = instance()?;
         let physical_device =
-            PhysicalDevice::from_index(&backend.instance, index).ok_or_else(|| {
+            PhysicalDevice::from_index(&instance, index).ok_or_else(|| {
                 format_err!(
                     "Cannot create device at index {}, only {} devices!",
                     index,
-                    backend.engines.len()
+                    PhysicalDevice::enumerate(&instance).len(),
                 )
             })?;
-        let mut engine_guard = backend.engines[index].lock();
-        if let Some(engine) = Weak::upgrade(&engine_guard) {
-            return Ok(engine);
-        }
         let compute_family = get_compute_family(&physical_device)?;
         let device_extensions = DeviceExtensions::none();
         let optimal_device_features = capabilites_to_features(&options.optimal_capabilities);
@@ -275,27 +254,25 @@ impl Engine {
         let buffer_allocator = BufferAllocator::new(device.clone())?;
         let kernel_cache_map = KernelCacheMap::new(device.clone());
         let runner = Runner::new(queue)?;
-        let engine = Arc::new(Self {
+        Ok(Arc::new(Self {
             device,
             buffer_allocator,
             kernel_cache_map,
             runner,
-        });
-        *engine_guard = Arc::downgrade(&engine);
-        Ok(engine)
+        }))
     }
     pub(crate) fn index(&self) -> usize {
         self.device.physical_device().index()
     }
-    pub(crate) fn vulkan_version(&self) -> VulkanVersion {
+    pub(crate) fn vulkan_version(&self) -> Version {
         let version = self.device.instance().api_version();
-        VulkanVersion {
+        Version {
             major: version.major,
             minor: version.minor,
             patch: version.patch,
         }
     }
-    pub(crate) fn supports_vulkan_version(&self, vulkan_version: VulkanVersion) -> bool {
+    pub(crate) fn supports_vulkan_version(&self, vulkan_version: Version) -> bool {
         vulkan_version <= self.vulkan_version()
     }
     pub(crate) fn enabled_capabilities(&self) -> impl Iterator<Item=Capability> {
@@ -481,8 +458,11 @@ impl DeviceBufferInner {
     fn start(&self) -> DeviceSize {
         self.buffer_start as DeviceSize
     }
-    pub(crate) fn offset_pad(&self) -> u32 {
-        ((self.offset as u32) << 8) | (self.pad as u32)
+    pub(crate) fn offset(&self) -> u8 {
+        self.offset
+    }
+    pub(crate) fn pad(&self) -> u8 {
+        self.pad
     }
 }
 
@@ -526,7 +506,11 @@ impl DeviceBuffer {
             .physical_device()
             .properties()
             .min_storage_buffer_offset_alignment as u32;
-        let pad = len % align;
+        let pad = if len >= align {
+            len % align
+        } else {
+            align - len
+        };
         let buffer_len = len + pad;
         let buffer = UnsafeBuffer::new(
             device,
@@ -536,12 +520,13 @@ impl DeviceBuffer {
                 ..Default::default()
             },
         )?;
-        unsafe { buffer.bind_memory(alloc.memory(), 0)? };
+        let buffer_start = alloc.block.start;
+        unsafe { buffer.bind_memory(alloc.memory(), buffer_start as DeviceSize)? };
         let inner = Arc::new(DeviceBufferInner {
             chunk: alloc.chunk.clone(),
             buffer,
             usage,
-            buffer_start: 0,
+            buffer_start,
             len,
             offset: 0,
             pad: pad as u8,
@@ -843,8 +828,9 @@ impl KernelCache {
     fn new(device: Arc<Device>, info: KernelInfo) -> Result<Arc<Self>> {
         use vulkano::descriptor_set::layout::DescriptorType;
         let kernel_info = info.__info();
+        let slice_infos = &kernel_info.slice_infos;
         let vulkan_version = &kernel_info.vulkan_version;
-        let version = Version {
+        let version = VulkanoVersion {
             major: vulkan_version.major,
             minor: vulkan_version.minor,
             patch: vulkan_version.patch,
@@ -853,19 +839,25 @@ impl KernelCache {
             compute: true,
             .. ShaderStages::none()
         };
-        let storage_write = kernel_info.slice_infos.iter()
+        let descriptor_requirements = slice_infos.iter()
             .enumerate()
-            .filter(|(_, x)| x.mutability.is_mutable())
-            .map(|(i, _)| i as u32)
-            .collect();
-        let descriptor_count = kernel_info.slice_infos.len() as u32;
-        let descriptor_requirements = [((0, 0), DescriptorRequirements {
-            descriptor_types: vec![DescriptorType::StorageBuffer],
-            descriptor_count,
-            stages,
-            storage_write,
-            .. DescriptorRequirements::default()
-        })].into_iter().collect();
+            .map(|(i, slice_info)| {
+                let set = 0u32;
+                let binding = i as u32;
+                let storage_write = if slice_info.mutability.is_mutable() {
+                    Some(binding)
+                } else {
+                    None
+                };
+                let descriptor_requirements = DescriptorRequirements {
+                    descriptor_types: vec![DescriptorType::StorageBuffer],
+                    descriptor_count: 1,
+                    stages,
+                    storage_write: storage_write.into_iter().collect(),
+                    .. DescriptorRequirements::default()
+                };
+                ((set, binding), descriptor_requirements)
+            }).collect::<HashMap<_, _>>();
         let push_constant_range = if kernel_info.num_push_words > 0 {
             Some(PushConstantRange {
                 stages,
@@ -898,13 +890,19 @@ impl KernelCache {
                 [(kernel_info.name.clone(), ExecutionModel::GLCompute, entry_point_info)],
             )?
         };
-        let descriptor_set_layout_binding = DescriptorSetLayoutBinding {
-            descriptor_count,
-            stages,
-            .. DescriptorSetLayoutBinding::descriptor_type(DescriptorType::StorageBuffer)
-        };
+        let bindings = slice_infos.iter()
+            .enumerate()
+            .map(|(i, slice_info)| {
+                let descriptor_set_layout_binding = DescriptorSetLayoutBinding {
+                    descriptor_count: 1,
+                    stages,
+                    .. DescriptorSetLayoutBinding::descriptor_type(DescriptorType::StorageBuffer)
+                };
+                let binding = i as u32;
+                (binding, descriptor_set_layout_binding)
+            }).collect();
         let descriptor_set_layout_create_info = DescriptorSetLayoutCreateInfo {
-            bindings: [(0, descriptor_set_layout_binding)].into_iter().collect(),
+            bindings,
             .. DescriptorSetLayoutCreateInfo::default()
         };
         let descriptor_set_layout = DescriptorSetLayout::new(

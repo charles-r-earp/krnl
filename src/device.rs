@@ -22,6 +22,11 @@ pub mod error {
 }
 use error::*;
 
+pub(crate) mod future {
+    #[cfg(feature = "device")]
+    pub(crate) use super::engine::HostBufferFuture;
+}
+
 mod options {
     use super::*;
 

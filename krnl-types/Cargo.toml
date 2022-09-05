@@ -7,7 +7,7 @@ publish = false
 
 [target."cfg(not(target_arch = \"spirv\"))".dependencies]
 num-traits = "0.2.14"
-half = { git = "https://github.com/starkat99/half-rs", features = ["num-traits"], optional = true }
+half = { git = "https://github.com/starkat99/half-rs", features = ["num-traits", "bytemuck", "serde"], optional = true }
 bytemuck = "1.4.1"
 spirv = { version = "0.2.0", features = ["serialize", "deserialize"] }
 serde = { version = "1.0.143", features = ["derive", "rc"] }
@@ -16,7 +16,7 @@ derive_more = { version = "0.99.11", default-features = false, features = ["disp
 
 [target."cfg(target_arch = \"spirv\")".dependencies]
 num-traits = { version = "0.2.14", default-features = false }
-half = { git = "https://github.com/starkat99/half-rs", default-features = false, features = ["num-traits"], optional = true }
+half = { git = "https://github.com/starkat99/half-rs", default-features = false, features = ["num-traits", "bytemuck"], optional = true }
 
 [features]
 half = ["dep:half"]

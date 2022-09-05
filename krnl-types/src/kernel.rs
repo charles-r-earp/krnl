@@ -1,7 +1,5 @@
 use crate::__private::raw_module::{RawKernelInfo, RawModule};
 use std::sync::Arc;
-use serde::{Serialize, Deserialize};
-
 pub mod error {
     use super::*;
 
@@ -13,33 +11,6 @@ pub mod error {
     }
 }
 use error::*;
-
-#[derive(Clone, Copy, Eq, PartialEq, PartialOrd, Ord, Hash, Serialize, Deserialize, Debug)]
-pub struct VulkanVersion {
-    pub major: u32,
-    pub minor: u32,
-    pub patch: u32,
-}
-
-impl VulkanVersion {
-    pub fn from_major_minor(major: u32, minor: u32) -> Self {
-        Self {
-            major,
-            minor,
-            patch: 0,
-        }
-    }
-}
-
-impl Default for VulkanVersion {
-    fn default() -> Self {
-        Self {
-            major: 1,
-            minor: 0,
-            patch: 0,
-        }
-    }
-}
 
 #[derive(Debug)]
 pub struct Module {

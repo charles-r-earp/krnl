@@ -23,7 +23,7 @@ num-traits = "0.2.14"
 half = { git = "https://github.com/starkat99/half-rs", default-features = false, features = ["num-traits"], optional = true }
 once_cell = { version = "1.13.0", default-features = false, features = ["std", "alloc"] }
 parking_lot = "0.12.1"
-anyhow = "1.0.59"
+anyhow = { version = "1.0.59", features = ["backtrace"] }
 crossbeam-channel = { version = "0.5.6", optional = true }
 futures-util = { version = "0.3.21", default-features = false }
 blocker = { version = "0.1.2", features = ["thread_yield"] }

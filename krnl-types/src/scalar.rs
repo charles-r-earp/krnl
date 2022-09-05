@@ -4,7 +4,7 @@ use bytemuck::Pod;
 use derive_more::Display;
 #[cfg(feature = "half")]
 use half::{bf16, f16};
-use num_traits::{NumAssign, NumCast};
+use num_traits::{NumAssign, NumCast, FromPrimitive};
 #[cfg(not(target_arch = "spirv"))]
 use serde::{Deserialize, Serialize};
 #[cfg(not(target_arch = "spirv"))]
@@ -165,21 +165,64 @@ impl ScalarElem {
         match self {
             U8(_) => T::U8,
             I8(_) => T::I8,
-            /*U16(u16),
-            I16(i16),
+            U16(_) => T::U16,
+            I16(_) => T::I16,
             #[cfg(feature = "half")]
-            F16(f16),
+            F16(_) => T::F16,
             #[cfg(feature = "half")]
-            BF16(bf16),*/
+            BF16(_) => T::BF16,
             U32(_) => T::U32,
-            /*I32(i32),
-            F32(f32),
-            U64(u64),
-            I64(i64),
-            F64(f64),*/
-            _ => todo!()
+            I32(_) => T::I32,
+            F32(_) => T::F32,
+            U64(_) => T::U64,
+            I64(_) => T::I64,
+            F64(_) => T::F64,
         }
     }
+    /*
+    pub fn bitcast(&self, scalar_type: ScalarType) -> Self {
+        use ScalarType as T;
+        use ScalarElem::*;
+        fn bcs<X: Scalar>(x: &X, s: ScalarType) -> ScalarElem {
+            fn bc<X: Scalar, Y: Scalar>(x: &X) -> Y {
+                *bytemuck::cast_ref(x)
+            }
+            match s {
+                T::U8 => U8(bc(x)),
+                T::I8 => I8(bc(x)),
+                T::U16 => U16(bc(x)),
+                T::I16 => I16(bc(x)),
+                #[cfg(feature = "half")]
+                T::F16 => F16(bc(x)),
+                #[cfg(feature = "half")]
+                T::BF16 => BF16(bc(x)),
+                T::U32 => U32(bc(x)),
+                T::I32 => I32(bc(x)),
+                T::F32 => F32(bc(x)),
+                T::U64 => U64(bc(x)),
+                T::I64 => I64(bc(x)),
+                T::F64 => F64(bc(x)),
+            }
+        }
+        let s = scalar_type;
+        match self {
+            U8(x) => bcs(x, s),
+            U8(x) => bcs(x, s),
+            I8(x) => bcs(x, s),
+            U16(x) => bcs(x, s),
+            I16(x) => bcs(x, s),
+            #[cfg(feature = "half")]
+            F16(x) => bcs(x, s),
+            #[cfg(feature = "half")]
+            BF16(x) => bcs(x, s),
+            U32(x) => bcs(x, s),
+            I32(x) => bcs(x, s),
+            F32(x) => bcs(x, s),
+            U64(x) => bcs(x, s),
+            I64(x) => bcs(x, s),
+            F64(x) => bcs(x, s),
+        }
+    }*/
 }
 
 #[cfg(not(target_arch = "spirv"))]
@@ -274,6 +317,7 @@ pub trait Scalar:
     + 'static
     + Into<ScalarElem>
     + NumCast
+    + FromPrimitive
     + NumAssign
     + Pod
     + Debug
@@ -294,7 +338,7 @@ pub trait Scalar:
 }
 
 #[cfg(target_arch = "spirv")]
-pub trait Scalar: Default + Copy + 'static + NumCast + NumAssign + PartialEq + Sealed {
+pub trait Scalar: Default + Copy + 'static + NumCast + FromPrimitive + NumAssign + PartialEq + Sealed {
     /// The [`ScalarType`] of the scalar.
     fn scalar_type() -> ScalarType;
 }

@@ -1,4 +1,3 @@
-#![cfg_attr(feature = "build", feature(proc_macro_span))]
 #![cfg_attr(not(feature = "build"), allow(dead_code))]
 #![allow(warnings)]
 
@@ -6,7 +5,7 @@ use derive_syn_parse::Parse;
 use krnl_types::{
     __private::raw_module::{Mutability, PushInfo, RawKernelInfo, RawModule, Safety, SliceInfo},
     scalar::ScalarType,
-    kernel::VulkanVersion,
+    version::Version,
 };
 use proc_macro::TokenStream;
 use proc_macro2::{Span, TokenStream as TokenStream2};
@@ -24,7 +23,7 @@ use syn::{
     parse::{Parse, ParseStream},
     parse_quote,
     punctuated::Punctuated,
-    token::{And, Bracket, Colon, Comma, Eq, Fn, Gt, Lt, Mut, Paren, Pound, Pub, Unsafe},
+    token::{And, Bracket, Colon, Colon2, Comma, Eq, Fn, Gt, Lt, Mut, Paren, Pound, Pub, Unsafe},
     Attribute, Block, Error, Ident, ItemMod, LitInt, LitStr, Stmt, Type,
 };
 
@@ -69,18 +68,18 @@ fn get_krnl_path() -> syn::Path {
 
 #[derive(Parse, Debug)]
 struct KernelAttributes {
-    #[call(Punctuated::parse_separated_nonempty)]
+    #[call(Punctuated::parse_terminated)]
     attr: Punctuated<KernelAttribute, Comma>,
 }
 
 #[derive(Parse, Debug)]
 struct KernelAttribute {
     ident: Ident,
-    #[parse_if(ident.to_string() == "vulkan")]
+    #[parse_if(ident == "vulkan")]
     vulkan: Option<Vulkan>,
-    #[parse_if(ident.to_string() == "threads")]
+    #[parse_if(ident == "threads")]
     threads: Option<Threads>,
-    #[parse_if(matches!(ident.to_string().as_str(), "capabilities" | "extensions"))]
+    #[parse_if(ident == "capabilities" || ident == "extensions")]
     features: Option<TargetFeatureList>,
 }
 
@@ -89,25 +88,12 @@ struct Vulkan {
     #[paren]
     paren: Paren,
     #[inside(paren)]
-    #[call(Punctuated::parse_terminated)]
-    version: Punctuated<LitInt, Comma>,
+    version: LitStr,
 }
 
 impl Vulkan {
-    fn vulkan_version(&self) -> Result<VulkanVersion> {
-        if self.version.len() == 0 || self.version.len() > 3 {
-            return Err(Error::new(self.paren.span, "expected `(major, [minor, patch])`"));
-        }
-        let mut vulkan_version = VulkanVersion::default();
-        for (i, lit) in self.version.iter().enumerate() {
-            match i {
-                0 => vulkan_version.major = lit.base10_parse()?,
-                1 => vulkan_version.minor = lit.base10_parse()?,
-                2 => vulkan_version.patch = lit.base10_parse()?,
-                _ => unreachable!(),
-            }
-        }
-        Ok(vulkan_version)
+    fn version(&self) -> Result<Version> {
+        Version::from_str(&self.version.value()).into_syn_result(self.version.span())
     }
 }
 
@@ -117,7 +103,7 @@ struct Threads {
     #[paren]
     paren: Paren,
     #[inside(paren)]
-    #[call(Punctuated::parse_separated_nonempty)]
+    #[call(Punctuated::parse_terminated)]
     threads: Punctuated<LitInt, Comma>,
 }
 
@@ -296,7 +282,7 @@ impl KernelMeta {
         };
         let mut info = RawKernelInfo {
             name: kernel.ident.to_string(),
-            vulkan_version: VulkanVersion::default(),
+            vulkan_version: Version::from_major_minor(0, 0),
             capabilities: Vec::new(),
             extensions: Vec::new(),
             safety,
@@ -312,7 +298,7 @@ impl KernelMeta {
         for attr in kernel_attr.attr.iter() {
             let attr_string = attr.ident.to_string();
             if let Some(vulkan) = attr.vulkan.as_ref() {
-                info.vulkan_version = vulkan.vulkan_version()?;
+                info.vulkan_version = vulkan.version()?;
                 has_vulkan_version = true;
             } else if attr_string == "elementwise" {
                 info.elementwise = true;
@@ -633,7 +619,7 @@ impl KernelMeta {
         }
         push_consts.sort_by_key(|x| x.0.size());
         let mut offset = 0;
-        for (scalar_type, typed_arg) in push_consts.iter() {
+        for (scalar_type, typed_arg) in push_consts.iter().rev() {
             info.push_infos.push(PushInfo {
                 name: typed_arg.ident.to_string(),
                 scalar_type: *scalar_type,
@@ -648,7 +634,7 @@ impl KernelMeta {
             .map(|x| x.1)
             .collect::<Punctuated<_, Comma>>();
         for i in 0..offset % 4 {
-            let field = format_ident!("{}", i);
+            let field = format_ident!("__krnl_pad{}", i);
             push_consts.push(parse_quote! {
                 #field: u8
             });
@@ -876,15 +862,50 @@ struct ModuleAttributes {
     attr: Punctuated<ModuleAttribute, Comma>,
 }
 
+impl ModuleAttributes {
+    fn module_path(&self) -> Option<&ModulePath> {
+        self.attr.iter().find_map(|x| x.path.as_ref())
+    }
+}
+
 #[derive(Parse, Debug)]
 struct ModuleAttribute {
     ident: Ident,
-    #[parse_if(ident.to_string() == "vulkan")]
+    #[parse_if(ident == "path")]
+    path: Option<ModulePath>,
+    #[parse_if(ident == "vulkan")]
     vulkan: Option<Vulkan>,
-    #[parse_if(ident.to_string() == "dependency")]
+    #[parse_if(ident == "dependency")]
     dependency: Option<Dependency>,
-    #[parse_if(ident.to_string() == "attr")]
+    #[parse_if(ident == "attr")]
     attr: Option<ModuleAttr>,
+}
+
+#[derive(Parse, Debug)]
+struct ModulePath {
+    #[allow(unused)]
+    #[paren]
+    paren: Paren,
+    #[inside(paren)]
+    #[call(Punctuated::parse_terminated)]
+    segments: Punctuated<Ident, Colon2>,
+}
+
+impl ModulePath {
+    fn module_name_prefix(&self) -> String {
+        let mut string = String::new();
+        for segment in self.segments.iter() {
+            string.push_str(&format!("{segment}_"));
+        }
+        string
+    }
+    fn file_path(&self) -> PathBuf {
+        let mut path = PathBuf::new();
+        for segment in self.segments.iter() {
+            path.push(segment.to_string());
+        }
+        path
+    }
 }
 
 #[derive(Parse, Debug)]
@@ -972,7 +993,7 @@ struct DependencyValueList {
     #[bracket]
     bracket: Bracket,
     #[inside(bracket)]
-    #[call(Punctuated::parse_separated_nonempty)]
+    #[call(Punctuated::parse_terminated)]
     values: Punctuated<LitStr, Comma>,
 }
 
@@ -1002,21 +1023,16 @@ struct ModuleAttr {
 }
 
 #[cfg(feature = "build")]
-fn build_module(module_attr: ModuleAttributes, module: &ItemMod, invocation_hash: u64) -> Result<()> {
+fn build_module(module_attr: &ModuleAttributes, module: &ItemMod, module_prefix_path: &PathBuf, invocation_hash: u64) -> Result<()> {
     use std::process::Command;
-
-    let source_path = proc_macro::Span::call_site().source_file().path();
     let span = Span::call_site();
     let manifest_dir = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").into_syn_result(span)?);
-    let module_name = module.ident.to_string();
     let krnl_dir = manifest_dir.join("target").join(".krnl");
     fs::create_dir_all(&krnl_dir).into_syn_result(span)?;
     let builder_dir = krnl_dir.join("builder");
-
     let toolchain_toml = r#"[toolchain]
 channel = "nightly-2022-07-04"
 components = ["rust-src", "rustc-dev", "llvm-tools-preview"]"#;
-
     if true /* !builder_dir.exists() */ {
         if !builder_dir.exists() {
             fs::create_dir(&builder_dir).into_syn_result(span)?;
@@ -1038,19 +1054,15 @@ bincode = "1.3.3"
         if !src_dir.exists() {
             fs::create_dir(&src_dir).into_syn_result(span)?;
         }
-        let main = r#"use krnl_builder::{ModuleBuilder, kernel::VulkanVersion};
+        let main = r#"use krnl_builder::{ModuleBuilder, version::Version};
 use std::str::FromStr;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = std::env::args().collect::<Vec<_>>();
     let crate_path = &args[1];
-    let vulkan_version = VulkanVersion {
-        major: u32::from_str(&args[2])?,
-        minor: u32::from_str(&args[3])?,
-        patch: u32::from_str(&args[4])?,
-    };
-    let hash = u64::from_str(&args[5])?;
-    let module_path = &args[6];
+    let vulkan_version = Version::from_str(&args[2])?;
+    let hash = u64::from_str(&args[3])?;
+    let module_path = &args[4];
     let module = ModuleBuilder::new(crate_path)
         .vulkan(vulkan_version)
         .build()?;
@@ -1061,16 +1073,46 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 }"#;
         fs::write(src_dir.join("main.rs"), main).into_syn_result(span)?;
     }
-
+    let module_name_prefix = module_attr.module_path().map_or(String::new(), ModulePath::module_name_prefix);
+    let module_name = module.ident.to_string();
+    let crate_name = format!("{module_name_prefix}{module_name}");
+    let mut tokens = quote! {
+        #![cfg_attr(
+            target_arch = "spirv",
+            no_std,
+            feature(register_attr),
+            register_attr(spirv),
+            deny(warnings),
+        )]
+    };
+    let mut vulkan_version = None;
+    let mut has_krnl_core_dep = false;
+    let mut dependencies = String::new();
+    for attr in module_attr.attr.iter() {
+        if let Some(vulkan) = attr.vulkan.as_ref() {
+            vulkan_version.replace(vulkan.version()?);
+        } else if let Some(dep) = attr.dependency.as_ref() {
+            if dep.name.value() == "krn-core" {
+                has_krnl_core_dep = true;
+            }
+            dependencies.push_str(&dep.to_toml_string()?);
+            dependencies.push('\n');
+        } else if let Some(attr) = attr.attr.as_ref() {
+            let attr = &attr.tokens;
+            quote! {
+                #![#attr]
+            }
+            .to_tokens(&mut tokens);
+        }
+    }
     let crate_dir = krnl_dir
         .join("modules")
-        .join(&source_path)
+        .join(&module_prefix_path)
         .join(&module_name);
     if !crate_dir.exists() {
         fs::create_dir_all(&crate_dir).into_syn_result(span)?;
     }
-
-    let mut manifest = format!("[package]\nname = {module_name:?}");
+    let mut manifest = format!("[package]\nname = {crate_name:?}");
     manifest.push_str(
         r#"
 version = "0.1.0"
@@ -1081,38 +1123,7 @@ publish = false
 crate-type = ["dylib"]
 
 [dependencies]
-"#,
-    );
-
-    let mut tokens = quote! {
-        #![cfg_attr(
-            target_arch = "spirv",
-            no_std,
-            feature(register_attr),
-            register_attr(spirv),
-            deny(warnings),
-        )]
-    };
-
-    let mut vulkan_version = None;
-    let mut has_krnl_core_dep = false;
-    for attr in module_attr.attr.iter() {
-        if let Some(vulkan) = attr.vulkan.as_ref() {
-            vulkan_version.replace(vulkan.vulkan_version()?);
-        } else if let Some(dep) = attr.dependency.as_ref() {
-            if dep.name.value() == "krn-core" {
-                has_krnl_core_dep = true;
-            }
-            manifest.push_str(&dep.to_toml_string()?);
-            manifest.push('\n');
-        } else if let Some(attr) = attr.attr.as_ref() {
-            let attr = &attr.tokens;
-            quote! {
-                #![#attr]
-            }
-            .to_tokens(&mut tokens);
-        }
-    }
+"#);
     let vulkan_version = vulkan_version
         .ok_or_else(|| Error::new(span, "expected a default vulkan version, ie `vulkan(1, 1)`"))?;
     if !has_krnl_core_dep {
@@ -1125,24 +1136,19 @@ crate-type = ["dylib"]
             "krnl-core = {{ path = {krnl_core_path:?}, features = [\"spirv-panic\"] }}\n"
         ));
     }
-
+    manifest.push_str(&dependencies);
     if let Some(content) = module.content.as_ref() {
         for item in content.1.iter() {
             item.to_tokens(&mut tokens);
         }
     }
     let source = tokens.to_string();
-
     fs::write(crate_dir.join("Cargo.toml"), manifest).into_syn_result(span)?;
-
-
-
     let src_dir = crate_dir.join("src");
     if !src_dir.exists() {
         fs::create_dir(&src_dir).into_syn_result(span)?;
     }
     fs::write(src_dir.join("lib.rs"), &source).into_syn_result(span)?;
-
     let _ = Command::new("cargo")
         .arg("fmt")
         .current_dir(&crate_dir)
@@ -1150,7 +1156,7 @@ crate-type = ["dylib"]
     let module_dir = manifest_dir
         .join(".krnl")
         .join("modules")
-        .join(&source_path);
+        .join(&module_prefix_path);
     fs::create_dir_all(&module_dir).into_syn_result(span)?;
     let module_path = module_dir.join(&module_name).with_extension("bincode");
     let status = Command::new("cargo")
@@ -1159,9 +1165,7 @@ crate-type = ["dylib"]
             "--release",
             "--",
             &*crate_dir.to_string_lossy(),
-            &vulkan_version.major.to_string(),
-            &vulkan_version.minor.to_string(),
-            &vulkan_version.patch.to_string(),
+            &vulkan_version.to_string(),
             &invocation_hash.to_string(),
             &*module_path.to_string_lossy(),
         ])
@@ -1184,6 +1188,7 @@ fn module_impl(attr: TokenStream, item: TokenStream) -> Result<TokenStream> {
     let mut module: ItemMod = syn::parse(item.clone())?;
     let attr = TokenStream2::from(attr);
     let item = TokenStream2::from(item);
+    let module_prefix_path = module_attr.module_path().map_or(PathBuf::new(), ModulePath::file_path);
     let invocation = quote! {
         #[module(#attr)]
         #item
@@ -1193,10 +1198,11 @@ fn module_impl(attr: TokenStream, item: TokenStream) -> Result<TokenStream> {
     #[cfg(feature = "build")]
     {
         if std::env::var("CARGO_PRIMARY_PACKAGE").is_ok() {
-            build_module(module_attr, &module, invocation_hash)?;
+            build_module(&module_attr, &module, &module_prefix_path, invocation_hash)?;
         }
     }
     let module_name = module.ident.to_string();
+    let module_prefix_path_string = module_prefix_path.to_string_lossy();
     let panic_msg = format!("module `{module_name}` has been modified, rebuild with `cargo +nightly build --features krnl/build`");
     let krnl = if crate_is_krnl() {
         quote! {
@@ -1211,9 +1217,8 @@ fn module_impl(attr: TokenStream, item: TokenStream) -> Result<TokenStream> {
         pub fn module() -> #krnl::anyhow::Result<#krnl::kernel::Module> {
             use #krnl::{bincode, kernel::Module, krnl_core::__private::raw_module::RawModule};
             use ::std::sync::Arc;
-
             static BYTES: &[u8] = {
-                let bytes = include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/.krnl/modules/", file!(), "/", #module_name, ".bincode"));
+                let bytes = include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/.krnl/modules/", #module_prefix_path_string, "/", #module_name, ".bincode"));
                 let hash_bytes = [
                     bytes[0],
                     bytes[1],

@@ -320,8 +320,15 @@ pub mod builder {
                                 return Err(format_err!("Slice {slice_name:?} is empty!"));
                             }
                         } else {
-                            let buffer = slice.device_buffer().unwrap().inner();
-                            let offset_pad = buffer.offset_pad();
+                            let len = slice.len();
+                            let buffer = slice.device_buffer().unwrap();
+                            let buffer = buffer.inner();
+                            let offset_pad = {
+                                let width = slice_info.scalar_type.size() as u32;
+                                let offset = buffer.offset() as u32 / width;
+                                let pad = buffer.pad() as u32 / width;
+                                (offset << 8) | pad
+                            };
                             let offset = push_infos.iter().find(|x| {
                                 let name = &x.name;
                                 name.starts_with("__krnl") && name.ends_with(&slice_info.name)
