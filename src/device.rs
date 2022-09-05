@@ -1,11 +1,13 @@
+use anyhow::Result;
 use spirv::Capability;
 use std::fmt::{self, Debug};
-use anyhow::Result;
 
 #[cfg(feature = "device")]
 pub(crate) mod engine;
 #[cfg(feature = "device")]
-pub(crate) use engine::{ArcEngine as DeviceBase, DeviceBuffer, DeviceBufferInner, HostBuffer, KernelCache, Compute};
+pub(crate) use engine::{
+    ArcEngine as DeviceBase, Compute, DeviceBuffer, DeviceBufferInner, HostBuffer, KernelCache,
+};
 
 pub mod error {
 

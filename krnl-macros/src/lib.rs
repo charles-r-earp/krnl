@@ -1023,7 +1023,12 @@ struct ModuleAttr {
 }
 
 #[cfg(feature = "build")]
-fn build_module(module_attr: &ModuleAttributes, module: &ItemMod, module_prefix_path: &PathBuf, invocation_hash: u64) -> Result<()> {
+fn build_module(
+    module_attr: &ModuleAttributes,
+    module: &ItemMod,
+    module_prefix_path: &PathBuf,
+    invocation_hash: u64,
+) -> Result<()> {
     use std::process::Command;
     let span = Span::call_site();
     let manifest_dir = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").into_syn_result(span)?);
@@ -1033,7 +1038,9 @@ fn build_module(module_attr: &ModuleAttributes, module: &ItemMod, module_prefix_
     let toolchain_toml = r#"[toolchain]
 channel = "nightly-2022-07-04"
 components = ["rust-src", "rustc-dev", "llvm-tools-preview"]"#;
-    if true /* !builder_dir.exists() */ {
+    if true
+    /* !builder_dir.exists() */
+    {
         if !builder_dir.exists() {
             fs::create_dir(&builder_dir).into_syn_result(span)?;
         }
@@ -1073,7 +1080,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 }"#;
         fs::write(src_dir.join("main.rs"), main).into_syn_result(span)?;
     }
-    let module_name_prefix = module_attr.module_path().map_or(String::new(), ModulePath::module_name_prefix);
+    let module_name_prefix = module_attr
+        .module_path()
+        .map_or(String::new(), ModulePath::module_name_prefix);
     let module_name = module.ident.to_string();
     let crate_name = format!("{module_name_prefix}{module_name}");
     let mut tokens = quote! {
@@ -1123,7 +1132,8 @@ publish = false
 crate-type = ["dylib"]
 
 [dependencies]
-"#);
+"#,
+    );
     let vulkan_version = vulkan_version
         .ok_or_else(|| Error::new(span, "expected a default vulkan version, ie `vulkan(1, 1)`"))?;
     if !has_krnl_core_dep {
@@ -1188,7 +1198,9 @@ fn module_impl(attr: TokenStream, item: TokenStream) -> Result<TokenStream> {
     let mut module: ItemMod = syn::parse(item.clone())?;
     let attr = TokenStream2::from(attr);
     let item = TokenStream2::from(item);
-    let module_prefix_path = module_attr.module_path().map_or(PathBuf::new(), ModulePath::file_path);
+    let module_prefix_path = module_attr
+        .module_path()
+        .map_or(PathBuf::new(), ModulePath::file_path);
     let invocation = quote! {
         #[module(#attr)]
         #item
@@ -1239,7 +1251,12 @@ fn module_impl(attr: TokenStream, item: TokenStream) -> Result<TokenStream> {
             Ok(Module::__from_raw(Arc::new(raw_module)))
         }
     };
-    module.content.as_mut().expect("module.context.is_some()").1.push(module_fn);
+    module
+        .content
+        .as_mut()
+        .expect("module.context.is_some()")
+        .1
+        .push(module_fn);
     Ok(module.to_token_stream().into())
 }
 

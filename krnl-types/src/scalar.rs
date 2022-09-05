@@ -4,7 +4,7 @@ use bytemuck::Pod;
 use derive_more::Display;
 #[cfg(feature = "half")]
 use half::{bf16, f16};
-use num_traits::{NumAssign, NumCast, FromPrimitive};
+use num_traits::{FromPrimitive, NumAssign, NumCast};
 #[cfg(not(target_arch = "spirv"))]
 use serde::{Deserialize, Serialize};
 #[cfg(not(target_arch = "spirv"))]
@@ -160,8 +160,8 @@ pub enum ScalarElem {
 #[cfg(not(target_arch = "spirv"))]
 impl ScalarElem {
     pub fn scalar_type(&self) -> ScalarType {
-        use ScalarType as T;
         use ScalarElem::*;
+        use ScalarType as T;
         match self {
             U8(_) => T::U8,
             I8(_) => T::I8,
@@ -338,7 +338,9 @@ pub trait Scalar:
 }
 
 #[cfg(target_arch = "spirv")]
-pub trait Scalar: Default + Copy + 'static + NumCast + FromPrimitive + NumAssign + PartialEq + Sealed {
+pub trait Scalar:
+    Default + Copy + 'static + NumCast + FromPrimitive + NumAssign + PartialEq + Sealed
+{
     /// The [`ScalarType`] of the scalar.
     fn scalar_type() -> ScalarType;
 }

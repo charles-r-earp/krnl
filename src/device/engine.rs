@@ -1,8 +1,13 @@
 #![allow(unused)]
-use krnl_types::{__private::raw_module::{RawKernelInfo, Mutability}, kernel::KernelInfo, version::Version};
 use crate::{device::DeviceOptions, scalar::Scalar};
 use anyhow::{format_err, Result};
 use crossbeam_channel::{bounded, Receiver, Sender};
+use dashmap::DashMap;
+use krnl_types::{
+    __private::raw_module::{Mutability, RawKernelInfo},
+    kernel::KernelInfo,
+    version::Version,
+};
 use once_cell::sync::OnceCell;
 use parking_lot::{Mutex, RwLock};
 use spirv::Capability;
@@ -10,20 +15,18 @@ use std::{
     collections::{HashMap, VecDeque},
     future::Future,
     iter::{once, Peekable},
+    ops::Deref,
     pin::Pin,
     ptr::NonNull,
+    str::FromStr,
     sync::{
         atomic::{AtomicBool, Ordering},
         Arc, Weak,
     },
     task::{Context, Poll},
     time::{Duration, Instant},
-    str::FromStr,
-    ops::Deref,
 };
-use dashmap::DashMap;
 use vulkano::{
-    Version as VulkanoVersion,
     buffer::{
         cpu_access::ReadLock,
         cpu_pool::CpuBufferPoolChunk,
@@ -45,27 +48,44 @@ use vulkano::{
         },
         CommandBufferLevel, CommandBufferUsage, CopyBufferInfo,
     },
-    descriptor_set::{WriteDescriptorSet, layout::{DescriptorSetLayout, DescriptorType, DescriptorSetLayoutBinding, DescriptorSetLayoutCreateInfo}, pool::{standard::StdDescriptorPoolAlloc, DescriptorPool, DescriptorPoolAlloc, UnsafeDescriptorPool, UnsafeDescriptorPoolCreateInfo, DescriptorSetAllocateInfo}, sys::UnsafeDescriptorSet},
+    descriptor_set::{
+        layout::{
+            DescriptorSetLayout, DescriptorSetLayoutBinding, DescriptorSetLayoutCreateInfo,
+            DescriptorType,
+        },
+        pool::{
+            standard::StdDescriptorPoolAlloc, DescriptorPool, DescriptorPoolAlloc,
+            DescriptorSetAllocateInfo, UnsafeDescriptorPool, UnsafeDescriptorPoolCreateInfo,
+        },
+        sys::UnsafeDescriptorSet,
+        WriteDescriptorSet,
+    },
     device::{
         physical::{MemoryType, PhysicalDevice, PhysicalDeviceType, QueueFamily},
         Device, DeviceCreateInfo, DeviceExtensions, DeviceOwned, Features, Queue, QueueCreateInfo,
     },
-    instance::{Instance, InstanceCreateInfo, InstanceCreationError, InstanceExtensions, Version as InstanceVersion},
+    instance::{
+        Instance, InstanceCreateInfo, InstanceCreationError, InstanceExtensions,
+        Version as InstanceVersion,
+    },
     memory::{
         pool::StdMemoryPool, DeviceMemory, DeviceMemoryAllocationError, MappedDeviceMemory,
         MemoryAllocateInfo,
     },
-    pipeline::{ComputePipeline, PipelineBindPoint, PipelineLayout, layout::{PipelineLayoutCreateInfo, PushConstantRange}},
+    pipeline::{
+        layout::{PipelineLayoutCreateInfo, PushConstantRange},
+        ComputePipeline, PipelineBindPoint, PipelineLayout,
+    },
     shader::{
-        spirv::{ExecutionModel, Capability as VulkanoCapability}, DescriptorRequirements, EntryPointInfo, ShaderExecution,
-        ShaderInterface, ShaderModule, ShaderStages,
+        spirv::{Capability as VulkanoCapability, ExecutionModel},
+        DescriptorRequirements, EntryPointInfo, ShaderExecution, ShaderInterface, ShaderModule,
+        ShaderStages,
     },
     sync::{
         AccessFlags, BufferMemoryBarrier, DependencyInfo, Fence, FenceCreateInfo, PipelineStages,
         Semaphore,
     },
-    DeviceSize,
-    OomError,
+    DeviceSize, OomError, Version as VulkanoVersion,
 };
 
 #[cfg(any(target_os = "ios", target_os = "macos"))]
@@ -99,7 +119,7 @@ fn instance() -> Result<Arc<Instance>> {
         engine_name: engine_name.clone(),
         engine_version,
         enumerate_portability: true,
-        .. InstanceCreateInfo::default()
+        ..InstanceCreateInfo::default()
     });
     #[cfg(any(target_os = "ios", target_os = "macos"))]
     {
@@ -227,14 +247,13 @@ pub(crate) struct Engine {
 impl Engine {
     fn new(index: usize, options: &DeviceOptions) -> Result<Arc<Self>, anyhow::Error> {
         let instance = instance()?;
-        let physical_device =
-            PhysicalDevice::from_index(&instance, index).ok_or_else(|| {
-                format_err!(
-                    "Cannot create device at index {}, only {} devices!",
-                    index,
-                    PhysicalDevice::enumerate(&instance).len(),
-                )
-            })?;
+        let physical_device = PhysicalDevice::from_index(&instance, index).ok_or_else(|| {
+            format_err!(
+                "Cannot create device at index {}, only {} devices!",
+                index,
+                PhysicalDevice::enumerate(&instance).len(),
+            )
+        })?;
         let compute_family = get_compute_family(&physical_device)?;
         let device_extensions = DeviceExtensions::none();
         let optimal_device_features = capabilites_to_features(&options.optimal_capabilities);
@@ -275,14 +294,14 @@ impl Engine {
     pub(crate) fn supports_vulkan_version(&self, vulkan_version: Version) -> bool {
         vulkan_version <= self.vulkan_version()
     }
-    pub(crate) fn enabled_capabilities(&self) -> impl Iterator<Item=Capability> {
+    pub(crate) fn enabled_capabilities(&self) -> impl Iterator<Item = Capability> {
         todo!();
         [].into_iter()
     }
     pub(crate) fn capability_enabled(&self, capability: Capability) -> bool {
         self.enabled_capabilities().any(|x| x == capability)
     }
-    pub(crate) fn enabled_extensions(&self) -> impl Iterator<Item=&'static str> {
+    pub(crate) fn enabled_extensions(&self) -> impl Iterator<Item = &'static str> {
         todo!();
         [].into_iter()
     }
@@ -801,7 +820,9 @@ impl KernelCacheMap {
             module_id: Arc::as_ptr(info.__module()) as usize,
             kernel: info.__info().name.to_string(),
         };
-        let kernel_cache = self.kernels.entry(key)
+        let kernel_cache = self
+            .kernels
+            .entry(key)
             .or_try_insert_with(|| KernelCache::new(self.device.clone(), info))?
             .value()
             .clone();
@@ -837,9 +858,10 @@ impl KernelCache {
         };
         let stages = ShaderStages {
             compute: true,
-            .. ShaderStages::none()
+            ..ShaderStages::none()
         };
-        let descriptor_requirements = slice_infos.iter()
+        let descriptor_requirements = slice_infos
+            .iter()
             .enumerate()
             .map(|(i, slice_info)| {
                 let set = 0u32;
@@ -854,10 +876,11 @@ impl KernelCache {
                     descriptor_count: 1,
                     stages,
                     storage_write: storage_write.into_iter().collect(),
-                    .. DescriptorRequirements::default()
+                    ..DescriptorRequirements::default()
                 };
                 ((set, binding), descriptor_requirements)
-            }).collect::<HashMap<_, _>>();
+            })
+            .collect::<HashMap<_, _>>();
         let push_constant_range = if kernel_info.num_push_words > 0 {
             Some(PushConstantRange {
                 stages,
@@ -887,32 +910,36 @@ impl KernelCache {
                 version,
                 capabilities.iter(),
                 kernel_info.extensions.iter().map(Deref::deref),
-                [(kernel_info.name.clone(), ExecutionModel::GLCompute, entry_point_info)],
+                [(
+                    kernel_info.name.clone(),
+                    ExecutionModel::GLCompute,
+                    entry_point_info,
+                )],
             )?
         };
-        let bindings = slice_infos.iter()
+        let bindings = slice_infos
+            .iter()
             .enumerate()
             .map(|(i, slice_info)| {
                 let descriptor_set_layout_binding = DescriptorSetLayoutBinding {
                     descriptor_count: 1,
                     stages,
-                    .. DescriptorSetLayoutBinding::descriptor_type(DescriptorType::StorageBuffer)
+                    ..DescriptorSetLayoutBinding::descriptor_type(DescriptorType::StorageBuffer)
                 };
                 let binding = i as u32;
                 (binding, descriptor_set_layout_binding)
-            }).collect();
+            })
+            .collect();
         let descriptor_set_layout_create_info = DescriptorSetLayoutCreateInfo {
             bindings,
-            .. DescriptorSetLayoutCreateInfo::default()
+            ..DescriptorSetLayoutCreateInfo::default()
         };
-        let descriptor_set_layout = DescriptorSetLayout::new(
-            device.clone(),
-            descriptor_set_layout_create_info,
-        )?;
+        let descriptor_set_layout =
+            DescriptorSetLayout::new(device.clone(), descriptor_set_layout_create_info)?;
         let pipeline_layout_create_info = PipelineLayoutCreateInfo {
             set_layouts: vec![descriptor_set_layout.clone()],
             push_constant_ranges: push_constant_range.into_iter().collect(),
-            .. PipelineLayoutCreateInfo::default()
+            ..PipelineLayoutCreateInfo::default()
         };
         let pipeline_layout = PipelineLayout::new(device.clone(), pipeline_layout_create_info)?;
         let specialization_constants = ();
@@ -1053,7 +1080,6 @@ impl Download {
     }
 }
 
-
 impl Encode for Download {
     unsafe fn encode(&self, encoder: &mut Encoder) -> Result<bool> {
         let barrier = self.barrier();
@@ -1112,12 +1138,11 @@ impl Compute {
             source_access,
             destination_stages,
             destination_access,
-            range: buffer.start() .. buffer.start() + buffer.size(),
+            range: buffer.start()..buffer.start() + buffer.size(),
             ..BufferMemoryBarrier::buffer(buffer.buffer.clone())
         }
     }
 }
-
 
 impl Encode for Compute {
     unsafe fn encode(&self, encoder: &mut Encoder) -> Result<bool> {
@@ -1132,11 +1157,17 @@ impl Encode for Compute {
             variable_descriptor_count: 0,
         };
         let mut descriptor_set = unsafe {
-            encoder.frame.descriptor_pool.allocate_descriptor_sets(
-                [descriptor_set_allocate_info]
-            )?
-        }.next().unwrap();
-        let writes = self.buffers.iter().enumerate()
+            encoder
+                .frame
+                .descriptor_pool
+                .allocate_descriptor_sets([descriptor_set_allocate_info])?
+        }
+        .next()
+        .unwrap();
+        let writes = self
+            .buffers
+            .iter()
+            .enumerate()
             .map(|(i, x)| WriteDescriptorSet::buffer(i as u32, x.clone()))
             .collect::<Vec<_>>();
         unsafe {
@@ -1172,7 +1203,7 @@ impl Encode for Compute {
                 &cache.pipeline_layout,
                 first_set,
                 sets.iter(),
-                []
+                [],
             );
         }
         let stages = ShaderStages {
@@ -1206,19 +1237,12 @@ enum Op {
     Compute(Compute),
 }
 
-
 impl Encode for Op {
     unsafe fn encode(&self, encoder: &mut Encoder) -> Result<bool> {
         match self {
-            Op::Upload(x) => unsafe {
-                x.encode(encoder)
-            }
-            Op::Download(x) => unsafe {
-                x.encode(encoder)
-            }
-            Op::Compute(x) => unsafe {
-                x.encode(encoder)
-            }
+            Op::Upload(x) => unsafe { x.encode(encoder) },
+            Op::Download(x) => unsafe { x.encode(encoder) },
+            Op::Compute(x) => unsafe { x.encode(encoder) },
         }
     }
 }
@@ -1254,13 +1278,16 @@ impl Frame {
         let command_pool = UnsafeCommandPool::new(device.clone(), command_pool_info)?;
         let descriptor_pool_create_info = UnsafeDescriptorPoolCreateInfo {
             max_sets: Encoder::MAX_SETS as u32,
-            pool_sizes: [(DescriptorType::StorageBuffer, Encoder::MAX_DESCRIPTORS as u32)].into_iter().collect(),
-            .. UnsafeDescriptorPoolCreateInfo::default()
+            pool_sizes: [(
+                DescriptorType::StorageBuffer,
+                Encoder::MAX_DESCRIPTORS as u32,
+            )]
+            .into_iter()
+            .collect(),
+            ..UnsafeDescriptorPoolCreateInfo::default()
         };
-        let descriptor_pool = UnsafeDescriptorPool::new(
-            device.clone(),
-            descriptor_pool_create_info,
-        )?;
+        let descriptor_pool =
+            UnsafeDescriptorPool::new(device.clone(), descriptor_pool_create_info)?;
         let descriptor_sets = Vec::with_capacity(Encoder::MAX_DESCRIPTORS);
         let semaphore = Arc::new(Semaphore::from_pool(device.clone())?);
         let fence = Fence::new(
@@ -1383,9 +1410,7 @@ impl Encoder {
             if self.is_full() {
                 break;
             }
-            let push_op = unsafe {
-                op.encode(self)?
-            };
+            let push_op = unsafe { op.encode(self)? };
             if push_op {
                 self.frame.ops.push(op_iter.next().unwrap());
             }

@@ -1,5 +1,5 @@
-use serde::{Serialize, Deserialize};
-use std::{str::FromStr, borrow::Cow};
+use serde::{Deserialize, Serialize};
+use std::{borrow::Cow, str::FromStr};
 
 pub mod error {
     use super::*;
@@ -12,8 +12,20 @@ pub mod error {
 }
 use error::*;
 
-#[derive(Clone, Copy, Eq, PartialEq, PartialOrd, Ord, Hash, Serialize, Deserialize, Debug, derive_more::Display)]
-#[display(fmt="{}.{}.{}", major, minor, patch)]
+#[derive(
+    Clone,
+    Copy,
+    Eq,
+    PartialEq,
+    PartialOrd,
+    Ord,
+    Hash,
+    Serialize,
+    Deserialize,
+    Debug,
+    derive_more::Display,
+)]
+#[display(fmt = "{}.{}.{}", major, minor, patch)]
 pub struct Version {
     pub major: u32,
     pub minor: u32,

@@ -36,15 +36,24 @@ fn main() -> Result<()> {
 }
 ```
 */
-use crate::{device::{Device, DeviceInner}, buffer::{Slice, SliceMut, ScalarSlice, ScalarSliceMut, RawSlice}, scalar::{Scalar, ScalarElem}};
 #[cfg(feature = "device")]
-use crate::device::{DeviceBase, KernelCache, Compute};
+use crate::device::{Compute, DeviceBase, KernelCache};
+use crate::{
+    buffer::{RawSlice, ScalarSlice, ScalarSliceMut, Slice, SliceMut},
+    device::{Device, DeviceInner},
+    scalar::{Scalar, ScalarElem},
+};
+use anyhow::{format_err, Result};
 use core::marker::PhantomData;
 use krnl_core::__private::raw_module::{
     PushInfo, RawKernelInfo, RawModule, Safety, SliceInfo, Spirv,
 };
-use std::{collections::HashMap, sync::Arc, borrow::Cow, fmt::{self, Display}};
-use anyhow::{Result, format_err};
+use std::{
+    borrow::Cow,
+    collections::HashMap,
+    fmt::{self, Display},
+    sync::Arc,
+};
 
 #[doc(inline)]
 pub use krnl_types::kernel::{KernelInfo, Module};
@@ -83,10 +92,7 @@ pub mod builder {
 
     impl KernelBuilder {
         pub(super) fn new(device: Device, info: KernelInfo) -> Self {
-            Self {
-                device,
-                info,
-            }
+            Self { device, info }
         }
         pub fn validate(mut self) -> Result<ValidatedKernelBuilder, KernelValidationError> {
             match &self.device.inner {
@@ -95,8 +101,13 @@ pub mod builder {
                 DeviceInner::Device(device) => {
                     let info = self.info.__info();
                     if device.supports_vulkan_version(info.vulkan_version)
-                        && info.capabilities.iter().copied().all(|x| device.capability_enabled(x))
-                        && info.extensions.iter().all(|x| device.extension_enabled(x)) {
+                        && info
+                            .capabilities
+                            .iter()
+                            .copied()
+                            .all(|x| device.capability_enabled(x))
+                        && info.extensions.iter().all(|x| device.extension_enabled(x))
+                    {
                         return Ok(ValidatedKernelBuilder {
                             device: self.device,
                             info: self.info,
@@ -126,10 +137,7 @@ pub mod builder {
                 #[cfg(feature = "device")]
                 DeviceInner::Device(device) => {
                     let cache = device.kernel_cache(self.info)?;
-                    Ok(Kernel {
-                        device,
-                        cache,
-                    })
+                    Ok(Kernel { device, cache })
                 }
             }
         }
@@ -162,17 +170,22 @@ pub mod builder {
             }
         }
         pub fn global_threads(mut self, global_threads: impl Into<DispatchDim>) -> Self {
-            self.dim.replace(DispatchDimKind::GlobalThreads(global_threads.into()));
+            self.dim
+                .replace(DispatchDimKind::GlobalThreads(global_threads.into()));
             self
         }
         pub fn groups(mut self, groups: impl Into<DispatchDim>) -> Self {
             self.dim.replace(DispatchDimKind::Groups(groups.into()));
             self
         }
-        pub fn slice<'b: 'a>(mut self, name: impl Into<Cow<'static, str>>, slice: impl Into<ScalarSlice<'b>>) -> DispatchBuilder<'b> {
+        pub fn slice<'b: 'a>(
+            mut self,
+            name: impl Into<Cow<'static, str>>,
+            slice: impl Into<ScalarSlice<'b>>,
+        ) -> DispatchBuilder<'b> {
             self.slices.push(NamedArg {
                 name: name.into(),
-                arg: SliceArg::Slice(slice.into().into_raw_slice())
+                arg: SliceArg::Slice(slice.into().into_raw_slice()),
             });
             DispatchBuilder {
                 #[cfg(feature = "device")]
@@ -185,10 +198,14 @@ pub mod builder {
                 _m: PhantomData::default(),
             }
         }
-        pub fn slice_mut<'b: 'a>(mut self, name: impl Into<Cow<'static, str>>, slice: impl Into<ScalarSliceMut<'b>>) -> DispatchBuilder<'b> {
+        pub fn slice_mut<'b: 'a>(
+            mut self,
+            name: impl Into<Cow<'static, str>>,
+            slice: impl Into<ScalarSliceMut<'b>>,
+        ) -> DispatchBuilder<'b> {
             self.slices.push(NamedArg {
                 name: name.into(),
-                arg: SliceArg::SliceMut(slice.into().into_raw_slice_mut())
+                arg: SliceArg::SliceMut(slice.into().into_raw_slice_mut()),
             });
             DispatchBuilder {
                 #[cfg(feature = "device")]
@@ -201,7 +218,11 @@ pub mod builder {
                 _m: PhantomData::default(),
             }
         }
-        pub fn push(mut self, name: impl Into<Cow<'static, str>>, push: impl Into<ScalarElem>) -> Self {
+        pub fn push(
+            mut self,
+            name: impl Into<Cow<'static, str>>,
+            push: impl Into<ScalarElem>,
+        ) -> Self {
             self.push_consts.push(NamedArg {
                 name: name.into(),
                 arg: push.into(),
@@ -209,13 +230,10 @@ pub mod builder {
             self
         }
         pub fn build(self) -> Result<Dispatch<'a>> {
-            #[cfg(feature = "device")] {
+            #[cfg(feature = "device")]
+            {
                 match self.cache.info().__info().safety {
-                    Safety::Safe => {
-                        return unsafe {
-                            self.build_unsafe()
-                        }
-                    }
+                    Safety::Safe => return unsafe { self.build_unsafe() },
                     Safety::Unsafe => {
                         let kernel = &self.cache.info().__info().name;
                         let module = &self.cache.info().__module().name;
@@ -226,14 +244,16 @@ pub mod builder {
             unreachable!()
         }
         pub unsafe fn build_unsafe(self) -> Result<Dispatch<'a>> {
-            #[cfg(feature = "device")] {
+            #[cfg(feature = "device")]
+            {
                 let kernel_info = self.cache.info().__info();
                 let kernel = &self.cache.info().__info().name;
                 let module = &self.cache.info().__module().name;
                 let slice_infos = &kernel_info.slice_infos;
                 let elementwise_len = if kernel_info.elementwise {
                     if let Some(slice_info) = slice_infos.iter().find(|x| x.elementwise) {
-                        if let Some(slice) = self.slices.iter().find(|x| x.name == slice_info.name) {
+                        if let Some(slice) = self.slices.iter().find(|x| x.name == slice_info.name)
+                        {
                             Some(slice.arg.len())
                         } else {
                             Some(0)
@@ -260,7 +280,13 @@ pub mod builder {
                                 return Err(format_err!("Expected {ndim} dimensional `global_threads` for threads {threads:?} in kernel {kernel:?} in module {module:?}!"));
                             }
                             let mut groups = [1; 3];
-                            for (g, (gt, t)) in groups.iter_mut().zip(global_threads.dim.iter().map(|x| *x as u32).zip(threads.iter().copied())) {
+                            for (g, (gt, t)) in groups.iter_mut().zip(
+                                global_threads
+                                    .dim
+                                    .iter()
+                                    .map(|x| *x as u32)
+                                    .zip(threads.iter().copied()),
+                            ) {
                                 *g = gt / t + if gt % t != 0 { 1 } else { 0 };
                             }
                             groups
@@ -301,13 +327,17 @@ pub mod builder {
                         let slice = match &slice.arg {
                             SliceArg::Slice(slice) => {
                                 if slice_info.mutability.is_mutable() {
-                                    return Err(format_err!("Expected `.slice_mut()` for slice {slice_name:?}!"));
+                                    return Err(format_err!(
+                                        "Expected `.slice_mut()` for slice {slice_name:?}!"
+                                    ));
                                 }
                                 slice
                             }
                             SliceArg::SliceMut(slice) => {
                                 if slice_info.mutability.is_immutable() {
-                                    return Err(format_err!("Expected `.slice()` for slice {slice_name:?}!"));
+                                    return Err(format_err!(
+                                        "Expected `.slice()` for slice {slice_name:?}!"
+                                    ));
                                 }
                                 slice
                             }
@@ -329,29 +359,43 @@ pub mod builder {
                                 let pad = buffer.pad() as u32 / width;
                                 (offset << 8) | pad
                             };
-                            let offset = push_infos.iter().find(|x| {
-                                let name = &x.name;
-                                name.starts_with("__krnl") && name.ends_with(&slice_info.name)
-                            }).unwrap()
+                            let offset = push_infos
+                                .iter()
+                                .find(|x| {
+                                    let name = &x.name;
+                                    name.starts_with("__krnl") && name.ends_with(&slice_info.name)
+                                })
+                                .unwrap()
                                 .offset as usize;
-                            push_consts_bytes[offset..offset + 4].copy_from_slice(offset_pad.to_ne_bytes().as_slice());
+                            push_consts_bytes[offset..offset + 4]
+                                .copy_from_slice(offset_pad.to_ne_bytes().as_slice());
                             buffers.push(buffer);
                         }
                     } else {
                         return Err(format_err!("Expected slice {:?}!", slice_info.name));
                     }
                 }
-                let num_push_consts = push_infos.iter().filter(|x| !x.name.starts_with("__krnl")).count();
+                let num_push_consts = push_infos
+                    .iter()
+                    .filter(|x| !x.name.starts_with("__krnl"))
+                    .count();
                 if self.push_consts.len() > num_push_consts {
                     for push_info in push_infos.iter() {
-                        if self.push_consts.iter().find(|x| x.name == push_info.name).is_none() {
+                        if self
+                            .push_consts
+                            .iter()
+                            .find(|x| x.name == push_info.name)
+                            .is_none()
+                        {
                             return Err(format_err!("Expected push {:?}!", push_info.name));
                         }
                     }
                     unreachable!()
                 } else {
                     for push in self.push_consts {
-                        if let Some(push_info) = kernel_info.push_infos.iter().find(|x| x.name == push.name) {
+                        if let Some(push_info) =
+                            kernel_info.push_infos.iter().find(|x| x.name == push.name)
+                        {
                             let push_name = &push.name;
                             let push_ty = push.arg.scalar_type();
                             let push_info_ty = push_info.scalar_type;
@@ -359,7 +403,10 @@ pub mod builder {
                                 return Err(format_err!("Expected push {push_name:?} to have scalar type {push_info_ty:?}, found {push_ty:?}!"));
                             }
                             let offset = push_info.offset as usize;
-                            write_scalar_elem_to_bytes(&push.arg, &mut push_consts_bytes[offset..offset + push_ty.size()]);
+                            write_scalar_elem_to_bytes(
+                                &push.arg,
+                                &mut push_consts_bytes[offset..offset + push_ty.size()],
+                            );
                         } else {
                             return Err(format_err!("Unexpected push {:?}!", push.name));
                         }
@@ -396,7 +443,7 @@ pub mod builder {
             U32(x) => {
                 bytes.copy_from_slice(x.to_ne_bytes().as_slice());
             }
-            _ => todo!()
+            _ => todo!(),
         }
     }
 }
@@ -414,7 +461,8 @@ impl Kernel {
         KernelBuilder::new(device, info)
     }
     pub fn dispatch_builder(&self) -> DispatchBuilder {
-        #[cfg(feature = "device")] {
+        #[cfg(feature = "device")]
+        {
             return DispatchBuilder::new(self.device.clone(), self.cache.clone());
         }
         unreachable!()
@@ -431,7 +479,8 @@ pub struct Dispatch<'a> {
 
 impl<'a> Dispatch<'a> {
     pub fn dispatch(self) -> Result<()> {
-        #[cfg(feature = "device")] {
+        #[cfg(feature = "device")]
+        {
             if let Some(compute) = self.compute {
                 self.device.compute(compute)?;
             }
