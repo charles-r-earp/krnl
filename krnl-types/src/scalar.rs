@@ -9,8 +9,8 @@ use num_traits::{FromPrimitive, NumAssign, NumCast};
 use serde::{Deserialize, Serialize};
 #[cfg(not(target_arch = "spirv"))]
 use std::{
+    borrow::Cow,
     fmt::{Debug, Display},
-    str::FromStr,
 };
 
 mod sealed {
@@ -34,17 +34,27 @@ mod sealed {
 }
 use sealed::Sealed;
 
-#[cfg(not(target_arch = "spirv"))]
 pub mod error {
+    #[cfg(not(target_arch = "spirv"))]
     use super::*;
 
+    #[cfg(not(target_arch = "spirv"))]
     #[derive(Debug, thiserror::Error)]
-    #[error("unknown ScalarType `{}`", .input)]
-    pub struct ScalarTypeFromStrError {
-        pub(super) input: String,
+    #[error("ScalarTypeFromStrError: unknown scalar type {input:?}!")]
+    pub struct ScalarTypeFromStrError<'a> {
+        pub(super) input: Cow<'a, str>,
+    }
+
+    #[cfg_attr(
+        not(target_arch = "spirv"),
+        derive(Debug, thiserror::Error),
+        error("ScalarTypeFromU32Error: unknown scalar type {input}!")
+    )]
+    pub struct ScalarTypeFromU32Error {
+        #[cfg(not(target_arch = "spirv"))]
+        pub(super) input: u32,
     }
 }
-#[cfg(not(target_arch = "spirv"))]
 use error::*;
 
 /// Numerical types supported in krnl.
@@ -53,24 +63,25 @@ use error::*;
 #[derive(Clone, Copy, Eq, PartialEq)]
 #[cfg_attr(
     not(target_arch = "spirv"),
-    derive(Debug, Display, Serialize, Deserialize)
+    derive(Debug, Display, Serialize, Deserialize),
+    serde(into = "u32", try_from = "u32")
 )]
 #[cfg_attr(target_arch = "spirv", repr(u32))]
 pub enum ScalarType {
-    U8,
-    I8,
-    U16,
-    I16,
+    U8 = 1,
+    I8 = 2,
+    U16 = 3,
+    I16 = 4,
     #[cfg(feature = "half")]
-    F16,
+    F16 = 5,
     #[cfg(feature = "half")]
-    BF16,
-    U32,
-    I32,
-    F32,
-    U64,
-    I64,
-    F64,
+    BF16 = 6,
+    U32 = 7,
+    I32 = 8,
+    F32 = 9,
+    U64 = 10,
+    I64 = 11,
+    F64 = 12,
 }
 
 impl ScalarType {
@@ -88,7 +99,7 @@ impl ScalarType {
     }
     /// Name of the type.
     ///
-    /// Lowercase, ie "f32", "f16", etc.
+    /// Lowercase, ie "f16", "i32", etc.
     #[cfg(not(target_arch = "spirv"))]
     pub fn name(&self) -> &'static str {
         use ScalarType::*;
@@ -111,10 +122,43 @@ impl ScalarType {
     }
 }
 
+impl From<ScalarType> for u32 {
+    fn from(scalar_type: ScalarType) -> u32 {
+        scalar_type as u32
+    }
+}
+
+impl TryFrom<u32> for ScalarType {
+    type Error = ScalarTypeFromU32Error;
+    fn try_from(input: u32) -> Result<Self, Self::Error> {
+        use ScalarType::*;
+        match input {
+            1 => Ok(U8),
+            2 => Ok(I8),
+            3 => Ok(U16),
+            4 => Ok(I16),
+            #[cfg(feature = "half")]
+            5 => Ok(F16),
+            #[cfg(feature = "half")]
+            6 => Ok(BF16),
+            7 => Ok(U32),
+            8 => Ok(I32),
+            9 => Ok(F32),
+            10 => Ok(U64),
+            11 => Ok(I64),
+            12 => Ok(F64),
+            _ => Err(ScalarTypeFromU32Error {
+                #[cfg(not(target_arch = "spirv"))]
+                input,
+            }),
+        }
+    }
+}
+
 #[cfg(not(target_arch = "spirv"))]
-impl FromStr for ScalarType {
-    type Err = ScalarTypeFromStrError;
-    fn from_str(input: &str) -> Result<Self, Self::Err> {
+impl<'a> TryFrom<&'a str> for ScalarType {
+    type Error = ScalarTypeFromStrError<'a>;
+    fn try_from(input: &'a str) -> Result<Self, Self::Error> {
         use ScalarType::*;
         match input {
             "U8" | "u8" => Ok(U8),
@@ -132,14 +176,14 @@ impl FromStr for ScalarType {
             "I64" | "i64" => Ok(I64),
             "F64" | "f64" => Ok(F64),
             _ => Err(ScalarTypeFromStrError {
-                input: input.to_string(),
+                input: input.into(),
             }),
         }
     }
 }
 
 #[cfg(not(target_arch = "spirv"))]
-#[derive(Clone, Copy, PartialEq, Debug, Serialize, Deserialize)]
+#[derive(Clone, Copy, PartialEq, Debug)]
 pub enum ScalarElem {
     U8(u8),
     I8(i8),
@@ -177,6 +221,25 @@ impl ScalarElem {
             U64(_) => T::U64,
             I64(_) => T::I64,
             F64(_) => T::F64,
+        }
+    }
+    pub fn to_scalar_bits(&self) -> Self {
+        use ScalarElem::*;
+        match self {
+            U8(_) => *self,
+            I8(x) => (*x as u8).into(),
+            U16(_) => *self,
+            I16(x) => (*x as u16).into(),
+            #[cfg(feature = "half")]
+            F16(x) => x.to_bits().into(),
+            #[cfg(feature = "half")]
+            BF16(x) => x.to_bits().into(),
+            U32(_) => *self,
+            I32(x) => (*x as u32).into(),
+            F32(x) => x.to_bits().into(),
+            U64(_) => *self,
+            I64(x) => (*x as u64).into(),
+            F64(x) => x.to_bits().into(),
         }
     }
     /*

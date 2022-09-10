@@ -8,5 +8,4 @@ publish = false
 crate-type = ["dylib"]
 
 [dependencies]
-krnl-core = { path = "../../../../krnl-core" }
-spirv-std = { git = "https://github.com/EmbarkStudios/rust-gpu" }
+krnl-core = { path = "../../../../krnl-core", features = ["spirv-panic"] }

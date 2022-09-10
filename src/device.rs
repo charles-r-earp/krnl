@@ -55,6 +55,14 @@ pub(crate) enum DeviceInner {
 }
 
 impl DeviceInner {
+    #[cfg(feature = "device")]
+    pub(crate) fn device(&self) -> Option<&DeviceBase> {
+        if let Self::Device(device) = self {
+            Some(device)
+        } else {
+            None
+        }
+    }
     pub(crate) fn kind(&self) -> DeviceKind {
         match self {
             Self::Host => DeviceKind::Host,
@@ -82,7 +90,17 @@ impl Device {
         }
     }
     pub fn new(index: usize) -> Result<Self, anyhow::Error> {
-        Self::new_ext(index, &DeviceOptions::default())
+        use spirv::Capability::*;
+        let options = DeviceOptions {
+            optimal_capabilities: vec![
+                Int8,
+                Int16,
+                Int64,
+                StorageBuffer8BitAccess,
+                StorageBuffer16BitAccess,
+            ],
+        };
+        Self::new_ext(index, &options)
     }
     #[cfg_attr(not(feature = "device"), allow(unused_variables))]
     fn new_ext(index: usize, options: &DeviceOptions) -> Result<Self, anyhow::Error> {
@@ -134,7 +152,7 @@ mod tests {
 
     #[cfg(feature = "device")]
     #[test]
-    fn device_new() -> Result<(), anyhow::Error> {
+    fn device_new() -> Result<()> {
         let device = Device::new(0)?;
         Ok(())
     }

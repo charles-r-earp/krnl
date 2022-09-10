@@ -1,21 +1,18 @@
 pub struct GlobalMut<'a, T: ?Sized>(&'a mut T);
 
-impl<'a, T> GlobalMut<'a, T> {
+impl<'a, T: ?Sized> GlobalMut<'a, T> {
     #[doc(hidden)]
     pub fn __new(x: &'a mut T) -> Self {
         Self(x)
     }
-}
-
-impl<'a, T> GlobalMut<'a, T> {
     pub unsafe fn global_mut(&mut self) -> &mut T {
         &mut self.0
     }
 }
 
-pub struct GroupUninitMut<'a, T>(&'a mut T);
+pub struct GroupUninitMut<'a, T: ?Sized>(&'a mut T);
 
-impl<'a, T> GroupUninitMut<'a, T> {
+impl<'a, T: ?Sized> GroupUninitMut<'a, T> {
     #[doc(hidden)]
     pub fn __new(x: &'a mut T) -> Self {
         Self(x)

@@ -45,9 +45,7 @@ use crate::{
 };
 use anyhow::{format_err, Result};
 use core::marker::PhantomData;
-use krnl_core::__private::raw_module::{
-    PushInfo, RawKernelInfo, RawModule, Safety, SliceInfo, Spirv,
-};
+use krnl_types::kernel::{KernelInfoInner, ModuleInner, PushInfo, SliceInfo, Spirv};
 use std::{
     borrow::Cow,
     collections::HashMap,
@@ -55,6 +53,8 @@ use std::{
     sync::Arc,
 };
 
+#[doc(hidden)]
+pub use krnl_types::kernel::ModuleWithHash;
 #[doc(inline)]
 pub use krnl_types::kernel::{KernelInfo, Module};
 
@@ -65,18 +65,44 @@ pub mod error {
     use super::*;
     #[doc(inline)]
     pub use krnl_types::kernel::error::*;
+    use spirv::Capability;
 
     #[derive(Debug, thiserror::Error)]
-    #[error("{}", self.err_msg())]
-    //#[error("Kernel {:?} is not supported on \"{:?}\"", .info.__info().name, .device]
+    #[error("Kernel {:?} validation failed for \"{:?}\"{}!", self.name(), self.device, self.features_msg())]
     pub struct KernelValidationError {
         pub(super) device: Device,
         pub(super) info: KernelInfo,
     }
 
     impl KernelValidationError {
-        fn err_msg(&self) -> String {
-            todo!()
+        fn kernel_info(&self) -> &KernelInfoInner {
+            KernelInfoInner::get_from_kernel_info(&self.info)
+        }
+        fn name(&self) -> &str {
+            self.kernel_info().name.as_str()
+        }
+        fn unenabled_capabilities(&self) -> Cow<[Capability]> {
+            let capabilities = self.kernel_info().capabilities.as_slice();
+            #[cfg(feature = "device")]
+            {
+                if let DeviceInner::Device(device) = &self.device.inner {
+                    return capabilities
+                        .iter()
+                        .copied()
+                        .filter(|x| !device.capability_enabled(*x))
+                        .collect::<Vec<_>>()
+                        .into();
+                }
+            }
+            capabilities.into()
+        }
+        fn features_msg(&self) -> String {
+            let caps = self.unenabled_capabilities();
+            if caps.is_empty() {
+                String::new()
+            } else {
+                format!(", capabilities {caps:?} are not enabled")
+            }
         }
     }
 }
@@ -99,14 +125,17 @@ pub mod builder {
                 DeviceInner::Host => (),
                 #[cfg(feature = "device")]
                 DeviceInner::Device(device) => {
-                    let info = self.info.__info();
-                    if device.supports_vulkan_version(info.vulkan_version)
-                        && info
+                    let kernel_info = KernelInfoInner::get_from_kernel_info(&self.info);
+                    if device.supports_vulkan_version(kernel_info.vulkan_version)
+                        && kernel_info
                             .capabilities
                             .iter()
                             .copied()
                             .all(|x| device.capability_enabled(x))
-                        && info.extensions.iter().all(|x| device.extension_enabled(x))
+                        && kernel_info
+                            .extensions
+                            .iter()
+                            .all(|x| device.extension_enabled(x))
                     {
                         return Ok(ValidatedKernelBuilder {
                             device: self.device,
@@ -157,7 +186,7 @@ pub mod builder {
     impl<'a> DispatchBuilder<'a> {
         #[cfg(feature = "device")]
         pub(super) fn new(device: DeviceBase, cache: Arc<KernelCache>) -> Self {
-            let info = cache.info().__info();
+            let info = KernelInfoInner::get_from_kernel_info(cache.info());
             let slices = Vec::with_capacity(info.slice_infos.len());
             let push_consts = Vec::with_capacity(info.push_infos.len());
             Self {
@@ -232,13 +261,13 @@ pub mod builder {
         pub fn build(self) -> Result<Dispatch<'a>> {
             #[cfg(feature = "device")]
             {
-                match self.cache.info().__info().safety {
-                    Safety::Safe => return unsafe { self.build_unsafe() },
-                    Safety::Unsafe => {
-                        let kernel = &self.cache.info().__info().name;
-                        let module = &self.cache.info().__module().name;
-                        return Err(format_err!("Kernel {kernel:?} in module {module:?} is unsafe, use `.build_unsafe()` instead."));
-                    }
+                let kernel_info = KernelInfoInner::get_from_kernel_info(self.cache.info());
+                let kernel = &kernel_info.name;
+                let module = &ModuleInner::get_from_kernel_info(&self.cache.info()).name;
+                if kernel_info.safe {
+                    return unsafe { self.build_unsafe() };
+                } else {
+                    return Err(format_err!("Kernel {kernel:?} in module {module:?} is unsafe, use `.build_unsafe()` instead."));
                 }
             }
             unreachable!()
@@ -246,11 +275,11 @@ pub mod builder {
         pub unsafe fn build_unsafe(self) -> Result<Dispatch<'a>> {
             #[cfg(feature = "device")]
             {
-                let kernel_info = self.cache.info().__info();
-                let kernel = &self.cache.info().__info().name;
-                let module = &self.cache.info().__module().name;
+                let kernel_info = KernelInfoInner::get_from_kernel_info(self.cache.info());
+                let kernel = &kernel_info.name;
+                let module = &ModuleInner::get_from_kernel_info(self.cache.info()).name;
                 let slice_infos = &kernel_info.slice_infos;
-                let elementwise_len = if kernel_info.elementwise {
+                let elements = if kernel_info.elementwise {
                     if let Some(slice_info) = slice_infos.iter().find(|x| x.elementwise) {
                         if let Some(slice) = self.slices.iter().find(|x| x.name == slice_info.name)
                         {
@@ -304,7 +333,7 @@ pub mod builder {
                         return Err(format_err!("Expected `.global_threads()` or `.groups()` for kernel {kernel:?} in module {module:?}!"));
                     }
                     // TODO: get active workgroups
-                    let n = elementwise_len.unwrap() as u32;
+                    let n = elements.unwrap() as u32;
                     let t = threads[0] as u32;
                     let g = n / t + if n % t != 0 { 1 } else { 0 };
                     [g, 1, 1]
@@ -321,12 +350,15 @@ pub mod builder {
                 let mut push_consts = vec![0u32; kernel_info.num_push_words as usize];
                 let mut push_consts_bytes: &mut [u8] = bytemuck::cast_slice_mut(&mut push_consts);
                 let mut buffers = Vec::with_capacity(slice_infos.len());
+                let device = Device {
+                    inner: DeviceInner::Device(self.device),
+                };
                 for slice_info in slice_infos.iter() {
                     if let Some(slice) = self.slices.iter().find(|x| x.name == slice_info.name) {
                         let slice_name = &slice_info.name;
                         let slice = match &slice.arg {
                             SliceArg::Slice(slice) => {
-                                if slice_info.mutability.is_mutable() {
+                                if slice_info.mutable {
                                     return Err(format_err!(
                                         "Expected `.slice_mut()` for slice {slice_name:?}!"
                                     ));
@@ -334,7 +366,7 @@ pub mod builder {
                                 slice
                             }
                             SliceArg::SliceMut(slice) => {
-                                if slice_info.mutability.is_immutable() {
+                                if !slice_info.mutable {
                                     return Err(format_err!(
                                         "Expected `.slice()` for slice {slice_name:?}!"
                                     ));
@@ -342,38 +374,52 @@ pub mod builder {
                                 slice
                             }
                         };
-                        if slice_info.elementwise && slice.len() != elementwise_len.unwrap() {
-                            return Err(format_err!("Expected elementwise slice {slice_name:?} to have len {}, found {}!", elementwise_len.unwrap(), slice.len()));
+                        let slice_device = slice.device_ref();
+                        if slice_device != &device {
+                            return Err(format_err!("Expected device {device:?}, found {slice_device:?} for slice {slice_name:?}!"));
+                        }
+                        if slice_info.elementwise && slice.len() != elements.unwrap() {
+                            return Err(format_err!("Expected elementwise slice {slice_name:?} to have len {}, found {}!", elements.unwrap(), slice.len()));
                         }
                         if slice.is_empty() {
                             if !groups.iter().any(|x| *x == 0) {
                                 return Err(format_err!("Slice {slice_name:?} is empty!"));
                             }
                         } else {
-                            let len = slice.len();
-                            let buffer = slice.device_buffer().unwrap();
-                            let buffer = buffer.inner();
-                            let offset_pad = {
-                                let width = slice_info.scalar_type.size() as u32;
-                                let offset = buffer.offset() as u32 / width;
-                                let pad = buffer.pad() as u32 / width;
-                                (offset << 8) | pad
-                            };
-                            let offset = push_infos
-                                .iter()
-                                .find(|x| {
-                                    let name = &x.name;
-                                    name.starts_with("__krnl") && name.ends_with(&slice_info.name)
-                                })
+                            if !slice_info.elementwise {
+                                let len = slice.len() as u32;
+                                let offset = push_infos
+                                    .iter()
+                                    .find(|x| {
+                                        let name = &x.name;
+                                        name.starts_with("__krnl_len_")
+                                            && name.ends_with(&slice_info.name)
+                                    })
+                                    .unwrap()
+                                    .offset as usize;
+                                push_consts_bytes[offset..offset + 4]
+                                    .copy_from_slice(len.to_ne_bytes().as_slice());
+                            }
+                            let buffer = slice
+                                .as_device_slice()
                                 .unwrap()
-                                .offset as usize;
-                            push_consts_bytes[offset..offset + 4]
-                                .copy_from_slice(offset_pad.to_ne_bytes().as_slice());
+                                .device_buffer()
+                                .unwrap()
+                                .inner();
                             buffers.push(buffer);
                         }
                     } else {
                         return Err(format_err!("Expected slice {:?}!", slice_info.name));
                     }
+                }
+                if let Some(elements) = elements {
+                    let offset = push_infos
+                        .iter()
+                        .find(|x| x.name == "__krnl_elements")
+                        .unwrap()
+                        .offset as usize;
+                    push_consts_bytes[offset..offset + 4]
+                        .copy_from_slice((elements as u32).to_ne_bytes().as_slice());
                 }
                 let num_push_consts = push_infos
                     .iter()
@@ -422,8 +468,9 @@ pub mod builder {
                 } else {
                     None
                 };
+                let device = device.inner.unwrap_device();
                 return Ok(Dispatch {
-                    device: self.device,
+                    device,
                     compute,
                     _m: PhantomData::default(),
                 });
@@ -439,11 +486,20 @@ pub mod builder {
 
     fn write_scalar_elem_to_bytes(scalar_elem: &ScalarElem, bytes: &mut [u8]) {
         use ScalarElem::*;
-        match scalar_elem {
+        match scalar_elem.to_scalar_bits() {
+            U8(x) => {
+                bytes.copy_from_slice([x].as_ref());
+            }
+            U16(x) => {
+                bytes.copy_from_slice(x.to_ne_bytes().as_slice());
+            }
             U32(x) => {
                 bytes.copy_from_slice(x.to_ne_bytes().as_slice());
             }
-            _ => todo!(),
+            U64(x) => {
+                bytes.copy_from_slice(x.to_ne_bytes().as_slice());
+            }
+            _ => unreachable!(),
         }
     }
 }

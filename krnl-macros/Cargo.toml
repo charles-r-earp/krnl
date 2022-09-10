@@ -8,9 +8,6 @@ publish = false
 [lib]
 proc-macro = true
 
-[features]
-build = []
-
 [dependencies]
 krnl-types = { path = "../krnl-types" }
 syn = { version = "1.0.33", features = ["full"] }

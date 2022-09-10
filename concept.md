@@ -39,3 +39,12 @@ fn axpy<T: Scalar>(x: &Slice<T>, alpha: T, y: &mut SliceMut<T>) -> Result<()> {
     Ok(())
 }
 ```
+
+TODO: 
+Device buffers will have capacity (multiple of 256 bytes). Alloc functions like zeros() will allocate with full length, fill, then truncate to requrested length.
+
+For now, don't support splitting of slices. 
+
+Remove krnl_core::slice. Use reflection to replace the ArrayLength calls with a push constant. &[T] and &mut [T] can now be used directly.  
+
+ Potentially support creating a module from spirv directly, but this might be out of scope for now.  

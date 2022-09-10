@@ -15,10 +15,6 @@ pub use krnl_macros::kernel;
 
 pub mod mem;
 pub mod ops;
-pub mod slice;
-
-#[doc(hidden)]
-pub mod __private;
 
 #[cfg(all(target_arch = "spirv", feature = "spirv-panic"))]
 #[panic_handler]

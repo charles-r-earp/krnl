@@ -13,3 +13,8 @@ pub mod buffer;
 pub mod device;
 pub mod future;
 pub mod kernel;
+
+#[doc(hidden)]
+pub mod __private {
+    pub use once_cell;
+}

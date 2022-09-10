@@ -23,7 +23,7 @@ num-traits = "0.2.14"
 half = { git = "https://github.com/starkat99/half-rs", default-features = false, features = ["num-traits"], optional = true }
 once_cell = { version = "1.13.0", default-features = false, features = ["std", "alloc"] }
 parking_lot = "0.12.1"
-anyhow = { version = "1.0.59", features = ["backtrace"] }
+anyhow = "1.0.60"
 crossbeam-channel = { version = "0.5.6", optional = true }
 futures-util = { version = "0.3.21", default-features = false }
 blocker = { version = "0.1.2", features = ["thread_yield"] }
@@ -39,7 +39,3 @@ ash = { version = "0.33.3", optional = true }
 [features]
 device = ["dep:vulkano", "dep:ash-molten", "dep:ash", "dep:crossbeam-channel", "dep:futures-lite", "dep:dashmap"]
 half = ["krnl-core/half", "dep:half"]
-build = ["krnl-macros/build"]
-
-[profile.dev.package.krnl-macros]
-opt-level = 0

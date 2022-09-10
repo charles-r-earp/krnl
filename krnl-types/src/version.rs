@@ -1,13 +1,13 @@
 use serde::{Deserialize, Serialize};
-use std::{borrow::Cow, str::FromStr};
+use std::{borrow::Cow, convert::TryFrom, str::FromStr};
 
 pub mod error {
     use super::*;
 
     #[derive(Debug, thiserror::Error)]
     #[error("VersionFromStrError: expected \"major[.minor.patch]\", found {:?}!", .input)]
-    pub struct VersionFromStrError {
-        pub(super) input: Cow<'static, str>,
+    pub struct VersionFromStrError<'a> {
+        pub(super) input: Cow<'a, str>,
     }
 }
 use error::*;
@@ -42,16 +42,16 @@ impl Version {
     }
 }
 
-impl FromStr for Version {
-    type Err = VersionFromStrError;
-    fn from_str(input: &str) -> Result<Self, Self::Err> {
+impl<'a> TryFrom<&'a str> for Version {
+    type Error = VersionFromStrError<'a>;
+    fn try_from(input: &'a str) -> Result<Self, Self::Error> {
         let mut iter = input.split(".");
         let major = if let Some(x) = iter.next() {
             if let Ok(x) = u32::from_str(x) {
                 x
             } else {
                 return Err(VersionFromStrError {
-                    input: input.to_string().into(),
+                    input: input.into(),
                 });
             }
         } else {
@@ -62,7 +62,7 @@ impl FromStr for Version {
                 x
             } else {
                 return Err(VersionFromStrError {
-                    input: input.to_string().into(),
+                    input: input.into(),
                 });
             }
         } else {
@@ -73,7 +73,7 @@ impl FromStr for Version {
                 x
             } else {
                 return Err(VersionFromStrError {
-                    input: input.to_string().into(),
+                    input: input.into(),
                 });
             }
         } else {
@@ -81,7 +81,7 @@ impl FromStr for Version {
         };
         if iter.next().is_some() {
             return Err(VersionFromStrError {
-                input: input.to_string().into(),
+                input: input.into(),
             });
         }
         Ok(Self {

@@ -4,8 +4,7 @@ use anyhow::{format_err, Result};
 use crossbeam_channel::{bounded, Receiver, Sender};
 use dashmap::DashMap;
 use krnl_types::{
-    __private::raw_module::{Mutability, RawKernelInfo},
-    kernel::KernelInfo,
+    kernel::{KernelInfo, KernelInfoInner, ModuleInner},
     version::Version,
 };
 use once_cell::sync::OnceCell;
@@ -139,7 +138,178 @@ fn instance() -> Result<Arc<Instance>> {
 }
 
 fn spirv_capability_to_vulkano_capability(input: Capability) -> Result<VulkanoCapability> {
-    todo!()
+    macro_rules! impl_match {
+        ($input:ident { $($x:ident)*}) => {
+            match $input {
+                $(
+                    Capability::$x => Ok(VulkanoCapability::$x),
+                )*
+                other => Err(format_err!("vulkano does not support capability {other:?}!"))
+            }
+        };
+    }
+    // https://docs.rs/spirv/0.2.0+1.5.4/spirv/enum.Capability.html
+    // https://docs.rs/vulkano/0.30.0/vulkano/shader/spirv/enum.Capability.html
+    impl_match!(input {
+        Matrix
+        Shader
+        Geometry
+        Tessellation
+        Addresses
+        Linkage
+        Kernel
+        Vector16
+        Float16Buffer
+        Float16
+        Float64
+        Int64
+        Int64Atomics
+        ImageBasic
+        ImageReadWrite
+        ImageMipmap
+        Pipes
+        Groups
+        DeviceEnqueue
+        LiteralSampler
+        AtomicStorage
+        Int16
+        TessellationPointSize
+        GeometryPointSize
+        ImageGatherExtended
+        StorageImageMultisample
+        UniformBufferArrayDynamicIndexing
+        SampledImageArrayDynamicIndexing
+        StorageBufferArrayDynamicIndexing
+        StorageImageArrayDynamicIndexing
+        ClipDistance
+        CullDistance
+        ImageCubeArray
+        SampleRateShading
+        ImageRect
+        SampledRect
+        GenericPointer
+        Int8
+        InputAttachment
+        SparseResidency
+        MinLod
+        Sampled1D
+        Image1D
+        SampledCubeArray
+        SampledBuffer
+        ImageBuffer
+        ImageMSArray
+        StorageImageExtendedFormats
+        ImageQuery
+        DerivativeControl
+        InterpolationFunction
+        TransformFeedback
+        GeometryStreams
+        StorageImageReadWithoutFormat
+        StorageImageWriteWithoutFormat
+        MultiViewport
+        SubgroupDispatch
+        NamedBarrier
+        PipeStorage
+        GroupNonUniform
+        GroupNonUniformVote
+        GroupNonUniformArithmetic
+        GroupNonUniformBallot
+        GroupNonUniformShuffle
+        GroupNonUniformShuffleRelative
+        GroupNonUniformClustered
+        GroupNonUniformQuad
+        ShaderLayer
+        ShaderViewportIndex
+        FragmentShadingRateKHR
+        SubgroupBallotKHR
+        DrawParameters
+        SubgroupVoteKHR
+        StorageBuffer16BitAccess
+        UniformAndStorageBuffer16BitAccess
+        StoragePushConstant16
+        StorageInputOutput16
+        DeviceGroup
+        MultiView
+        VariablePointersStorageBuffer
+        VariablePointers
+        AtomicStorageOps
+        SampleMaskPostDepthCoverage
+        StorageBuffer8BitAccess
+        UniformAndStorageBuffer8BitAccess
+        StoragePushConstant8
+        DenormPreserve
+        DenormFlushToZero
+        SignedZeroInfNanPreserve
+        RoundingModeRTE
+        RoundingModeRTZ
+        RayQueryProvisionalKHR
+        RayQueryKHR
+        RayTraversalPrimitiveCullingKHR
+        RayTracingKHR
+        Float16ImageAMD
+        ImageGatherBiasLodAMD
+        FragmentMaskAMD
+        StencilExportEXT
+        ImageReadWriteLodAMD
+        Int64ImageEXT
+        ShaderClockKHR
+        SampleMaskOverrideCoverageNV
+        GeometryShaderPassthroughNV
+        ShaderViewportIndexLayerEXT
+        ShaderViewportMaskNV
+        ShaderStereoViewNV
+        PerViewAttributesNV
+        FragmentFullyCoveredEXT
+        MeshShadingNV
+        ImageFootprintNV
+        // FragmentBarycentricNV
+        ComputeDerivativeGroupQuadsNV
+        FragmentDensityEXT
+        GroupNonUniformPartitionedNV
+        ShaderNonUniform
+        RuntimeDescriptorArray
+        InputAttachmentArrayDynamicIndexing
+        UniformTexelBufferArrayDynamicIndexing
+        StorageTexelBufferArrayDynamicIndexing
+        UniformBufferArrayNonUniformIndexing
+        SampledImageArrayNonUniformIndexing
+        StorageBufferArrayNonUniformIndexing
+        StorageImageArrayNonUniformIndexing
+        InputAttachmentArrayNonUniformIndexing
+        UniformTexelBufferArrayNonUniformIndexing
+        StorageTexelBufferArrayNonUniformIndexing
+        RayTracingNV
+        VulkanMemoryModel
+        VulkanMemoryModelDeviceScope
+        PhysicalStorageBufferAddresses
+        ComputeDerivativeGroupLinearNV
+        RayTracingProvisionalKHR
+        CooperativeMatrixNV
+        FragmentShaderSampleInterlockEXT
+        FragmentShaderShadingRateInterlockEXT
+        ShaderSMBuiltinsNV
+        FragmentShaderPixelInterlockEXT
+        // DemoteToHelperInvocationEXT
+        SubgroupShuffleINTEL
+        SubgroupBufferBlockIOINTEL
+        SubgroupImageBlockIOINTEL
+        SubgroupImageMediaBlockIOINTEL
+        IntegerFunctions2INTEL
+        FunctionPointersINTEL
+        IndirectReferencesINTEL
+        SubgroupAvcMotionEstimationINTEL
+        SubgroupAvcMotionEstimationIntraINTEL
+        SubgroupAvcMotionEstimationChromaINTEL
+        FPGAMemoryAttributesINTEL
+        UnstructuredLoopControlsINTEL
+        FPGALoopControlsINTEL
+        KernelAttributesINTEL
+        FPGAKernelAttributesINTEL
+        BlockingPipesINTEL
+        FPGARegINTEL
+        AtomicFloat32AddEXT
+        AtomicFloat64AddEXT
+    })
 }
 
 fn capabilites_to_features(capabilites: &[Capability]) -> Features {
@@ -239,6 +409,8 @@ impl Eq for ArcEngine {}
 
 pub(crate) struct Engine {
     device: Arc<Device>,
+    enabled_capabilities: Vec<Capability>,
+    enabled_extensions: Vec<&'static str>,
     buffer_allocator: BufferAllocator,
     kernel_cache_map: KernelCacheMap,
     runner: Arc<Runner>,
@@ -260,6 +432,8 @@ impl Engine {
         let device_features = physical_device
             .supported_features()
             .intersection(&optimal_device_features);
+        let enabled_capabilities = features_to_capabilites(&device_features);
+        let enabled_extensions = Vec::new();
         let mut queue_create_info = QueueCreateInfo::family(compute_family);
         queue_create_info.queues = vec![1f32];
         let device_create_info = DeviceCreateInfo {
@@ -275,6 +449,8 @@ impl Engine {
         let runner = Runner::new(queue)?;
         Ok(Arc::new(Self {
             device,
+            enabled_capabilities,
+            enabled_extensions,
             buffer_allocator,
             kernel_cache_map,
             runner,
@@ -294,19 +470,23 @@ impl Engine {
     pub(crate) fn supports_vulkan_version(&self, vulkan_version: Version) -> bool {
         vulkan_version <= self.vulkan_version()
     }
-    pub(crate) fn enabled_capabilities(&self) -> impl Iterator<Item = Capability> {
-        todo!();
-        [].into_iter()
+    pub(crate) fn enabled_capabilities(&self) -> &[Capability] {
+        &self.enabled_capabilities
     }
     pub(crate) fn capability_enabled(&self, capability: Capability) -> bool {
-        self.enabled_capabilities().any(|x| x == capability)
+        self.enabled_capabilities
+            .iter()
+            .copied()
+            .any(|x| x == capability)
     }
-    pub(crate) fn enabled_extensions(&self) -> impl Iterator<Item = &'static str> {
-        todo!();
-        [].into_iter()
+    pub(crate) fn enabled_extensions(&self) -> &[&'static str] {
+        &self.enabled_extensions
     }
     pub(crate) fn extension_enabled(&self, extension: &str) -> bool {
-        self.enabled_extensions().any(|x| x == extension)
+        self.enabled_extensions
+            .iter()
+            .copied()
+            .any(|x| x == extension)
     }
     fn send_op(&self, op: Op) -> Result<()> {
         use std::{
@@ -338,26 +518,17 @@ impl Engine {
         }
     }
     pub(crate) fn upload(&self, bytes: &[u8]) -> Result<Option<Arc<DeviceBuffer>>> {
-        let len = bytes.len();
-        if len == 0 {
-            Ok(None)
-        } else if len > u32::MAX as usize {
-            anyhow::bail!(
-                "Device buffer size {}B is too large, max is {}B!",
-                len,
-                u32::MAX
-            );
-        } else {
-            let mut src = self.buffer_allocator.alloc_host(len as u32)?;
+        let buffer = unsafe { self.alloc(bytes.len())? };
+        if let Some(buffer) = buffer.as_ref() {
+            let mut src = self.buffer_allocator.alloc_host(bytes.len() as u32)?;
             Arc::get_mut(&mut src).unwrap().write_slice(bytes)?;
-            let buffer = self.buffer_allocator.alloc_device(len as u32)?;
             let upload = Upload {
                 src,
                 dst: buffer.inner.clone(),
             };
             self.send_op(Op::Upload(upload))?;
-            Ok(Some(buffer))
         }
+        Ok(buffer)
     }
     pub(crate) fn download(&self, buffer: Arc<DeviceBuffer>) -> Result<HostBufferFuture> {
         let src = buffer.inner.clone();
@@ -464,24 +635,13 @@ pub(crate) struct DeviceBufferInner {
     chunk: Arc<Chunk<DeviceMemory>>,
     buffer: Arc<UnsafeBuffer>,
     usage: BufferUsage,
-    buffer_start: u32,
+    start: u32,
     len: u32,
-    offset: u8,
-    pad: u8,
 }
 
 impl DeviceBufferInner {
     fn chunk_id(&self) -> usize {
         Arc::as_ptr(&self.chunk) as usize
-    }
-    fn start(&self) -> DeviceSize {
-        self.buffer_start as DeviceSize
-    }
-    pub(crate) fn offset(&self) -> u8 {
-        self.offset
-    }
-    pub(crate) fn pad(&self) -> u8 {
-        self.pad
     }
 }
 
@@ -521,6 +681,7 @@ impl DeviceBuffer {
         let usage = BufferUsage::transfer_src()
             | BufferUsage::transfer_dst()
             | BufferUsage::storage_buffer();
+        let start = alloc.block.start;
         let align = device
             .physical_device()
             .properties()
@@ -539,16 +700,13 @@ impl DeviceBuffer {
                 ..Default::default()
             },
         )?;
-        let buffer_start = alloc.block.start;
-        unsafe { buffer.bind_memory(alloc.memory(), buffer_start as DeviceSize)? };
+        unsafe { buffer.bind_memory(alloc.memory(), start as DeviceSize)? };
         let inner = Arc::new(DeviceBufferInner {
             chunk: alloc.chunk.clone(),
             buffer,
             usage,
-            buffer_start,
+            start,
             len,
-            offset: 0,
-            pad: pad as u8,
         });
         Ok(Arc::new(Self { alloc, inner }))
     }
@@ -817,8 +975,10 @@ impl KernelCacheMap {
     }
     fn kernel(&self, info: KernelInfo) -> Result<Arc<KernelCache>> {
         let key = KernelCacheKey {
-            module_id: Arc::as_ptr(info.__module()) as usize,
-            kernel: info.__info().name.to_string(),
+            module_id: Arc::as_ptr(ModuleInner::get_from_kernel_info(&info)) as usize,
+            kernel: KernelInfoInner::get_from_kernel_info(&info)
+                .name
+                .to_string(),
         };
         let kernel_cache = self
             .kernels
@@ -848,7 +1008,7 @@ pub(crate) struct KernelCache {
 impl KernelCache {
     fn new(device: Arc<Device>, info: KernelInfo) -> Result<Arc<Self>> {
         use vulkano::descriptor_set::layout::DescriptorType;
-        let kernel_info = info.__info();
+        let kernel_info = KernelInfoInner::get_from_kernel_info(&info);
         let slice_infos = &kernel_info.slice_infos;
         let vulkan_version = &kernel_info.vulkan_version;
         let version = VulkanoVersion {
@@ -866,7 +1026,7 @@ impl KernelCache {
             .map(|(i, slice_info)| {
                 let set = 0u32;
                 let binding = i as u32;
-                let storage_write = if slice_info.mutability.is_mutable() {
+                let storage_write = if slice_info.mutable {
                     Some(binding)
                 } else {
                     None
@@ -902,6 +1062,9 @@ impl KernelCache {
         let mut capabilities = Vec::with_capacity(kernel_info.capabilities.len());
         for cap in kernel_info.capabilities.iter().copied() {
             capabilities.push(spirv_capability_to_vulkano_capability(cap)?);
+        }
+        if kernel_info.spirv.is_none() {
+            dbg!(&kernel_info);
         }
         let shader_module = unsafe {
             ShaderModule::from_words_with_data(
@@ -975,8 +1138,8 @@ struct Upload {
 }
 
 impl Upload {
-    fn barrier_key(&self) -> (usize, DeviceSize) {
-        (self.dst.chunk_id(), self.dst.start())
+    fn barrier_key(&self) -> (usize, u32) {
+        (self.dst.chunk_id(), self.dst.start)
     }
     fn barrier(&self) -> BufferMemoryBarrier {
         let source_stages = PipelineStages {
@@ -1042,8 +1205,8 @@ struct Download {
 }
 
 impl Download {
-    fn barrier_key(&self) -> (usize, DeviceSize) {
-        (self.src.chunk_id(), self.src.start())
+    fn barrier_key(&self) -> (usize, u32) {
+        (self.src.chunk_id(), self.src.start)
     }
     fn barrier(&self) -> BufferMemoryBarrier {
         let source_stages = PipelineStages {
@@ -1111,7 +1274,7 @@ pub(crate) struct Compute {
 }
 
 impl Compute {
-    fn barrier(buffer: &Arc<DeviceBufferInner>, mutability: Mutability) -> BufferMemoryBarrier {
+    fn barrier(buffer: &Arc<DeviceBufferInner>, mutable: bool) -> BufferMemoryBarrier {
         let source_stages = PipelineStages {
             transfer: true,
             compute_shader: true,
@@ -1130,7 +1293,7 @@ impl Compute {
         };
         let destination_access = AccessFlags {
             shader_read: true,
-            shader_write: mutability.is_mutable(),
+            shader_write: mutable,
             ..Default::default()
         };
         BufferMemoryBarrier {
@@ -1138,7 +1301,7 @@ impl Compute {
             source_access,
             destination_stages,
             destination_access,
-            range: buffer.start()..buffer.start() + buffer.size(),
+            range: 0..buffer.size(),
             ..BufferMemoryBarrier::buffer(buffer.buffer.clone())
         }
     }
@@ -1173,11 +1336,11 @@ impl Encode for Compute {
         unsafe {
             descriptor_set.write(layout, writes.iter());
         }
-        let slice_infos = &cache.info.__info().slice_infos;
+        let slice_infos = &KernelInfoInner::get_from_kernel_info(&cache.info).slice_infos;
         let mut cb_builder = &mut encoder.cb_builder;
         for (buffer, slice_info) in self.buffers.iter().zip(slice_infos.iter()) {
-            let barrier = Self::barrier(buffer, slice_info.mutability);
-            let barrier_key = (buffer.chunk_id(), buffer.start());
+            let barrier = Self::barrier(buffer, slice_info.mutable);
+            let barrier_key = (buffer.chunk_id(), buffer.start);
             let prev_access = encoder
                 .barriers
                 .insert(barrier_key, barrier.destination_access)
@@ -1367,7 +1530,7 @@ impl Drop for Frame {
 struct Encoder {
     frame: Frame,
     cb_builder: UnsafeCommandBufferBuilder,
-    barriers: HashMap<(usize, DeviceSize), AccessFlags>,
+    barriers: HashMap<(usize, u32), AccessFlags>,
     n_descriptors: usize,
 }
 

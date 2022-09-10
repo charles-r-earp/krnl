@@ -1,9 +1,10 @@
-#![cfg_attr(not(feature = "build"), allow(dead_code))]
 #![allow(warnings)]
 
 use derive_syn_parse::Parse;
 use krnl_types::{
-    __private::raw_module::{Mutability, PushInfo, RawKernelInfo, RawModule, Safety, SliceInfo},
+    kernel::{
+        CompileOptions, KernelInfoInner, ModuleInner, ModuleWithHash, PushInfo, SliceInfo, SpecInfo,
+    },
     scalar::ScalarType,
     version::Version,
 };
@@ -13,6 +14,7 @@ use quote::{format_ident, quote, ToTokens};
 use spirv::Capability;
 use std::{
     collections::{hash_map::DefaultHasher, HashSet},
+    convert::TryFrom,
     fs,
     hash::{Hash, Hasher},
     path::PathBuf,
@@ -93,7 +95,7 @@ struct Vulkan {
 
 impl Vulkan {
     fn version(&self) -> Result<Version> {
-        Version::from_str(&self.version.value()).into_syn_result(self.version.span())
+        Version::try_from(self.version.value().as_str()).into_syn_result(self.version.span())
     }
 }
 
@@ -156,39 +158,40 @@ struct KernelArg {
 #[derive(Debug)]
 struct KernelSliceArg {
     wrapper_ty: Option<Ident>,
-    slice_ty: Option<Ident>,
     elem_ty: Ident,
+    elementwise: bool,
 }
 
 impl Parse for KernelSliceArg {
     fn parse(input: ParseStream<'_>) -> Result<Self> {
-        let ident1: Ident = input.parse()?;
-        if input.peek(Lt) {
-            input.parse::<Lt>()?;
-            let ident2 = input.parse()?;
+        if input.peek(Ident) {
+            let ident1: Ident = input.parse()?;
             if input.peek(Lt) {
                 input.parse::<Lt>()?;
-                let elem_ty = input.parse()?;
-                input.parse::<Gt>()?;
-                input.parse::<Gt>()?;
+                let content;
+                let _ = syn::bracketed!(content in input);
+                let elem_ty = content.parse()?;
+                let _ = input.parse::<Gt>()?;
                 Ok(Self {
                     wrapper_ty: Some(ident1),
-                    slice_ty: Some(ident2),
                     elem_ty,
+                    elementwise: false,
                 })
             } else {
-                input.parse::<Gt>()?;
                 Ok(Self {
                     wrapper_ty: None,
-                    slice_ty: Some(ident1),
-                    elem_ty: ident2,
+                    elem_ty: ident1,
+                    elementwise: true,
                 })
             }
         } else {
+            let content;
+            let _ = syn::bracketed!(content in input);
+            let elem_ty = content.parse()?;
             Ok(Self {
                 wrapper_ty: None,
-                slice_ty: None,
-                elem_ty: ident1,
+                elem_ty,
+                elementwise: false,
             })
         }
     }
@@ -262,7 +265,7 @@ static BUILTINS: &[(&str, &str)] = &[
 
 #[derive(Debug)]
 struct KernelMeta {
-    info: RawKernelInfo,
+    info: KernelInfoInner,
     has_vulkan_version: bool,
     thread_lits: Punctuated<LitInt, Comma>,
     builtins: HashSet<&'static str>,
@@ -275,22 +278,19 @@ struct KernelMeta {
 
 impl KernelMeta {
     fn new(kernel_attr: &KernelAttributes, kernel: &Kernel) -> Result<Self> {
-        let safety = if kernel.unsafe_token.is_some() {
-            Safety::Unsafe
-        } else {
-            Safety::Safe
-        };
-        let mut info = RawKernelInfo {
+        let safe = kernel.unsafe_token.is_none();
+        let mut info = KernelInfoInner {
             name: kernel.ident.to_string(),
             vulkan_version: Version::from_major_minor(0, 0),
             capabilities: Vec::new(),
             extensions: Vec::new(),
-            safety,
+            safe,
+            threads: Vec::new(),
             slice_infos: Vec::new(),
             push_infos: Vec::new(),
+            spec_infos: Vec::new(),
             num_push_words: 0,
             elementwise: false,
-            threads: Vec::new(),
             spirv: None,
         };
         let mut has_vulkan_version = false;
@@ -384,14 +384,9 @@ impl KernelMeta {
                                 msg.push('.');
                                 Error::new_spanned(&attr.ident, msg)
                             })?;
-                        let arg_ty = arg
-                            .ty
-                            .as_ref()
-                            .or_else(|| {
-                                dbg!(&arg);
-                                None
-                            })
-                            .unwrap();
+                        let arg_ty = arg.ty.as_ref().ok_or_else(|| {
+                            Error::new_spanned(&arg_ident, "expected a builtin type")
+                        })?;
                         let ty_string = arg_ty.to_string();
                         if &ty_string != builtin_ty {
                             return Err(Error::new_spanned(&arg_ty, "expected `{builtin_ty}`"));
@@ -440,10 +435,24 @@ impl KernelMeta {
                         inner_args.push(parse_quote! {
                             #arg_ident: #arg_ty
                         });
+                    } else if attr.ident == "spec" {
+                        let spec_ty = &arg.ty.as_ref().ok_or_else(|| {
+                            Error::new_spanned(&arg_ident, "expected a spec type")
+                        })?;
+                        let spec_ty_string = spec_ty.to_string();
+                        let scalar_type = ScalarType::try_from(spec_ty_string.as_str())
+                            .map_err(|_| Error::new_spanned(&spec_ty, "expected a scalar"))?;
+                        info.spec_infos.push(SpecInfo {
+                            name: ident_string,
+                            scalar_type,
+                        });
+                        inner_args.push(parse_quote! {
+                            #arg_ident: #spec_ty
+                        });
                     } else {
                         return Err(Error::new_spanned(
                             &attr.ident,
-                            "unknown attribute, expected \"builtin\" or \"subgroup\"",
+                            "unknown attribute, expected \"builtin\", \"subgroup\", or \"spec\"",
                         ));
                     }
                 } else {
@@ -452,7 +461,7 @@ impl KernelMeta {
                     }
                     let push_ty = arg.ty.as_ref().unwrap();
                     let push_ty_string = push_ty.to_string();
-                    let scalar_type = ScalarType::from_str(&push_ty_string)
+                    let scalar_type = ScalarType::try_from(push_ty_string.as_str())
                         .map_err(|_| Error::new_spanned(&push_ty, "expected a scalar"))?;
 
                     let typed_arg: TypedArg = parse_quote! {
@@ -462,7 +471,7 @@ impl KernelMeta {
                     inner_args.push(typed_arg);
                 }
             } else if let Some(slice_arg) = arg.slice_arg.as_ref() {
-                let elementwise = slice_arg.slice_ty.is_none();
+                let elementwise = slice_arg.elementwise;
                 let elem_ty = &slice_arg.elem_ty;
                 let elem_ty_string = elem_ty.to_string();
                 if elementwise && !info.elementwise {
@@ -476,7 +485,11 @@ impl KernelMeta {
                                 "can not use `GlobalMut<_>` in elementwise kernel",
                             ));
                         }
-                        if !mutable {
+                        if mutable {
+                            inner_args.push(parse_quote! {
+                                #arg_ident: & #mut_token #wrapper_ty <[#elem_ty]>
+                            })
+                        } else {
                             return Err(Error::new_spanned(
                                 arg.and.as_ref().unwrap(),
                                 "expected `&mut _`",
@@ -485,29 +498,15 @@ impl KernelMeta {
                     } else {
                         return Err(Error::new_spanned(wrapper_ty, "expected `GlobalMut<_>`"));
                     }
-                }
-                if let Some(slice_ty) = slice_arg.slice_ty.as_ref() {
-                    if slice_ty == "SliceMut" {
-                        if slice_arg.wrapper_ty.is_none() {
-                            return Err(Error::new_spanned(mut_token, "`SliceMut<_>` can not be used as a kernel argument directly, use `krnl_core::mem::GlobalMut<SliceMut<_>>` instead"));
-                        }
-                    } else if slice_ty == "Slice" {
-                        if let Some(mut_token) = mut_token {
-                            return Err(Error::new_spanned(mut_token, "unexpected `mut`"));
-                        }
-                    }
-                    if let Some(wrapper_ty) = slice_arg.wrapper_ty.as_ref() {
-                        inner_args.push(parse_quote! {
-                            #arg_ident: & #mut_token #wrapper_ty<#slice_ty<#elem_ty>>
-                        });
-                    } else {
-                        inner_args.push(parse_quote! {
-                            #arg_ident: & #mut_token #slice_ty<#elem_ty>
-                        });
-                    }
-                } else {
+                } else if elementwise {
                     inner_args.push(parse_quote! {
                         #arg_ident: & #mut_token #elem_ty
+                    })
+                } else if mutable {
+                    return Err(Error::new_spanned(mut_token, "`&mut [_]` can not be used as a kernel argument directly, use `krnl_core::mem::GlobalMut<_>` instead"));
+                } else {
+                    inner_args.push(parse_quote! {
+                        #arg_ident: & #mut_token [#elem_ty]
                     })
                 }
                 {
@@ -519,17 +518,12 @@ impl KernelMeta {
                     });
                     binding += 1;
                 }
-                let mutability = if mutable {
-                    Mutability::Mutable
-                } else {
-                    Mutability::Immutable
-                };
-                let scalar_type = ScalarType::from_str(&elem_ty_string)
+                let scalar_type = ScalarType::try_from(elem_ty_string.as_str())
                     .map_err(|_| Error::new_spanned(&elem_ty, "expected a scalar"))?;
                 info.slice_infos.push(SliceInfo {
                     name: arg_ident.to_string(),
                     scalar_type,
-                    mutability,
+                    mutable,
                     elementwise,
                 });
             } else if let Some(group_arg) = arg.group_arg.as_ref() {
@@ -587,15 +581,6 @@ impl KernelMeta {
                 }
             }
         }
-        for slice_info in info.slice_infos.iter() {
-            let offset_pad = format_ident!("__krnl_offset_pad_{}", slice_info.name);
-            push_consts.push((
-                ScalarType::U32,
-                parse_quote! {
-                    #offset_pad: u32
-                },
-            ));
-        }
         if info.elementwise {
             builtins.extend([
                 "global_threads",
@@ -616,6 +601,23 @@ impl KernelMeta {
                 #[spirv(local_invocation_id)]
                 thread_id: ::krnl_core::glam::UVec3
             });
+            push_consts.push((
+                ScalarType::U32,
+                parse_quote! {
+                    __krnl_elements: u32
+                },
+            ));
+        } else {
+            for slice_info in info.slice_infos.iter() {
+                let ident = format_ident!("__krnl_len_{}", slice_info.name);
+                let ty = format_ident!("{}", slice_info.scalar_type.name());
+                push_consts.push((
+                    ScalarType::U32,
+                    parse_quote! {
+                        #ident: #ty
+                    },
+                ));
+            }
         }
         push_consts.sort_by_key(|x| x.0.size());
         let mut offset = 0;
@@ -662,6 +664,32 @@ impl KernelMeta {
     }
 }
 
+/*
+fn get_compile_options_from_env() -> Result<Option<CompileOptions>> {
+    use std::collections::HashMap;
+    let vars = std::env::vars().collect::<HashMap<_, _>>();
+    panic!("{:#?}", vars);
+    let span = Span::call_site();
+    let target_arch = dbg!(std::env::var("TARGET_ARCH")).into_syn_result(span)?;
+    if target_arch == "spirv" {
+        let target = dbg!(std::env::var("TARGET")).into_syn_result(span)?;
+        let target = target.split_at("spirv-unknown-vulkan".len()).1;
+        let vulkan_version = Version::try_from(target).into_syn_result(span)?;
+        let mut capabilities = Vec::new();
+        let mut extensions = Vec::new();
+        for var in std::env::vars() {
+            todo!()
+        }
+        Ok(Some(CompileOptions {
+            vulkan_version,
+            capabilities,
+            extensions,
+        }))
+    } else {
+        Ok(None)
+    }
+}*/
+
 #[allow(unused_variables)]
 fn kernel_impl(attr: TokenStream, item: TokenStream) -> Result<TokenStream> {
     let span = Span::call_site();
@@ -669,108 +697,135 @@ fn kernel_impl(attr: TokenStream, item: TokenStream) -> Result<TokenStream> {
     let kernel: Kernel = syn::parse(item)?;
     let meta = KernelMeta::new(&kernel_attr, &kernel)?;
     let info = &meta.info;
-    let builtins = &meta.builtins;
-    let slice_infos = &info.slice_infos;
-    let kernel_ident = &kernel.ident;
-    let block = &kernel.block;
-    let thread_lits = &meta.thread_lits;
-    let full_thread_lits = thread_lits
-        .iter()
-        .cloned()
-        .chain([LitInt::new("1", span), LitInt::new("1", span)])
-        .take(3)
-        .collect::<Punctuated<_, Comma>>();
-    let mut builtin_stmts = Vec::<Stmt>::new();
-    let outer_args = meta.outer_args;
-    let inner_args = meta.inner_args;
-    let group_args = meta.group_args;
-    let call_args = inner_args
-        .iter()
-        .map(|x| &x.ident)
-        .collect::<Punctuated<_, Comma>>();
-    let push_consts = meta.push_consts;
-    let push_const_idents = push_consts
-        .iter()
-        .map(|x| &x.ident)
-        .collect::<Punctuated<_, Comma>>();
-    if builtins.contains("threads") {
-        builtin_stmts.push(parse_quote! {
-            let threads = ::krnl_core::glam::UVec3::new(#full_thread_lits);
-        });
-    }
-    if builtins.contains("global_threads") {
-        builtin_stmts.push(parse_quote! {
-            let global_threads = groups * threads;
-        });
-    }
-    if let Some(push_consts_ident) = meta.push_consts_ident.as_ref() {
-        builtin_stmts.push(parse_quote! {
-            let &#push_consts_ident {
-                #push_const_idents
-            } = push_consts;
-        });
-    }
-    for slice_info in slice_infos {
-        let ident = format_ident!("{}", slice_info.name);
-        let offset_pad = format_ident!("__krnl_offset_pad_{}", slice_info.name);
-        let (slice_ty, slice_raw_fn) = if slice_info.mutability.is_mutable() {
-            ("SliceMut", "__from_raw_parts_mut")
-        } else {
-            ("Slice", "__from_raw_parts")
-        };
-        let slice_ty = format_ident!("{}", slice_ty);
-        let slice_raw_fn = format_ident!("{}", slice_raw_fn);
-        let mut_token = if slice_info.mutability.is_mutable() {
-            Some(Mut::default())
-        } else {
-            None
-        };
-        builtin_stmts.push(parse_quote! {
-            let ref #mut_token #ident = unsafe {
-                use ::krnl_core::slice::#slice_ty;
-                let pad = (#offset_pad & 255) as usize;
-                let offset = (#offset_pad >> 8) as usize;
-                let len = #ident .len() - (offset + pad);
-                #slice_ty :: #slice_raw_fn (#ident, offset, len)
+    let mut output = TokenStream2::new();
+    let should_build = if let Ok(kernels) = std::env::var("KRNL_KERNELS") {
+        kernels.split(',').find(|x| x == &info.name).is_some()
+    } else {
+        false
+    };
+    if should_build {
+        let builtins = &meta.builtins;
+        let slice_infos = &info.slice_infos;
+        let spec_infos = &info.spec_infos;
+        let kernel_ident = &kernel.ident;
+        let block = &kernel.block;
+        let thread_lits = &meta.thread_lits;
+        let full_thread_lits = thread_lits
+            .iter()
+            .cloned()
+            .chain([LitInt::new("1", span), LitInt::new("1", span)])
+            .take(3)
+            .collect::<Punctuated<_, Comma>>();
+        let mut builtin_stmts = Vec::<Stmt>::new();
+        let outer_args = meta.outer_args;
+        let inner_args = meta.inner_args;
+        let group_args = meta.group_args;
+        let call_args = inner_args
+            .iter()
+            .map(|x| &x.ident)
+            .collect::<Punctuated<_, Comma>>();
+        let push_consts = meta.push_consts;
+        let push_const_idents = push_consts
+            .iter()
+            .map(|x| &x.ident)
+            .collect::<Punctuated<_, Comma>>();
+        if builtins.contains("threads") {
+            builtin_stmts.push(parse_quote! {
+                let threads = ::krnl_core::glam::UVec3::new(#full_thread_lits);
+            });
+        }
+        if builtins.contains("global_threads") {
+            builtin_stmts.push(parse_quote! {
+                let global_threads = groups * threads;
+            });
+        }
+        for (i, spec_info) in spec_infos.iter().enumerate() {
+            use ScalarType::*;
+            let scalar_type = spec_info.scalar_type;
+            let bits = scalar_type.size() * 8;
+            let scalar_name = scalar_type.name();
+            let op_type_def = if scalar_name.contains("f") {
+                format!("%ty = OpTypeFloat {bits}")
+            } else {
+                let sign = if scalar_name.contains("i") { 1 } else { 0 };
+                format!("%ty = OpTypeInt {bits} {sign}")
             };
-        });
-        if slice_info.mutability.is_mutable() && !slice_info.elementwise {
+            let op_decorate = format!("OpDecorate %y SpecId {}", i);
+            let ident = format_ident!("{}", spec_info.name);
+            let ty = format_ident!("{}", scalar_name);
             builtin_stmts.push(parse_quote! {
-                let ref mut #ident = ::krnl_core::mem::GlobalMut::__new(#ident);
+                let #ident = {
+                    fn spec() -> #ty {
+                        unsafe {
+                            asm! {
+                                #op_type_def,
+                                "%y = OpSpecConstant %ty 0",
+                                #op_decorate,
+                                "OpReturnValue %y",
+                                options(noreturn),
+                            }
+                        }
+                    }
+                    spec()
+                };
             });
         }
-    }
-    for (ident, group_arg) in group_args.iter() {
-        if let Some(wrapper_ty) = group_arg.wrapper_ty.as_ref() {
+        if let Some(push_consts_ident) = meta.push_consts_ident.as_ref() {
             builtin_stmts.push(parse_quote! {
-                let ref mut #ident = #wrapper_ty::__new(#ident);
-            })
-        }
-    }
-    let mut elementwise_stmts = Vec::<Stmt>::new();
-    if meta.info.elementwise {
-        if let Some(slice_info) = meta.info.slice_infos.iter().find(|x| x.elementwise) {
-            let ident = format_ident!("{}", slice_info.name);
-            builtin_stmts.push(parse_quote! {
-                let elements = #ident.len() as u32;
+                let &#push_consts_ident {
+                    #push_const_idents
+                } = push_consts;
             });
-        } else {
-            builtin_stmts.push(parse_quote! {
-                let elements = 0;
-            })
         }
-        for slice_info in meta.info.slice_infos.iter().filter(|x| x.elementwise) {
+        for slice_info in slice_infos {
             let ident = format_ident!("{}", slice_info.name);
-            let mut_token = match slice_info.mutability {
-                Mutability::Mutable => Some(Mut::default()),
-                Mutability::Immutable => None,
+            let mut_token = if slice_info.mutable {
+                Some(Mut::default())
+            } else {
+                None
             };
-            elementwise_stmts.push(parse_quote! {
-                let #ident = & #mut_token #ident[element_index as usize];
-            });
+            if slice_info.mutable && !slice_info.elementwise {
+                builtin_stmts.push(parse_quote! {
+                    let ref mut #ident = ::krnl_core::mem::GlobalMut::__new(#ident);
+                });
+            }
         }
-    }
-    let features = meta
+        for (ident, group_arg) in group_args.iter() {
+            if let Some(wrapper_ty) = group_arg.wrapper_ty.as_ref() {
+                builtin_stmts.push(parse_quote! {
+                    let ref mut #ident = #wrapper_ty::__new(#ident);
+                })
+            }
+        }
+        let mut elementwise_stmts = Vec::<Stmt>::new();
+        if meta.info.elementwise {
+            builtin_stmts.push(parse_quote! {
+                let elements = __krnl_elements;
+            });
+            if slice_infos.iter().any(|x| x.mutable) {
+                elementwise_stmts.push(parse_quote! {
+                    use krnl_core::ops::{IndexUnchecked, IndexUncheckedMut};
+                });
+            } else if !slice_infos.is_empty() {
+                elementwise_stmts.push(parse_quote! {
+                    use krnl_core::ops::IndexUnchecked;
+                });
+            }
+            for slice_info in meta.info.slice_infos.iter().filter(|x| x.elementwise) {
+                let ident = format_ident!("{}", slice_info.name);
+                let index_fn = if slice_info.mutable {
+                    format_ident!("index_unchecked_mut")
+                } else {
+                    format_ident!("index_unchecked")
+                };
+                elementwise_stmts.push(parse_quote! {
+                    let #ident = unsafe {
+                        #ident . #index_fn(element_index as usize)
+                    };
+                });
+            }
+        }
+        /*let features = meta
         .info
         .capabilities
         .iter()
@@ -781,70 +836,72 @@ fn kernel_impl(attr: TokenStream, item: TokenStream) -> Result<TokenStream> {
                 .iter()
                 .map(|x| format_ident!("ext:{}", x)),
         )
-        .collect::<Punctuated<_, Comma>>();
-    let mut output = TokenStream2::new();
-    if let Some(push_consts_ident) = meta.push_consts_ident.as_ref() {
+        .collect::<Punctuated<_, Comma>>();*/
+        if let Some(push_consts_ident) = meta.push_consts_ident.as_ref() {
+            quote! {
+                #[allow(non_camel_case_types)]
+                #[repr(C)]
+                pub struct #push_consts_ident {
+                    #push_consts
+                }
+            }
+            .to_tokens(&mut output);
+        }
+        let unsafe_token = &kernel.unsafe_token;
+        let call = if let Some(unsafe_token) = kernel.unsafe_token.as_ref() {
+            quote! {
+                #unsafe_token {
+                    #kernel_ident(#call_args);
+                }
+            }
+        } else {
+            quote! {
+                #kernel_ident(#call_args);
+            }
+        };
+        let generated_body = if meta.info.elementwise {
+            quote! {
+                let mut element_index = global_id.x;
+                while element_index < elements {
+                    #(#elementwise_stmts)*
+                    #call
+                    element_index += global_threads.x;
+                }
+            }
+        } else {
+            call
+        };
         quote! {
-            #[cfg(all(target_arch = "spirv", #features))]
-            #[allow(non_camel_case_types)]
-            #[repr(C)]
-            pub struct #push_consts_ident {
-                #push_consts
+            #[spirv(compute(threads(#thread_lits)))]
+            pub fn #kernel_ident (
+                #outer_args
+            ) {
+                #(#builtin_stmts)*
+                fn #kernel_ident (
+                    #inner_args
+                ) #block
+                #generated_body
             }
         }
         .to_tokens(&mut output);
-    }
-    let unsafe_token = &kernel.unsafe_token;
-    let call = if let Some(unsafe_token) = kernel.unsafe_token.as_ref() {
-        quote! {
-            #unsafe_token {
-                #kernel_ident(#call_args);
-            }
-        }
     } else {
-        quote! {
-            #kernel_ident(#call_args);
-        }
-    };
-    let generated_body = if meta.info.elementwise {
-        quote! {
-            let mut element_index = global_id.x;
-            while element_index < elements {
-                #(#elementwise_stmts)*
-                #call
-                element_index += global_threads.x;
+        use std::env::var;
+        let module_path = var("KRNL_MODULE_PATH").ok();
+        let vulkan_info = var("KRNL_VULKAN_VERSION").ok();
+        if let Some((module_path, vulkan_version)) = module_path.as_ref().zip(vulkan_info.as_ref())
+        {
+            let bytes = fs::read(&module_path).into_syn_result(span)?;
+            let mut module: ModuleInner = bincode::deserialize(&bytes).into_syn_result(span)?;
+            let mut info = meta.info;
+            if !meta.has_vulkan_version {
+                info.vulkan_version =
+                    Version::try_from(vulkan_version.as_str()).into_syn_result(span)?;
             }
-        }
-    } else {
-        call
-    };
-    quote! {
-        #[cfg(all(target_arch = "spirv", #features))]
-        #[spirv(compute(threads(#thread_lits)))]
-        pub fn #kernel_ident (
-            #outer_args
-        ) {
-            #(#builtin_stmts)*
-            fn #kernel_ident (
-                #inner_args
-            ) #block
-            #generated_body
+            module.kernels.insert(info.name.clone(), Arc::new(info));
+            let bytes = bincode::serialize(&module).into_syn_result(span)?;
+            fs::write(&module_path, &bytes).into_syn_result(span)?;
         }
     }
-    .to_tokens(&mut output);
-    let module_path = std::env::var("KRNL_MODULE_PATH").ok();
-    if let Some(module_path) = module_path.as_ref() {
-        let bytes = fs::read(&module_path).into_syn_result(span)?;
-        let mut raw_module: RawModule = bincode::deserialize(&bytes).into_syn_result(span)?;
-        let mut info = meta.info;
-        if !meta.has_vulkan_version {
-            info.vulkan_version = raw_module.vulkan_version;
-        }
-        raw_module.kernels.insert(info.name.clone(), Arc::new(info));
-        let bytes = bincode::serialize(&raw_module).into_syn_result(span)?;
-        fs::write(&module_path, &bytes).into_syn_result(span)?;
-    }
-    // dbg!(output.to_string().split('\n').collect::<Vec<_>>());
     Ok(output.into())
 }
 
@@ -1022,7 +1079,6 @@ struct ModuleAttr {
     tokens: TokenStream2,
 }
 
-#[cfg(feature = "build")]
 fn build_module(
     module_attr: &ModuleAttributes,
     module: &ItemMod,
@@ -1036,7 +1092,7 @@ fn build_module(
     fs::create_dir_all(&krnl_dir).into_syn_result(span)?;
     let builder_dir = krnl_dir.join("builder");
     let toolchain_toml = r#"[toolchain]
-channel = "nightly-2022-07-04"
+channel = "nightly-2022-08-22"
 components = ["rust-src", "rustc-dev", "llvm-tools-preview"]"#;
     if true
     /* !builder_dir.exists() */
@@ -1052,6 +1108,7 @@ publish = false
 
 [dependencies]
 krnl-builder = { path = "/home/charles/Documents/rust/krnl/krnl-builder" }
+krnl-types = { path = "/home/charles/Documents/rust/krnl/krnl-types" }
 bincode = "1.3.3"
 "#;
         fs::write(builder_dir.join("Cargo.toml"), manifest).into_syn_result(span)?;
@@ -1062,19 +1119,24 @@ bincode = "1.3.3"
             fs::create_dir(&src_dir).into_syn_result(span)?;
         }
         let main = r#"use krnl_builder::{ModuleBuilder, version::Version};
-use std::str::FromStr;
+use krnl_types::kernel::ModuleWithHash;
+use std::{str::FromStr, convert::TryFrom};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = std::env::args().collect::<Vec<_>>();
     let crate_path = &args[1];
-    let vulkan_version = Version::from_str(&args[2])?;
+    let vulkan_version = Version::try_from(args[2].as_str())
+        .map_err(|x| x.to_string())?;
     let hash = u64::from_str(&args[3])?;
     let module_path = &args[4];
     let module = ModuleBuilder::new(crate_path)
         .vulkan(vulkan_version)
         .build()?;
-    let mut bytes = hash.to_be_bytes().to_vec();
-    bincode::serialize_into(&mut bytes, &module.__raw())?;
+    let module_with_hash = ModuleWithHash {
+        module,
+        hash,
+    };
+    let bytes = bincode::serialize(&module_with_hash)?;
     std::fs::write(module_path, &bytes)?;
     Ok(())
 }"#;
@@ -1207,15 +1269,31 @@ fn module_impl(attr: TokenStream, item: TokenStream) -> Result<TokenStream> {
     }
     .to_string();
     let invocation_hash = get_hash(&invocation);
-    #[cfg(feature = "build")]
-    {
-        if std::env::var("CARGO_PRIMARY_PACKAGE").is_ok() {
-            build_module(&module_attr, &module, &module_prefix_path, invocation_hash)?;
-        }
+    if cfg!(krnl_build) && std::env::var("CARGO_PRIMARY_PACKAGE").is_ok() {
+        build_module(&module_attr, &module, &module_prefix_path, invocation_hash)?;
     }
     let module_name = module.ident.to_string();
     let module_prefix_path_string = module_prefix_path.to_string_lossy();
-    let panic_msg = format!("module `{module_name}` has been modified, rebuild with `cargo +nightly build --features krnl/build`");
+    let manifest_dir = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap());
+    let module_path = manifest_dir
+        .join(".krnl/modules")
+        .join(&module_prefix_path)
+        .join(&module_name)
+        .with_extension("bincode");
+    let span = Span::call_site();
+    if module_path.exists() {
+        let bytes = fs::read(&module_path).into_syn_result(span)?;
+        let module_with_hash: ModuleWithHash =
+            bincode::deserialize(&bytes).into_syn_result(span)?;
+        if module_with_hash.hash != invocation_hash {
+            let panic_msg = format!("module `{module_name}` has been modified, rebuild with `RUSTFLAGS=\"--cfg krnl_build\" cargo +nightly check`");
+            return Err(Error::new(span, panic_msg));
+        }
+    } else {
+        let panic_msg = format!("module `{module_name}` not built, build with `RUSTFLAGS=\"--cfg krnl_build\" cargo +nightly check`");
+        return Err(Error::new(span, panic_msg));
+    }
+
     let krnl = if crate_is_krnl() {
         quote! {
             crate
@@ -1225,30 +1303,21 @@ fn module_impl(attr: TokenStream, item: TokenStream) -> Result<TokenStream> {
             ::krnl
         }
     };
+    let module_path_string = module_path.to_string_lossy();
     let module_fn = parse_quote! {
-        pub fn module() -> #krnl::anyhow::Result<#krnl::kernel::Module> {
-            use #krnl::{bincode, kernel::Module, krnl_core::__private::raw_module::RawModule};
+        pub fn module() -> #krnl::anyhow::Result<&'static #krnl::kernel::Module> {
+            use #krnl::{bincode, kernel::{Module, ModuleWithHash}, __private::once_cell};
+            use once_cell::sync::OnceCell;
             use ::std::sync::Arc;
-            static BYTES: &[u8] = {
-                let bytes = include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/.krnl/modules/", #module_prefix_path_string, "/", #module_name, ".bincode"));
-                let hash_bytes = [
-                    bytes[0],
-                    bytes[1],
-                    bytes[2],
-                    bytes[3],
-                    bytes[4],
-                    bytes[5],
-                    bytes[6],
-                    bytes[7],
-                ];
-                let hash = u64::from_be_bytes(hash_bytes);
-                if hash != #invocation_hash {
-                    panic!(#panic_msg);
-                }
-                bytes.as_slice()
-            };
-            let raw_module: RawModule = bincode::deserialize(&BYTES[8..])?;
-            Ok(Module::__from_raw(Arc::new(raw_module)))
+            static MODULE: OnceCell<Result<Module, bincode::Error>> = OnceCell::new();
+            let result = MODULE.get_or_init(|| {
+                let module_with_hash: ModuleWithHash = bincode::deserialize(include_bytes!(#module_path_string).as_slice())?;
+                Ok(module_with_hash.module)
+            });
+            match result {
+                Ok(x) => Ok(&x),
+                Err(e) => Err(anyhow::Error::new(e)),
+            }
         }
     };
     module
