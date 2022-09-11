@@ -1,25 +1,31 @@
+#![cfg_attr(krnl_build, feature(proc_macro_span))]
 #![allow(warnings)]
 
+use bimap::BiHashMap;
 use derive_syn_parse::Parse;
 use krnl_types::{
-    kernel::{
-        CompileOptions, KernelInfoInner, ModuleInner, ModuleWithHash, PushInfo, SliceInfo, SpecInfo,
-    },
+    kernel::{CompileOptions, KernelInfoInner, ModuleInner, PushInfo, SliceInfo, SpecInfo},
     scalar::ScalarType,
     version::Version,
 };
-use proc_macro::TokenStream;
+use once_cell::unsync::OnceCell;
+use proc_macro::{Span as StdSpan, TokenStream};
 use proc_macro2::{Span, TokenStream as TokenStream2};
 use quote::{format_ident, quote, ToTokens};
+use serde::{Deserialize, Serialize};
 use spirv::Capability;
 use std::{
-    collections::{hash_map::DefaultHasher, HashSet},
+    borrow::BorrowMut,
+    cell::{RefCell, RefMut},
+    collections::{hash_map::DefaultHasher, HashMap, HashSet},
     convert::TryFrom,
     fs,
     hash::{Hash, Hasher},
-    path::PathBuf,
+    path::{Path, PathBuf},
+    rc::Rc,
     str::FromStr,
     sync::Arc,
+    thread_local,
 };
 use syn::{
     parse::{Parse, ParseStream},
@@ -65,6 +71,51 @@ fn get_krnl_path() -> syn::Path {
         parse_quote! {
             krnl
         }
+    }
+}
+
+#[derive(Debug)]
+struct KernelModule {
+    path: PathBuf,
+    vulkan_version: Version,
+    module: RefCell<ModuleInner>,
+}
+
+impl KernelModule {
+    fn load() -> Result<Option<Rc<Self>>> {
+        use std::env::var;
+        thread_local! {
+             static MODULE: OnceCell<Option<Rc<KernelModule>>> = OnceCell::new();
+        }
+        let span = Span::call_site();
+        MODULE.with(|module| {
+            module
+                .get_or_try_init(|| {
+                    let path = var("KRNL_MODULE_PATH").ok();
+                    let vulkan_version = var("KRNL_VULKAN_VERSION").ok();
+                    if let Some((path, vulkan_version)) = path.zip(vulkan_version) {
+                        let path = PathBuf::from(path);
+                        let vulkan_version = Version::try_from(vulkan_version.as_str()).unwrap();
+                        let bytes = fs::read(path.as_path()).into_syn_result(span)?;
+                        let module =
+                            RefCell::new(bincode::deserialize(&bytes).into_syn_result(span)?);
+                        Ok(Some(Rc::new(Self {
+                            path,
+                            vulkan_version,
+                            module,
+                        })))
+                    } else {
+                        Ok(None)
+                    }
+                })
+                .map(|x| x.clone())
+        })
+    }
+    fn save(&self) -> Result<()> {
+        let span = Span::call_site();
+        let bytes = bincode::serialize(&*self.module.borrow()).into_syn_result(span)?;
+        std::fs::write(&self.path, &bytes).into_syn_result(span)?;
+        Ok(())
     }
 }
 
@@ -664,32 +715,6 @@ impl KernelMeta {
     }
 }
 
-/*
-fn get_compile_options_from_env() -> Result<Option<CompileOptions>> {
-    use std::collections::HashMap;
-    let vars = std::env::vars().collect::<HashMap<_, _>>();
-    panic!("{:#?}", vars);
-    let span = Span::call_site();
-    let target_arch = dbg!(std::env::var("TARGET_ARCH")).into_syn_result(span)?;
-    if target_arch == "spirv" {
-        let target = dbg!(std::env::var("TARGET")).into_syn_result(span)?;
-        let target = target.split_at("spirv-unknown-vulkan".len()).1;
-        let vulkan_version = Version::try_from(target).into_syn_result(span)?;
-        let mut capabilities = Vec::new();
-        let mut extensions = Vec::new();
-        for var in std::env::vars() {
-            todo!()
-        }
-        Ok(Some(CompileOptions {
-            vulkan_version,
-            capabilities,
-            extensions,
-        }))
-    } else {
-        Ok(None)
-    }
-}*/
-
 #[allow(unused_variables)]
 fn kernel_impl(attr: TokenStream, item: TokenStream) -> Result<TokenStream> {
     let span = Span::call_site();
@@ -825,18 +850,6 @@ fn kernel_impl(attr: TokenStream, item: TokenStream) -> Result<TokenStream> {
                 });
             }
         }
-        /*let features = meta
-        .info
-        .capabilities
-        .iter()
-        .map(|x| format_ident!("{}", format!("{x:?}")))
-        .chain(
-            meta.info
-                .extensions
-                .iter()
-                .map(|x| format_ident!("ext:{}", x)),
-        )
-        .collect::<Punctuated<_, Comma>>();*/
         if let Some(push_consts_ident) = meta.push_consts_ident.as_ref() {
             quote! {
                 #[allow(non_camel_case_types)]
@@ -885,21 +898,17 @@ fn kernel_impl(attr: TokenStream, item: TokenStream) -> Result<TokenStream> {
         }
         .to_tokens(&mut output);
     } else {
-        use std::env::var;
-        let module_path = var("KRNL_MODULE_PATH").ok();
-        let vulkan_info = var("KRNL_VULKAN_VERSION").ok();
-        if let Some((module_path, vulkan_version)) = module_path.as_ref().zip(vulkan_info.as_ref())
-        {
-            let bytes = fs::read(&module_path).into_syn_result(span)?;
-            let mut module: ModuleInner = bincode::deserialize(&bytes).into_syn_result(span)?;
+        if let Some(kernel_module) = KernelModule::load()? {
             let mut info = meta.info;
             if !meta.has_vulkan_version {
-                info.vulkan_version =
-                    Version::try_from(vulkan_version.as_str()).into_syn_result(span)?;
+                info.vulkan_version = kernel_module.vulkan_version;
             }
-            module.kernels.insert(info.name.clone(), Arc::new(info));
-            let bytes = bincode::serialize(&module).into_syn_result(span)?;
-            fs::write(&module_path, &bytes).into_syn_result(span)?;
+            kernel_module
+                .module
+                .borrow_mut()
+                .kernels
+                .insert(info.name.clone(), Arc::new(info));
+            kernel_module.save()?;
         }
     }
     Ok(output.into())
@@ -910,6 +919,53 @@ pub fn kernel(attr: TokenStream, item: TokenStream) -> TokenStream {
     match kernel_impl(attr, item) {
         Ok(x) => x,
         Err(e) => e.into_compile_error().into(),
+    }
+}
+
+#[derive(Debug)]
+struct ModuleTable {
+    span: Span,
+    path: PathBuf,
+    source_to_mod_path: RefCell<BiHashMap<String, PathBuf>>,
+}
+
+impl ModuleTable {
+    fn load(span: Span) -> Result<Rc<Self>> {
+        use std::env::var;
+        thread_local! {
+             static TABLE: OnceCell<Rc<ModuleTable>> = OnceCell::new();
+        }
+        TABLE.with(|table| {
+            table
+                .get_or_try_init(|| {
+                    let path = PathBuf::from(var("CARGO_MANIFEST_DIR").unwrap())
+                        .join(".krnl/modules.bincode");
+                    let source_to_mod_path = if path.exists() {
+                        let bytes = fs::read(path.as_path()).into_syn_result(span)?;
+                        bincode::deserialize(&bytes).into_syn_result(span)?
+                    } else {
+                        BiHashMap::new()
+                    };
+                    let source_to_mod_path = RefCell::new(source_to_mod_path);
+                    Ok(Rc::new(Self {
+                        span,
+                        path,
+                        source_to_mod_path,
+                    }))
+                })
+                .map(Rc::clone)
+        })
+    }
+    fn save(&self) -> Result<()> {
+        use std::fs;
+        let dir = self.path.parent().unwrap();
+        if !dir.exists() {
+            fs::create_dir_all(dir).into_syn_result(self.span)?;
+        }
+        let bytes =
+            bincode::serialize(&*self.source_to_mod_path.borrow()).into_syn_result(self.span)?;
+        std::fs::write(&self.path, &bytes).into_syn_result(self.span)?;
+        Ok(())
     }
 }
 
@@ -1079,15 +1135,29 @@ struct ModuleAttr {
     tokens: TokenStream2,
 }
 
-fn build_module(
-    module_attr: &ModuleAttributes,
-    module: &ItemMod,
-    module_prefix_path: &PathBuf,
-    invocation_hash: u64,
-) -> Result<()> {
+#[derive(Debug)]
+struct BuildModuleArgs<'a> {
+    module_attr: &'a ModuleAttributes,
+    module: &'a ItemMod,
+    module_name: &'a str,
+    mod_path: &'a Path,
+    module_path: &'a Path,
+    manifest_dir: &'a Path,
+    crate_name: &'a str,
+}
+
+fn build_module(args: BuildModuleArgs) -> Result<()> {
     use std::process::Command;
-    let span = Span::call_site();
-    let manifest_dir = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").into_syn_result(span)?);
+    let BuildModuleArgs {
+        module_attr,
+        module,
+        module_name,
+        mod_path,
+        module_path,
+        manifest_dir,
+        crate_name,
+    } = args;
+    let span = module.ident.span();
     let krnl_dir = manifest_dir.join("target").join(".krnl");
     fs::create_dir_all(&krnl_dir).into_syn_result(span)?;
     let builder_dir = krnl_dir.join("builder");
@@ -1108,7 +1178,6 @@ publish = false
 
 [dependencies]
 krnl-builder = { path = "/home/charles/Documents/rust/krnl/krnl-builder" }
-krnl-types = { path = "/home/charles/Documents/rust/krnl/krnl-types" }
 bincode = "1.3.3"
 "#;
         fs::write(builder_dir.join("Cargo.toml"), manifest).into_syn_result(span)?;
@@ -1119,34 +1188,25 @@ bincode = "1.3.3"
             fs::create_dir(&src_dir).into_syn_result(span)?;
         }
         let main = r#"use krnl_builder::{ModuleBuilder, version::Version};
-use krnl_types::kernel::ModuleWithHash;
-use std::{str::FromStr, convert::TryFrom};
+use std::convert::TryFrom;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = std::env::args().collect::<Vec<_>>();
     let crate_path = &args[1];
     let vulkan_version = Version::try_from(args[2].as_str())
         .map_err(|x| x.to_string())?;
-    let hash = u64::from_str(&args[3])?;
-    let module_path = &args[4];
+    let module_path = &args[3];
     let module = ModuleBuilder::new(crate_path)
         .vulkan(vulkan_version)
         .build()?;
-    let module_with_hash = ModuleWithHash {
-        module,
-        hash,
-    };
-    let bytes = bincode::serialize(&module_with_hash)?;
+    let bytes = bincode::serialize(&module)?;
     std::fs::write(module_path, &bytes)?;
     Ok(())
 }"#;
         fs::write(src_dir.join("main.rs"), main).into_syn_result(span)?;
     }
-    let module_name_prefix = module_attr
-        .module_path()
-        .map_or(String::new(), ModulePath::module_name_prefix);
-    let module_name = module.ident.to_string();
-    let crate_name = format!("{module_name_prefix}{module_name}");
+    let module_name_prefix = mod_path.to_string_lossy().replace('/', "-");
+    let device_crate_name = format!("{crate_name}-{module_name_prefix}");
     let mut tokens = quote! {
         #![cfg_attr(
             target_arch = "spirv",
@@ -1176,14 +1236,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .to_tokens(&mut tokens);
         }
     }
-    let crate_dir = krnl_dir
-        .join("modules")
-        .join(&module_prefix_path)
-        .join(&module_name);
-    if !crate_dir.exists() {
-        fs::create_dir_all(&crate_dir).into_syn_result(span)?;
+    let device_crate_dir = krnl_dir.join("modules").join(&crate_name).join(&mod_path);
+    if !device_crate_dir.exists() {
+        fs::create_dir_all(&device_crate_dir).into_syn_result(span)?;
     }
-    let mut manifest = format!("[package]\nname = {crate_name:?}");
+    let mut manifest = format!("[package]\nname = {device_crate_name:?}");
     manifest.push_str(
         r#"
 version = "0.1.0"
@@ -1215,30 +1272,24 @@ crate-type = ["dylib"]
         }
     }
     let source = tokens.to_string();
-    fs::write(crate_dir.join("Cargo.toml"), manifest).into_syn_result(span)?;
-    let src_dir = crate_dir.join("src");
+    fs::write(device_crate_dir.join("Cargo.toml"), manifest).into_syn_result(span)?;
+    let src_dir = device_crate_dir.join("src");
     if !src_dir.exists() {
         fs::create_dir(&src_dir).into_syn_result(span)?;
     }
     fs::write(src_dir.join("lib.rs"), &source).into_syn_result(span)?;
     let _ = Command::new("cargo")
         .arg("fmt")
-        .current_dir(&crate_dir)
+        .current_dir(&device_crate_dir)
         .status();
-    let module_dir = manifest_dir
-        .join(".krnl")
-        .join("modules")
-        .join(&module_prefix_path);
-    fs::create_dir_all(&module_dir).into_syn_result(span)?;
-    let module_path = module_dir.join(&module_name).with_extension("bincode");
+    fs::create_dir_all(&module_path.parent().unwrap()).into_syn_result(span)?;
     let status = Command::new("cargo")
         .args(&[
             "run",
             "--release",
             "--",
-            &*crate_dir.to_string_lossy(),
+            &*device_crate_dir.to_string_lossy(),
             &vulkan_version.to_string(),
-            &invocation_hash.to_string(),
             &*module_path.to_string_lossy(),
         ])
         .current_dir(&builder_dir)
@@ -1254,20 +1305,150 @@ crate-type = ["dylib"]
     Ok(())
 }
 
+fn module_not_built_msg(name: &str) -> String {
+    format!("module `{name}` not built, build with `RUSTFLAGS=\"--cfg krnl_build\" cargo +nightly check`")
+}
+
+#[cfg(krnl_build)]
+fn get_mod_path(
+    name: &str,
+    span: StdSpan,
+    _source: &str,
+    _source_to_mod_path: &BiHashMap<String, PathBuf>,
+    manifest_dir: &Path,
+    crate_name: &str,
+) -> Result<PathBuf> {
+    let mod_path = span
+        .source_file()
+        .path()
+        .canonicalize()
+        .into_syn_result(Span::call_site())?
+        .strip_prefix(manifest_dir)
+        .into_syn_result(Span::call_site())?
+        .with_extension("")
+        .join(name);
+    Ok(mod_path)
+}
+
+#[cfg(not(krnl_build))]
+fn get_mod_path(
+    name: &str,
+    span: StdSpan,
+    source: &str,
+    source_to_mod_path: &BiHashMap<String, PathBuf>,
+    _manifest_dir: &Path,
+    _crate_name: &str,
+) -> Result<PathBuf> {
+    if let Some(mod_path) = source_to_mod_path.get_by_left(source) {
+        Ok(mod_path.clone())
+    } else {
+        Err(Error::new(span.into(), module_not_built_msg(name)))
+    }
+}
+
 fn module_impl(attr: TokenStream, item: TokenStream) -> Result<TokenStream> {
-    #[allow(unused)]
+    use std::env::var;
     let module_attr: ModuleAttributes = syn::parse(attr.clone())?;
+    let mut module: ItemMod = syn::parse(item.clone())?;
+    let span = module.ident.span();
+    let module_table = ModuleTable::load(span)?;
+    let mut source_to_mod_path = module_table.source_to_mod_path.borrow_mut();
+    let source = {
+        let attr = TokenStream2::from(attr);
+        let item = TokenStream2::from(item);
+        quote! {
+            #[module(#attr)]
+            #item
+        }
+        .to_string()
+    };
+    let module_name = module.ident.to_string();
+    let manifest_dir = PathBuf::from(var("CARGO_MANIFEST_DIR").unwrap());
+    let crate_name = var("CARGO_CRATE_NAME").unwrap();
+    let mod_path = get_mod_path(
+        &module_name,
+        StdSpan::call_site(),
+        &source,
+        &source_to_mod_path,
+        &manifest_dir,
+        &crate_name,
+    )?;
+    let module_path = manifest_dir
+        .join(".krnl/modules")
+        .join(&crate_name)
+        .join(&mod_path)
+        .with_extension("bincode");
+    let module_path_string = module_path.to_string_lossy();
+    if cfg!(krnl_build) && var("CARGO_PRIMARY_PACKAGE").is_ok() {
+        let args = BuildModuleArgs {
+            module_attr: &module_attr,
+            module: &module,
+            module_name: &module_name,
+            mod_path: &mod_path,
+            module_path: &module_path,
+            manifest_dir: &manifest_dir,
+            crate_name: &crate_name,
+        };
+        let build = if let Some(saved_source) = source_to_mod_path.get_by_right(&mod_path) {
+            saved_source != &source
+        } else {
+            true
+        };
+        if build {
+            if let Some(other_path) = source_to_mod_path.get_by_left(&source) {
+                if other_path != &mod_path {
+                    let msg = format!("module `{module_name}` source is identical to module at {mod_path:?}, consider renaming the module");
+                    return Err(Error::new(span, msg));
+                }
+            }
+            build_module(args)?;
+            source_to_mod_path.insert(source, mod_path);
+            std::mem::drop(source_to_mod_path);
+            module_table.save()?;
+        }
+    }
+    let module_path_string = module_path.to_string_lossy();
+    let krnl = if crate_is_krnl() {
+        quote! {
+            crate
+        }
+    } else {
+        quote! {
+            ::krnl
+        }
+    };
+    let module_fn = parse_quote! {
+        pub fn module() -> #krnl::anyhow::Result<&'static #krnl::kernel::Module> {
+            use #krnl::{bincode, kernel::Module, __private::once_cell};
+            use once_cell::sync::OnceCell;
+            use ::std::sync::Arc;
+            static MODULE: OnceCell<Module> = OnceCell::new();
+            Ok(MODULE.get_or_try_init(|| bincode::deserialize(include_bytes!(#module_path_string).as_slice()))?)
+        }
+    };
+    module
+        .content
+        .as_mut()
+        .expect("module.context.is_some()")
+        .1
+        .push(module_fn);
+    Ok(module.to_token_stream().into())
+
+    /*
+    #[allow(unused)]
+
     let mut module: ItemMod = syn::parse(item.clone())?;
     let attr = TokenStream2::from(attr);
     let item = TokenStream2::from(item);
-    let module_prefix_path = module_attr
-        .module_path()
-        .map_or(PathBuf::new(), ModulePath::file_path);
-    let invocation = quote! {
+    let source = quote! {
         #[module(#attr)]
         #item
     }
     .to_string();
+    let module_table = ModuleTable::load()?;
+    let module_path = if
+
+
     let invocation_hash = get_hash(&invocation);
     if cfg!(krnl_build) && std::env::var("CARGO_PRIMARY_PACKAGE").is_ok() {
         build_module(&module_attr, &module, &module_prefix_path, invocation_hash)?;
@@ -1326,7 +1507,7 @@ fn module_impl(attr: TokenStream, item: TokenStream) -> Result<TokenStream> {
         .expect("module.context.is_some()")
         .1
         .push(module_fn);
-    Ok(module.to_token_stream().into())
+    Ok(module.to_token_stream().into())*/
 }
 
 #[proc_macro_attribute]

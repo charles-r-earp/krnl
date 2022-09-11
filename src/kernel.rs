@@ -53,8 +53,6 @@ use std::{
     sync::Arc,
 };
 
-#[doc(hidden)]
-pub use krnl_types::kernel::ModuleWithHash;
 #[doc(inline)]
 pub use krnl_types::kernel::{KernelInfo, Module};
 

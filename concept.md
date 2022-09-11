@@ -48,3 +48,22 @@ For now, don't support splitting of slices.
 Remove krnl_core::slice. Use reflection to replace the ArrayLength calls with a push constant. &[T] and &mut [T] can now be used directly.  
 
  Potentially support creating a module from spirv directly, but this might be out of scope for now.  
+ 
+ 
+ # .krnls
+ - package
+    - .krnls
+        -CASHTAG
+        -modules.bincode // <-- Vec<ModuleTableValue>
+        -foo1000.bincode // {module_name}{hash}.bincode , Module
+
+```rust    
+struct ModuleTableValue {
+    name: String,
+    path: PathBuf,
+    source: String,
+}
+```
+
+Build: (name, path, source) -> module 
+Compile: (name, source) -> path -> module 
