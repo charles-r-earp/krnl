@@ -819,7 +819,9 @@ impl ScalarDataOwned for ScalarCowBufferRepr<'_> {}
 
 #[cfg(feature = "device")]
 #[module(path(krnl::buffer), vulkan("1.1"))]
+#[krnl(crate = crate)]
 mod kernels {
+    #![allow(unused_imports)]
     use krnl_core::kernel;
     #[kernel(
         vulkan("1.2"),
@@ -1109,8 +1111,8 @@ impl<S: ScalarDataMut> ScalarBufferBase<S> {
                 #[cfg(feature = "device")]
                 DeviceKind::Device => {
                     let y = self.bitcast_mut(scalar_type);
-                    let kernel_info =
-                        kernels::module()?.kernel_info(format!("fill_{}", scalar_type.name()))?;
+                    let kernel_info = dbg!(kernels::module())
+                        .kernel_info(format!("fill_{}", scalar_type.name()))?;
                     Kernel::builder(y.device(), kernel_info)
                         .build()?
                         .dispatch_builder()
@@ -1298,7 +1300,7 @@ mod tests {
                    impl_buffer_fill_tests!(@Device $t => [<buffer_fill_device_ $t>] {
                         buffer_fill::<$t>(Device::new(0)?)
                     });
-                    impl_buffer_fill_tests!(@Host $t => [<scalar_buffer_device_ $t>] {
+                    impl_buffer_fill_tests!(@Host $t => [<scalar_buffer_fill_device_ $t>] {
                         scalar_buffer_fill::<$t>(Device::new(0)?)
                     });
                 )*

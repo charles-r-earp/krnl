@@ -18,15 +18,6 @@ pub mod error {
 }
 use error::*;
 
-/*
-#[doc(hidden)]
-#[derive(Serialize, Deserialize, Debug)]
-pub struct ModuleWithHash {
-    pub module: Module,
-    pub hash: u64,
-}
-*/
-
 #[derive(Serialize, Deserialize, Debug)]
 #[serde(transparent)]
 pub struct Module {

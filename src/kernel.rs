@@ -1,23 +1,11 @@
 /*!
-```text
-use krnl::{krnl_core, kernel::module, scalar::Scalar, buffer::{Slice, SliceMut}, result::Result};
+```no_run
+use krnl::{krnl_core, kernel::module, scalar::Scalar, anyhow::Result, buffer::{Slice, SliceMut}};
+use num_traits::Float;
 
-#[module(
-    target("vulkan1.1"),
-    dependency("krnl-core", path = "krnl-core"),
-    dependency("spirv-std", git = "https://github.com/EmbarkStudios/rust-gpu"),
-    attr(cfg_attr(
-        target_arch = "spirv",
-        no_std,
-        feature(register_attr),
-        register_attr(spirv),
-        deny(warnings),
-    )),
-)]
-pub mod axpy {
-    #[cfg(target_arch = "spirv")]
-    extern crate spirv_std;
-
+#[module(vulkan("1.1"))]
+# #[krnl(build = false)]
+mod axpy_kernels {
     use krnl_core::{scalar::Scalar, kernel};
 
     pub fn axpy<T: Scalar>(x: &T, alpha: T, y: &mut T) {
@@ -28,10 +16,22 @@ pub mod axpy {
     pub fn axpy_f32(x: &f32, alpha: f32, y: &mut f32) {
         axpy(x, alpha, y);
     }
+
+    #[kernel(elementwise, threads(256))]
+    pub fn axpy_f64(x: &f32, alpha: f32, y: &mut f32) {
+        axpy(x, alpha, y);
+    }
 }
 
-fn main() -> Result<()> {
-    axpy::module().unwrap();
+
+pub fn axpy<T: Scalar>(x: &Slice<T>, alpha: T, y: &mut SliceMut<T>) -> Result<()> {
+    if let Some((x, y)) = x.as_host_slice().ok().zip(y.as_host_slice_mut().ok()) {
+        for (x, y) in x.iter().zip(y) {
+            axpy_kernels::axpy(x, alpha, y);
+        }
+    } else {
+        todo!()
+    }
     Ok(())
 }
 ```

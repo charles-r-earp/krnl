@@ -71,28 +71,9 @@ impl ModuleBuilder {
         let krnl_dir = PathBuf::from(manifest_dir).join("target").join(".krnl");
         let target_dir = krnl_dir.join("target").join(&target).join(&name_with_hash);
         fs::create_dir_all(&target_dir)?;
-        let modules_dir = krnl_dir.join("modules");
-        fs::create_dir_all(&modules_dir)?;
-        let module_path = modules_dir.join(&name_with_hash).with_extension("bincode");
-        let saved_modules_dir = krnl_dir.join("saved-modules");
-        fs::create_dir_all(&saved_modules_dir)?;
-        let saved_module_path = saved_modules_dir
-            .join(&name_with_hash)
-            .with_extension("bincode");
-        let module = ModuleInner {
-            name,
-            kernels: Default::default(),
-        };
-        let saved_module: Option<ModuleInner> = if saved_module_path.exists() {
-            let bytes = fs::read(&saved_module_path)?;
-            Some(bincode::deserialize(&bytes)?)
-        } else {
-            None
-        };
-        {
-            let bytes = bincode::serialize(&module)?;
-            fs::write(&module_path, &bytes)?;
-        }
+        let kernels_dir = krnl_dir.join("kernels");
+        fs::create_dir_all(&kernels_dir)?;
+        let kernels_path = kernels_dir.join(&name_with_hash).with_extension("bincode");
         let status = Command::new("cargo")
             .args(&[
                 "check",
@@ -101,75 +82,74 @@ impl ModuleBuilder {
                 "--target-dir",
                 &*target_dir.to_string_lossy(),
             ])
-            .env("KRNL_MODULE_PATH", &*module_path.to_string_lossy())
+            .env("KRNL_KERNELS_PATH", &*kernels_path.to_string_lossy())
             .env("KRNL_VULKAN_VERSION", &vulkan_version.to_string())
             .status()?;
         if !status.success() {
             bail!("cargo check failed!");
         }
-        let bytes = fs::read(&module_path)?;
-        let mut module: ModuleInner = bincode::deserialize(&bytes)?;
-        if !module.kernels.is_empty() {
-            {
-                let bytes = bincode::serialize(&module)?;
-                fs::write(&saved_module_path, &bytes)?;
-            }
-            let mut compile_options_map =
-                HashMap::<CompileOptions, Vec<String>>::with_capacity(module.kernels.len());
-            for kernel_info in module.kernels.values() {
-                compile_options_map
-                    .entry(kernel_info.compile_options())
-                    .or_default()
-                    .push(kernel_info.name.clone());
-            }
-            for (options, kernel_names) in compile_options_map.iter() {
-                let target = target_from_version(options.vulkan_version);
-                let mut builder = SpirvBuilder::new(&crate_path, &target)
-                    .multimodule(true)
-                    .print_metadata(MetadataPrintout::None);
-                for cap in options.capabilities.iter().copied() {
-                    builder = builder.capability(cap);
-                }
-                for ext in options.extensions.iter().cloned() {
-                    builder = builder.extension(ext);
-                }
-
-                let module_result = {
-                    let mut kernels = String::new();
-                    for name in kernel_names {
-                        kernels.push_str(name);
-                        kernels.push(',');
-                    }
-                    std::env::set_var("KRNL_KERNELS", kernels);
-                    let result = std::panic::catch_unwind(|| builder.build());
-                    std::env::remove_var("KRNL_KERNELS");
-                    match result {
-                        Ok(x) => x?,
-                        Err(e) => std::panic::resume_unwind(e),
-                    }
-                };
-                let spv_paths = module_result.module.unwrap_multi();
-                for name in kernel_names.iter() {
-                    if let Some(spv_path) = spv_paths.get(name) {
-                        let kernel_info =
-                            Arc::get_mut(module.kernels.get_mut(name).unwrap()).unwrap();
-                        let data = fs::read(spv_path)?;
-                        process_spirv(&data, kernel_info)?;
-                    } else {
-                        dbg!(module.kernels.get(name));
-                        dbg!(&options);
-                        dbg!(&spv_paths);
-                        bail!(
-                            "Expected spv_path for kernel {name:?} in module {:?}!",
-                            module.name
-                        );
-                    }
-                }
-            }
-            Ok(module.into_module())
+        let kernels = if kernels_path.exists() {
+            let bytes = fs::read(&kernels_path)?;
+            let kernels: Vec<KernelInfoInner> = bincode::deserialize(&bytes)?;
+            kernels
         } else {
-            Ok(saved_module.unwrap_or(module).into_module())
+            Vec::new()
+        };
+        let mut compile_options_map =
+            HashMap::<CompileOptions, Vec<String>>::with_capacity(kernels.len());
+        for kernel_info in kernels.iter() {
+            compile_options_map
+                .entry(kernel_info.compile_options())
+                .or_default()
+                .push(kernel_info.name.clone());
         }
+        let mut kernels = kernels
+            .into_iter()
+            .map(|x| (x.name.clone(), Arc::new(x)))
+            .collect::<HashMap<_, _>>();
+        for (options, kernel_names) in compile_options_map.iter() {
+            let target = target_from_version(options.vulkan_version);
+            let mut builder = SpirvBuilder::new(&crate_path, &target)
+                .multimodule(true)
+                .print_metadata(MetadataPrintout::None);
+            for cap in options.capabilities.iter().copied() {
+                builder = builder.capability(cap);
+            }
+            for ext in options.extensions.iter().cloned() {
+                builder = builder.extension(ext);
+            }
+            let module_result = {
+                let mut kernels = String::new();
+                for name in kernel_names {
+                    kernels.push_str(name);
+                    kernels.push(',');
+                }
+                std::env::set_var("KRNL_KERNELS", kernels);
+                let result = std::panic::catch_unwind(|| builder.build());
+                std::env::remove_var("KRNL_KERNELS");
+                match result {
+                    Ok(x) => x?,
+                    Err(e) => std::panic::resume_unwind(e),
+                }
+            };
+            let spv_paths = module_result.module.unwrap_multi();
+            for name in kernel_names.iter() {
+                if let Some(spv_path) = spv_paths.get(name) {
+                    let kernel_info = Arc::get_mut(kernels.get_mut(name).unwrap()).unwrap();
+                    let data = fs::read(spv_path)?;
+                    process_spirv(&data, kernel_info)?;
+                } else {
+                    dbg!(kernels.get(name));
+                    dbg!(&options);
+                    dbg!(&spv_paths);
+                    bail!(
+                        "Expected spv_path for kernel {name:?} in module {:?}!",
+                        name
+                    );
+                }
+            }
+        }
+        Ok(ModuleInner { name, kernels }.into_module())
     }
 }
 
