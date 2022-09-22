@@ -96,6 +96,7 @@ impl Device {
                 Int8,
                 Int16,
                 Int64,
+                Float64,
                 StorageBuffer8BitAccess,
                 StorageBuffer16BitAccess,
             ],

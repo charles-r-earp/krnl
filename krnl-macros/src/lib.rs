@@ -676,12 +676,32 @@ impl KernelMeta {
 #[allow(unused_variables)]
 fn kernel_impl(attr: TokenStream, item: TokenStream) -> Result<TokenStream> {
     let span = Span::call_site();
+    static KERNELS: OnceCell<Option<(PathBuf, Version, Mutex<Vec<KernelInfoInner>>)>> =
+        OnceCell::new();
+    let kernels = KERNELS.get_or_try_init(|| {
+        use std::env::var;
+        let path = var("KRNL_KERNELS_PATH").ok();
+        let vulkan_version = var("KRNL_VULKAN_VERSION").ok();
+        if let Some((path, vulkan_version)) = path.zip(vulkan_version) {
+            let path = PathBuf::from(path);
+            let vulkan_version =
+                Version::try_from(vulkan_version.as_str()).into_syn_result(span)?;
+            let kernels = Mutex::default();
+            Result::<_, Error>::Ok(Some((path, vulkan_version, kernels)))
+        } else {
+            Ok(None)
+        }
+    })?;
+    let krnl_kernels = std::env::var("KRNL_KERNELS");
+    if kernels.is_none() && krnl_kernels.is_err() {
+        return Ok(TokenStream::new());
+    }
     let kernel_attr: KernelAttributes = syn::parse(attr)?;
     let kernel: Kernel = syn::parse(item)?;
     let meta = KernelMeta::new(&kernel_attr, &kernel)?;
     let info = &meta.info;
     let mut output = TokenStream2::new();
-    let should_build = if let Ok(kernels) = std::env::var("KRNL_KERNELS") {
+    let should_build = if let Ok(kernels) = krnl_kernels {
         kernels.split(',').find(|x| x == &info.name).is_some()
     } else {
         false
@@ -856,22 +876,6 @@ fn kernel_impl(attr: TokenStream, item: TokenStream) -> Result<TokenStream> {
         }
         .to_tokens(&mut output);
     } else {
-        static KERNELS: OnceCell<Option<(PathBuf, Version, Mutex<Vec<KernelInfoInner>>)>> =
-            OnceCell::new();
-        let kernels = KERNELS.get_or_try_init(|| {
-            use std::env::var;
-            let path = var("KRNL_KERNELS_PATH").ok();
-            let vulkan_version = var("KRNL_VULKAN_VERSION").ok();
-            if let Some((path, vulkan_version)) = path.zip(vulkan_version) {
-                let path = PathBuf::from(path);
-                let vulkan_version =
-                    Version::try_from(vulkan_version.as_str()).into_syn_result(span)?;
-                let kernels = Mutex::default();
-                Result::<_, Error>::Ok(Some((path, vulkan_version, kernels)))
-            } else {
-                Ok(None)
-            }
-        })?;
         if let Some((path, vulkan_version, kernels)) = kernels.as_ref() {
             let mut info = meta.info;
             if !meta.has_vulkan_version {
@@ -1098,12 +1102,14 @@ struct ModuleKrnlArgs {
 
 #[derive(Parse, Debug)]
 struct ModuleKrnlArg {
-    ident: Ident,
+    crate_token: Option<syn::token::Crate>,
+    #[parse_if(crate_token.is_none())]
+    ident: Option<Ident>,
     eq: Eq,
-    #[parse_if(ident == "build")]
-    krnl_build: Option<LitBool>,
-    #[parse_if(ident == "crate")]
+    #[parse_if(crate_token.is_some())]
     krnl_crate: Option<syn::Path>,
+    #[parse_if(ident.as_ref().map_or(false, |x| x == "build"))]
+    krnl_build: Option<LitBool>,
 }
 
 #[derive(Debug)]
@@ -1204,7 +1210,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         if let Some(vulkan) = attr.vulkan.as_ref() {
             vulkan_version.replace(vulkan.version()?);
         } else if let Some(dep) = attr.dependency.as_ref() {
-            if dep.name.value() == "krn-core" {
+            if dep.name.value() == "krnl-core" {
                 has_krnl_core_dep = true;
             }
             dependencies.push_str(&dep.to_toml_string()?);
@@ -1273,6 +1279,7 @@ crate-type = ["dylib"]
         ])
         .current_dir(&builder_dir)
         .env("RUSTUP_TOOLCHAIN", "")
+        .envs(option_env!("OUT_DIR").map(|x| ("OUT_DIR", x)))
         .status()
         .into_syn_result(span)?;
     if !status.success() {
@@ -1363,12 +1370,12 @@ fn module_impl(attr: TokenStream, item: TokenStream) -> Result<TokenStream> {
         {
             let args: ModuleKrnlArgs = syn::parse(attr.tokens.clone().into())?;
             for arg in args.args.iter() {
-                if let Some(krnl_build) = arg.krnl_build.as_ref() {
-                    build = krnl_build.value;
-                } else if let Some(krnl_crate) = arg.krnl_crate.as_ref() {
+                if let Some(krnl_crate) = arg.krnl_crate.as_ref() {
                     krnl = krnl_crate.clone();
+                } else if let Some(krnl_build) = arg.krnl_build.as_ref() {
+                    build = krnl_build.value;
                 } else {
-                    let ident = &arg.ident;
+                    let ident = arg.ident.as_ref().unwrap();
                     return Err(Error::new_spanned(
                         ident,
                         format!("unknown krnl arg `{ident}`, expected `build` or `crate`"),
@@ -1452,11 +1459,11 @@ fn module_impl(attr: TokenStream, item: TokenStream) -> Result<TokenStream> {
         }
     }
     .to_tokens(&mut module_item.tokens);
-    dbg!(module_item
-        .to_token_stream()
-        .to_string()
-        .lines()
-        .collect::<Vec<_>>());
+    /*dbg!(module_item
+    .to_token_stream()
+    .to_string()
+    .lines()
+    .collect::<Vec<_>>());*/
     Ok(module_item.to_token_stream().into())
 }
 

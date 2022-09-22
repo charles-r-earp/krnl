@@ -7,7 +7,7 @@ publish = false
 
 [features]
 spirv-panic = []
-half = ["krnl-types/half"]
+half = ["krnl-types/half", "krnl-macros/half"]
 
 [dependencies]
 krnl-types = { path = "../krnl-types" }

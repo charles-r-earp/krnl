@@ -335,6 +335,9 @@ fn capabilites_to_features(capabilites: &[Capability]) -> Features {
             Int64 => {
                 f.shader_int64 = true;
             }
+            Float64 => {
+                f.shader_float64 = true;
+            }
             _ => todo!(),
         }
     }
