@@ -4,7 +4,7 @@ use bytemuck::Pod;
 use derive_more::Display;
 #[cfg(feature = "half")]
 use half::{bf16, f16};
-use num_traits::{AsPrimitive, FromPrimitive, NumAssign, NumCast};
+use num_traits::{FromPrimitive, NumAssign, NumCast};
 #[cfg(not(target_arch = "spirv"))]
 use serde::{Deserialize, Serialize};
 #[cfg(not(target_arch = "spirv"))]
@@ -72,7 +72,9 @@ pub enum ScalarType {
     I8 = 2,
     U16 = 3,
     I16 = 4,
+    #[cfg(feature = "half")]
     F16 = 5,
+    #[cfg(feature = "half")]
     BF16 = 6,
     U32 = 7,
     I32 = 8,
@@ -386,4 +388,96 @@ impl From<f64> for ScalarElem {
     }
 }
 
-include!(concat!(env!("OUT_DIR"), "/scalar_trait.in"));
+#[cfg(target_arch = "spirv")]
+/// Base trait for numerical types.
+pub trait Scalar: Default + Copy + 'static + NumCast + FromPrimitive + NumAssign + PartialEq + Sealed {
+    /// The [`ScalarType`] of the scalar.
+    fn scalar_type() -> ScalarType;
+    fn cast<T: Scalar>(self) -> T {
+        todo!()
+    }
+}
+
+#[cfg(not(target_arch = "spirv"))]
+/// Base trait for numerical types.
+pub trait Scalar: Default + Copy + 'static + NumCast + FromPrimitive + NumAssign + PartialEq + Into<ScalarElem> + Pod + Debug + Display + Serialize + for<'de> Deserialize<'de> + Sealed {
+    /// The [`ScalarType`] of the scalar.
+    fn scalar_type() -> ScalarType;
+    fn cast<T: Scalar>(self) -> T {
+        todo!()
+    }
+}
+
+impl Scalar for u8 {
+    fn scalar_type() -> ScalarType {
+        ScalarType::U8
+    }
+}
+
+impl Scalar for i8 {
+    fn scalar_type() -> ScalarType {
+        ScalarType::I8
+    }
+}
+
+impl Scalar for u16 {
+    fn scalar_type() -> ScalarType {
+        ScalarType::U16
+    }
+}
+
+impl Scalar for i16 {
+    fn scalar_type() -> ScalarType {
+        ScalarType::I16
+    }
+}
+
+#[cfg(feature = "half")]
+impl Scalar for f16 {
+    fn scalar_type() -> ScalarType {
+        ScalarType::F16
+    }
+}
+
+#[cfg(feature = "half")]
+impl Scalar for bf16 {
+    fn scalar_type() -> ScalarType {
+        ScalarType::BF16
+    }
+}
+
+impl Scalar for u32 {
+    fn scalar_type() -> ScalarType {
+        ScalarType::U32
+    }
+}
+
+impl Scalar for i32 {
+    fn scalar_type() -> ScalarType {
+        ScalarType::I32
+    }
+}
+
+impl Scalar for f32 {
+    fn scalar_type() -> ScalarType {
+        ScalarType::F32
+    }
+}
+
+impl Scalar for u64 {
+    fn scalar_type() -> ScalarType {
+        ScalarType::U64
+    }
+}
+
+impl Scalar for i64 {
+    fn scalar_type() -> ScalarType {
+        ScalarType::I64
+    }
+}
+
+impl Scalar for f64 {
+    fn scalar_type() -> ScalarType {
+        ScalarType::F64
+    }
+}

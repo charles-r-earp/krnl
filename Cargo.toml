@@ -11,11 +11,11 @@ repository = "https://github.com/charles-r-earp/krnl"
 publish = false
 
 [dependencies]
-krnl-types = { path = "krnl-types" }
 krnl-macros = { path = "krnl-macros" }
 krnl-core = { path = "krnl-core" }
 vulkano = { version = "0.30.0", optional = true }
-spirv = "0.2.0"
+serde = { version = "1.0.143", default-features = false, features = ["derive", "rc"] }
+spirv = { version = "0.2.0", default-features = false, features = ["serialize", "deserialize"] } 
 thiserror = "1.0.31"
 derive_more = "0.99.11"
 paste = "1.0.7"

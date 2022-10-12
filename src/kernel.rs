@@ -1,64 +1,70 @@
-/*!
-```no_run
-use krnl::{krnl_core, kernel::module, scalar::Scalar, anyhow::Result, buffer::{Slice, SliceMut}};
-use num_traits::Float;
-
-#[module(vulkan("1.1"))]
-# #[krnl(build = false)]
-mod axpy_kernels {
-    use krnl_core::{scalar::Scalar, kernel};
-
-    pub fn axpy<T: Scalar>(x: &T, alpha: T, y: &mut T) {
-        *y += alpha * *x;
-    }
-
-    #[kernel(elementwise, threads(256))]
-    pub fn axpy_f32(x: &f32, alpha: f32, y: &mut f32) {
-        axpy(x, alpha, y);
-    }
-
-    #[kernel(elementwise, threads(256))]
-    pub fn axpy_f64(x: &f32, alpha: f32, y: &mut f32) {
-        axpy(x, alpha, y);
-    }
-}
-
-
-pub fn axpy<T: Scalar>(x: &Slice<T>, alpha: T, y: &mut SliceMut<T>) -> Result<()> {
-    if let Some((x, y)) = x.as_host_slice().ok().zip(y.as_host_slice_mut().ok()) {
-        for (x, y) in x.iter().zip(y) {
-            axpy_kernels::axpy(x, alpha, y);
-        }
-    } else {
-        todo!()
-    }
-    Ok(())
-}
-```
-*/
 #[cfg(feature = "device")]
-use crate::device::{Compute, DeviceBase, KernelCache};
-use crate::{
-    buffer::{RawSlice, ScalarSlice, ScalarSliceMut, Slice, SliceMut},
-    device::{Device, DeviceInner},
-    scalar::{Scalar, ScalarElem},
-};
-use anyhow::{format_err, Result};
-use core::marker::PhantomData;
-use krnl_types::kernel::{KernelInfoInner, ModuleInner, PushInfo, SliceInfo, Spirv};
-use std::{
-    borrow::Cow,
-    collections::HashMap,
-    fmt::{self, Display},
-    sync::Arc,
-};
-
-#[doc(inline)]
-pub use krnl_types::kernel::{KernelInfo, Module};
+use crate::device::KernelCache;
+use crate::{device::Device, buffer::ScalarSlice};
+use anyhow::Result;
+use std::sync::Arc;
 
 #[doc(inline)]
 pub use krnl_macros::module;
 
+#[doc(hidden)]
+#[path = "../krnl-macros/src/kernel_info.rs"]
+pub mod kernel_info;
+use kernel_info::{KernelInfo, Spirv};
+
+#[doc(hidden)]
+pub struct KernelBase {
+    device: Device,
+    #[cfg(feature = "device")]
+    cache: Arc<KernelCache>,
+}
+
+#[doc(hidden)]
+pub fn __build(device: Device, kernel_info: Arc<KernelInfo>, spirv: Arc<Spirv>) -> Result<KernelBase> {
+    todo!()
+}
+
+
+#[doc(hidden)]
+pub unsafe fn __dispatch(kernel_base: &KernelBase, dispatch_dim: DispatchDim<&[u32]>, slices: &[(&'static str, ScalarSlice)], push_consts: &[u8]) -> Result<()> {
+    todo!()
+}
+
+pub enum DispatchDim<T> {
+    GlobalThreads(T),
+    Groups(T),
+}
+
+#[doc(hidden)]
+impl<T: AsRef<[u32]>> DispatchDim<T> {
+    pub fn as_ref(&self) -> DispatchDim<&[u32]> {
+        match self {
+            Self::GlobalThreads(x) => DispatchDim::GlobalThreads(x.as_ref()),
+            Self::Groups(x) => DispatchDim::GlobalThreads(x.as_ref()),
+        }
+    }
+}
+
+impl DispatchDim<&[u32]> {
+    fn to_dispatch_groups(&self, threads: [u32; 3]) -> [u32; 3] {
+        let mut output = [1; 3];
+        match self {
+            Self::GlobalThreads(global_threads) => {
+                for ((gt, t), y) in global_threads.iter().zip(threads.iter()).zip(output.iter_mut()) {
+                    *y = *gt / *t + if *gt % *t != 0 { 1 } else { 0 };
+                }
+            }
+            Self::Groups(groups) => {
+                for (g, y) in groups.iter().zip(output.iter_mut()) {
+                    *y = *g;
+                }
+            }
+        }
+        output
+    }
+}
+
+/*
 pub mod error {
     use super::*;
     #[doc(inline)]
@@ -601,4 +607,4 @@ impl SliceArg {
             Self::SliceMut(x) => x.len(),
         }
     }
-}
+}*/

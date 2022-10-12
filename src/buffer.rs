@@ -6,7 +6,7 @@ use crate::{
 #[cfg(feature = "device")]
 use crate::{
     device::{DeviceBase, DeviceBuffer, HostBuffer},
-    kernel::{module, Kernel},
+    //kernel::{module, Kernel},
     krnl_core,
 };
 use anyhow::{bail, format_err, Result};
@@ -14,9 +14,6 @@ use core::{marker::PhantomData, mem::size_of};
 use futures_util::future::ready;
 use num_traits::AsPrimitive;
 use std::{pin::Pin, sync::Arc};
-
-#[doc(inline)]
-pub use krnl_types::kernel::{KernelInfo, Module};
 
 type PinBox<T> = Pin<Box<T>>;
 
@@ -890,10 +887,11 @@ impl RawDataOwned for ScalarCowBufferRepr<'_> {
 
 impl ScalarDataOwned for ScalarCowBufferRepr<'_> {}
 
+/*
 #[cfg(feature = "device")]
 #[module(
     vulkan("1.1"),
-    dependency("krnl-core", path="krnl-core", features = ["half", "spirv-panic"]), 
+    dependency("krnl-core", path="krnl-core", features = ["half", "spirv-panic"]),
     dependency("paste", version = "1.0.7"),
 )]
 #[krnl(crate = crate)]
@@ -944,7 +942,7 @@ mod kernels {
         );
     }
     include!(concat!(env!("OUT_DIR"), "/buffer/buffer_cast_kernels.in"));
-}
+}*/
 
 #[derive(Clone)]
 pub struct BufferBase<S: Data> {
@@ -1045,6 +1043,8 @@ impl<T: Scalar, S: Data<Elem = T>> BufferBase<S> {
         } else {
             #[cfg(feature = "device")]
             {
+                todo!()
+                /*
                 let kernel_name = format!(
                     "cast_{}_{}",
                     T::scalar_type().name(),
@@ -1059,7 +1059,7 @@ impl<T: Scalar, S: Data<Elem = T>> BufferBase<S> {
                     .slice_mut("y", output.as_slice_mut())
                     .build()?
                     .dispatch()?;
-                return Ok(output.into());
+                return Ok(output.into());*/
             }
             unreachable!()
         }
@@ -1269,6 +1269,7 @@ impl<S: ScalarDataMut> ScalarBufferBase<S> {
                 },
                 #[cfg(feature = "device")]
                 DeviceKind::Device => {
+                    /*
                     let y = self.bitcast_mut(scalar_type);
                     let kernel_info =
                         kernels::module().kernel_info(format!("fill_{}", scalar_type.name()))?;
@@ -1278,7 +1279,8 @@ impl<S: ScalarDataMut> ScalarBufferBase<S> {
                         .slice_mut("y", y)
                         .push("x", x)
                         .build()?
-                        .dispatch()
+                        .dispatch()*/
+                    todo!()
                 }
             }
         } else {
