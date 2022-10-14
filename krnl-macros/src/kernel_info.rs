@@ -11,9 +11,24 @@ pub struct CompileOptions {
     pub extensions: Vec<String>,
 }
 
+/*
+impl CompileOptions {
+    pub fn to_cfg_string(&self) -> String {
+        let mut cfg = format!("krnl_device_crate_vulkan{}_{}", self.vulkan.0, self.vulkan.1);
+        let mut target_features = self.capabilities.iter().map(|x| format!("{x:?}")).chain(self.extensions.iter().map(|x| format!("ext:{x}"))).collect::<Vec<_>>();
+        target_features.sort();
+        for target_feature in target_features {
+            write!(&mut cfg, "_{target_feature}");
+        }
+        cfg
+    }
+}
+*/
+
 #[doc(hidden)]
 #[derive(Eq, PartialEq, Hash, Serialize, Deserialize, Debug)]
 pub struct KernelInfo {
+    pub path: String,
     pub name: String,
     pub vulkan: (u32, u32),
     pub capabilities: Vec<Capability>,
@@ -48,15 +63,6 @@ impl KernelInfo {
             Arg::Push(x) => Some(x),
             _ => None,
         })
-    }
-    pub fn to_cfg_string(&self) -> String {
-        let mut cfg = format!("krnl_device_crate_vulkan{}_{}", self.vulkan.0, self.vulkan.1);
-        let mut target_features = self.capabilities.iter().map(|x| format!("{x:?}")).chain(self.extensions.iter().map(|x| format!("ext:{x}"))).collect::<Vec<_>>();
-        target_features.sort();
-        for target_feature in target_features {
-            write!(&mut cfg, "_{target_feature}");
-        }
-        cfg
     }
 }
 

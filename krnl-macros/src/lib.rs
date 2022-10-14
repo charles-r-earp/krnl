@@ -339,78 +339,6 @@ impl ModuleCache {
     }
 }
 
-/*
-
-fn build_module_impl(span: Span, input: TokenStream, module_info: ModuleInfo, module_cache: &mut ModuleCache) -> Result<TokenStream> {
-    let module_build_args: ModuleBuildArgs = syn::parse(input)?;
-    let module_info = Arc::new(module_info);
-    let spirvs = if module_build_args.build.value() {
-        if module_cache.build {
-            Some(module_cache.insert_with_span(module_info.clone(), span)?)
-        } else {
-            if let Some(spirvs) = module_cache.get(&module_info) {
-                Some(spirvs)
-            } else {
-                dbg!(&module_info);
-                dbg!(&module_cache);
-                return Err(Error::new(span.into(), "rebuild"));
-            }
-        }
-    } else {
-        None
-    };
-    let mut tokens = TokenStream2::new();
-    for kernel_info in module_info.kernel_infos.iter() {
-        let kernel_name = &kernel_info.name;
-        let spirv_body = if let Some(spirvs) = spirvs.as_ref() {
-            let spirv = unwrap!(spirvs.get(kernel_name));
-            let words = &spirv.words;
-            quote! {
-                static SPV : &'static [u32] = &[#(#words),*];
-                SPV
-            }
-        } else {
-            let module_name = &module_info.name;
-            quote! {
-                unimplemented!("#[module] {:?} has attribute #[krnl(build=false)]", #module_name)
-            }
-        };
-        let ident = format_ident!("{}", kernel_name);
-        let unsafe_token = if kernel_info.safe {
-            TokenStream2::new()
-        } else {
-            quote! {
-                unsafe
-            }
-        };
-        let mut dispatch_args = Punctuated::<FnArg, Comma>::new();
-        if !kernel_info.elementwise {
-            dispatch_args.push(parse_quote! {
-                kind: DispatchKind
-            });
-        }
-        for arg in kernel_info.args.iter() {
-            todo!()
-        }
-        tokens.extend(quote! {
-            #[automatically_derived]
-            pub mod #ident {
-                fn spirv() -> &'static [u32] {
-                    #spirv_body
-                }
-                pub fn build(device: Device) -> Result<Self> {
-                    todo!()
-                }
-                pub #unsafe_token fn dispatch(#dispatch_args) -> Result<()> {
-                    todo!()
-                }
-            }
-        });
-    }
-    Ok(tokens.into())
-}
-*/
-
 #[proc_macro_attribute]
 pub fn kernel(attr: TokenStream, item: TokenStream) -> TokenStream {
     match kernel_impl(attr, item) {
@@ -681,6 +609,7 @@ fn kernel_impl(attr: TokenStream, item: TokenStream) -> Result<TokenStream> {
     let kernel_attr: KernelAttributes = syn::parse(attr)?;
     let kernel: Kernel = syn::parse(item)?;
     let mut info = KernelInfo {
+        path: unwrap!(var("CARGO_CRATE_NAME")),
         name: kernel.ident.to_string(),
         vulkan: (1, 1),
         capabilities: Vec::new(),
@@ -1043,6 +972,23 @@ fn kernel_impl(attr: TokenStream, item: TokenStream) -> Result<TokenStream> {
         }
         offset += scalar_type.size() as u32;
     }
+    let mut push_consts = push_consts.into_iter().map(|(_, _, x)| x).collect::<Punctuated<_, Comma>>();
+    if offset % 4 != 0 {
+        let pad_bytes = 4 - (offset % 4);
+        for i in 0 .. pad_bytes {
+            let name = format!("__krnl_pad_{i}");
+            let ident = format_ident!("{name}");
+            push_consts.push(parse_quote! {
+                #ident: u8
+            });
+            info.args.push(Arg::Push(PushInfo {
+                name,
+                scalar_type: ScalarType::U8,
+                offset,
+            }));
+            offset += 1;
+        }
+    }
     let kernel_name = &info.name;
     let kernel_ident = format_ident!("{kernel_name}");
     if let Ok("1") = var("KRNL_DEVICE_CRATE_CHECK").as_deref() {
@@ -1121,6 +1067,8 @@ fn kernel_impl(attr: TokenStream, item: TokenStream) -> Result<TokenStream> {
                         dispatch_push_consts.extend(quote! {
                             dispatch_push_consts[#start..#end].copy_from_slice((#ident.len() as u32).to_ne_bytes().as_slice());
                         });
+                    } else if push_info.name.starts_with("__krnl_pad_") {
+                        // padding
                     } else {
                         let ident = format_ident!("{}", push_info.name);
                         dispatch_push_consts.extend(quote! {
@@ -1137,8 +1085,8 @@ fn kernel_impl(attr: TokenStream, item: TokenStream) -> Result<TokenStream> {
         quote! {
             #[cfg(not(target_arch = "spirv"))]
             pub mod #kernel_ident {
-                use super::{__krnl as krnl, __krnl_spirv};
-                use krnl::{
+                use super::{__krnl, __krnl_spirv};
+                use __krnl::{
                     anyhow::Result,
                     bincode,
                     __private::once_cell::sync::Lazy,
@@ -1154,7 +1102,9 @@ fn kernel_impl(attr: TokenStream, item: TokenStream) -> Result<TokenStream> {
                 impl Kernel {
                     pub fn build(device: Device) -> Result<Self> {
                         static INFO: Lazy<Arc<KernelInfo>> = Lazy::new(|| {
-                            Arc::new(bincode::deserialize(&[#(#kernel_info_bytes),*]).unwrap())
+                            let mut info: KernelInfo = bincode::deserialize(&[#(#kernel_info_bytes),*]).unwrap();
+                            info.path = module_path!().to_string();
+                            Arc::new(info)
                         });
                         static SPIRV: Lazy<Arc<Spirv>> = Lazy::new(|| {
                             Arc::new(__krnl_spirv!(#kernel_ident))
@@ -1185,7 +1135,6 @@ fn kernel_impl(attr: TokenStream, item: TokenStream) -> Result<TokenStream> {
         }
     };
     let device_tokens = {
-        let push_consts = push_consts.into_iter().map(|(_, _, x)| x).collect::<Punctuated<_, Comma>>();
         let push_const_idents = push_consts
             .iter()
             .map(|x| &x.ident)
@@ -1313,15 +1262,21 @@ fn kernel_impl(attr: TokenStream, item: TokenStream) -> Result<TokenStream> {
             call
         };
         let block = &kernel.block;
-        let cfg = format_ident!("{}", info.to_cfg_string());
+        let target_env = format!("vulkan{}.{}", info.vulkan.0, info.vulkan.1);
+        let target_features = info.capabilities.iter().map(|x| format!("{x:?}"))
+            .chain(info.extensions.iter().map(|x| format!("ext:{x}")))
+            .collect::<Vec<_>>();
+        let cfg = quote! {
+            #[cfg(all(target_env = #target_env, #(target_feature = #target_features),*))]
+        };
         quote! {
-            #[cfg(#cfg)]
+            #cfg
             #[allow(non_camel_case_types)]
             #[repr(C)]
             pub struct #push_consts_ident {
                 #push_consts
             }
-            #[cfg(#cfg)]
+            #cfg
             #[spirv(compute(threads(#thread_lits)))]
             pub fn #kernel_ident (
                 #outer_args
@@ -1384,8 +1339,6 @@ crate-type = ["dylib"]
         unwrap!(fs::create_dir(&module_crate_src_dir));
     }
     unwrap!(fs::write(module_crate_src_dir.join("lib.rs"), info.source.as_bytes()));
-    let mut build_script = include_str!("build.rs");
-    unwrap!(fs::write(module_crate_dir.join("build.rs"), build_script.as_bytes()));
     let _ = Command::new("cargo")
         .arg("fmt")
         .current_dir(&module_crate_dir)
@@ -1513,7 +1466,7 @@ fn module_impl(attr: TokenStream, item: TokenStream) -> Result<TokenStream> {
                     Spirv {
                         words: vec![#(#words),*],
                     }
-                )
+                );
             });
         }
         if cfg!(krnl_build) {
@@ -1539,581 +1492,3 @@ fn module_impl(attr: TokenStream, item: TokenStream) -> Result<TokenStream> {
     });
     Ok(module_item.to_token_stream().into())
 }
-
-/*
-#[derive(Debug)]
-struct KernelMeta {
-    info: KernelInfo,
-    has_vulkan_version: bool,
-    thread_lits: Punctuated<LitInt, Comma>,
-    builtins: HashSet<&'static str>,
-    outer_args: Punctuated<TypedArg, Comma>,
-    inner_args: Punctuated<TypedArg, Comma>,
-    group_args: Vec<(Ident, KernelGroupArg)>,
-    push_consts: Punctuated<TypedArg, Comma>,
-    push_consts_ident: Option<Ident>,
-}
-
-impl KernelMeta {
-    fn new(span: Span2, kernel_attr: &KernelAttributes, kernel: &Kernel) -> Result<Self> {
-        let safe = kernel.unsafe_token.is_none();
-        let mut info = KernelInfo {
-            name: kernel.ident.to_string(),
-            vulkan: (1, 1),
-            capabilities: Vec::new(),
-            extensions: Vec::new(),
-            safe,
-            threads: [1, 1, 1],
-            dimensionality: 0,
-            elementwise: false,
-            slice_infos: Vec::new(),
-            push_infos: Vec::new(),
-        };
-        let mut has_vulkan = false;
-        let mut thread_lits = Punctuated::<LitInt, Comma>::new();
-        for attr in kernel_attr.attr.iter() {
-            let attr_string = attr.ident.to_string();
-            if let Some(vulkan) = attr.vulkan.as_ref() {
-                info.vulkan = vulkan.version()?;
-                has_vulkan = true;
-            } else if attr_string == "elementwise" {
-                info.elementwise = true;
-            } else if let Some(threads) = attr.threads.as_ref() {
-                if info.dimensionality != 0 {
-                    return Err(Error::new_spanned(&thread_lits, "threads already declared"));
-                }
-                if threads.threads.is_empty() || threads.threads.len() > 3 {
-                    return Err(Error::new_spanned(&thread_lits, "expected 1, 2, or 3 dimensional threads, ie `#[kernel(threads(16, 16))]`"));
-                }
-                for (i, x) in threads.threads.iter() {
-                    info.threads[i] = x.base10_parse()?;
-                    thread_lits.push(x.clone());
-                }
-                while thread_lits.len() < 3 {
-                    thread_lits.push(LitInt::new("1", attr.ident.span()));
-                }
-            } else if let Some(features) = attr.features.as_ref() {
-                match attr_string.as_str() {
-                    "capabilities" => {
-                        for cap in features.features.iter() {
-                            let cap_string = cap.value();
-                            if let Ok(cap) = Capability::from_str(&cap_string) {
-                                info.capabilities.push(cap);
-                            } else {
-                                return Err(Error::new_spanned(cap, "unknown capability, see https://docs.rs/spirv/latest/spirv/enum.Capability.html"));
-                            }
-                        }
-                    }
-                    "extensions" => {
-                        for ext in features.features.iter() {
-                            info.extensions.push(ext.value());
-                        }
-                    }
-                    _ => unreachable!(),
-                }
-            } else {
-                return Err(Error::new_spanned(&attr.ident, "unknown attribute, expected `vulkan`, `elementwise`, `threads`, `capabilities`, or `extensions`"));
-            }
-        }
-        if !has_vulkan {
-            return Err(Error::new(span, "vulkan (major, minor) must be specified, ie `#[kernel(vulkan(1, 1))]`"));
-        }
-        if info.dimensionalty = 0 {
-            return Err(Error::new(span, "expected 1, 2, or 3 dimensional threads, ie `#[kernel(threads(16, 16))]`"));
-        }
-        if info.elementwise && info.dimensionality != 1 {
-            return Err(Error::new_spanned(
-                &thread_lits,
-                "can only use 1 dimensional threads in elementwise kernel",
-            ));
-        }
-        let mut builtins = HashSet::<&'static str>::new();
-        let mut dispatch_args = Punctuated::<FnArg, Comma>::new();
-        if !info.elementwise {
-            dispatch_args.push(parse_quote! {
-                kind: DispatchKind,
-            });
-        }
-        let mut outer_args = Punctuated::<TypedArg, Comma>::new();
-        let mut inner_args = Punctuated::<TypedArg, Comma>::new();
-        let mut group_args = Vec::<(Ident, KernelGroupArg)>::new();
-        let mut push_consts = Vec::<(ScalarType, TypedArg)>::new();
-        let mut set_lit = LitInt::new("0", Span::call_site());
-        let mut binding = 0;
-        for arg in kernel.args.iter() {
-            let arg_ident = &arg.ident;
-            let ident_string = arg_ident.to_string();
-            let mut_token = &arg.mut_token;
-            let mutable = mut_token.is_some();
-            if let Some(ty) = arg.ty.as_ref() {
-                if let Some(attr) = arg.attr.as_ref() {
-                    if attr.ident == "builtin" {
-                        if info.elementwise
-                            && !matches!(ident_string.as_str(), "elements" | "element_index")
-                        {
-                            return Err(Error::new_spanned(&arg_ident, format!("builtin `{ident_string}` can not be used in elementwise kernel, use `elements` or `element_index` instead")));
-                        }
-                        let (builtin, builtin_ty) = BUILTINS
-                            .iter()
-                            .find(|x| x.0 == ident_string.as_str())
-                            .ok_or_else(|| {
-                                let mut msg = "unknown builtin, expected ".to_string();
-                                for (b, _) in BUILTINS.iter() {
-                                    msg.push('`');
-                                    msg.push_str(b);
-                                    msg.push('`');
-                                    if b != &BUILTINS.last().unwrap().0 {
-                                        msg.push_str(", ");
-                                    }
-                                }
-                                msg.push('.');
-                                Error::new_spanned(&attr.ident, msg)
-                            })?;
-                        let arg_ty = arg.ty.as_ref().ok_or_else(|| {
-                            Error::new_spanned(&arg_ident, "expected a builtin type")
-                        })?;
-                        let ty_string = arg_ty.to_string();
-                        if &ty_string != builtin_ty {
-                            return Err(Error::new_spanned(&arg_ty, "expected `{builtin_ty}`"));
-                        }
-                        match ident_string.as_str() {
-                            "global_threads" => {
-                                if !builtins.contains("groups") {
-                                    outer_args.push(parse_quote! {
-                                        #[spirv(num_workgroups)]
-                                        groups: UVec3
-                                    });
-                                }
-                                builtins.extend(["global_threads", "groups", "threads"]);
-                            }
-                            "threads" => {
-                                builtins.insert("threads");
-                            }
-                            "elements" => {
-                                inner_args.push(parse_quote! {
-                                    #arg_ident: u32
-                                });
-                            }
-                            "element_index" => {
-                                inner_args.push(parse_quote! {
-                                    #arg_ident: u32
-                                });
-                            }
-                            _ => {
-                                let spirv_attr = match ident_string.as_str() {
-                                    "global_id" => "global_invocation_id",
-                                    "groups" => "num_workgroups",
-                                    "group_id" => "workgroup_id",
-                                    "subgroup_id" => "subgroup_id",
-                                    "thread_id" => "local_invocation_id",
-                                    "thread_index" => "local_invocation_index",
-                                    _ => unreachable!("unexpected spirv_attr {ident_string:?}"),
-                                };
-                                let spirv_attr = Ident::new(spirv_attr, arg.ident.span());
-                                outer_args.push(parse_quote! {
-                                    #[spirv(#spirv_attr)]
-                                    #arg_ident: #arg_ty
-                                });
-                                builtins.insert(builtin);
-                            }
-                        }
-                        inner_args.push(parse_quote! {
-                            #arg_ident: #arg_ty
-                        });
-                    } else {
-                        return Err(Error::new_spanned(
-                            &attr.ident,
-                            "unknown attribute, expected \"builtin\" or \"subgroup\""
-                        ));
-                    }
-                } else {
-                    if ident_string.starts_with("__krnl") {
-                        return Err(Error::new_spanned(&arg_ident, "\"__krnl\" is reserved"));
-                    }
-                    let push_ty = arg.ty.as_ref().unwrap();
-                    let push_ty_string = push_ty.to_string();
-                    let scalar_type = ScalarType::try_from(push_ty_string.as_str())
-                        .map_err(|_| Error::new_spanned(&push_ty, "expected a scalar"))?;
-
-                    let typed_arg: TypedArg = parse_quote! {
-                        #arg_ident: #push_ty
-                    };
-                    push_consts.push((scalar_type, typed_arg.clone()));
-                    inner_args.push(typed_arg);
-                }
-            } else if let Some(slice_arg) = arg.slice_arg.as_ref() {
-                let elementwise = slice_arg.elementwise;
-                let elem_ty = &slice_arg.elem_ty;
-                let elem_ty_string = elem_ty.to_string();
-                if elementwise && !info.elementwise {
-                    return Err(Error::new_spanned(elem_ty, format!("can not use `&{}{elem_ty_string}` outside of elementwise kernel, add `elementwise` to `#[kernel(..)]` attributes to enable", if mutable { "mut " } else { "" })));
-                }
-                if let Some(wrapper_ty) = slice_arg.wrapper_ty.as_ref() {
-                    if wrapper_ty == "GlobalMut" {
-                        if info.elementwise {
-                            return Err(Error::new_spanned(
-                                wrapper_ty,
-                                "can not use `GlobalMut<_>` in elementwise kernel",
-                            ));
-                        }
-                        if mutable {
-                            inner_args.push(parse_quote! {
-                                #arg_ident: & #mut_token #wrapper_ty <[#elem_ty]>
-                            })
-                        } else {
-                            return Err(Error::new_spanned(
-                                arg.and.as_ref().unwrap(),
-                                "expected `&mut _`",
-                            ));
-                        }
-                    } else {
-                        return Err(Error::new_spanned(wrapper_ty, "expected `GlobalMut<_>`"));
-                    }
-                } else if elementwise {
-                    inner_args.push(parse_quote! {
-                        #arg_ident: & #mut_token #elem_ty
-                    })
-                } else if mutable {
-                    return Err(Error::new_spanned(mut_token, "`&mut [_]` can not be used as a kernel argument directly, use `krnl_core::mem::GlobalMut<_>` instead"));
-                } else {
-                    inner_args.push(parse_quote! {
-                        #arg_ident: & #mut_token [#elem_ty]
-                    })
-                }
-                {
-                    set_lit.set_span(arg_ident.span());
-                    let binding_lit = LitInt::new(&binding.to_string(), arg_ident.span());
-                    outer_args.push(parse_quote! {
-                        #[spirv(descriptor_set = #set_lit, binding = #binding_lit, storage_buffer)]
-                        #arg_ident: & #mut_token [#elem_ty]
-                    });
-                    binding += 1;
-                }
-                let scalar_type = ScalarType::try_from(elem_ty_string.as_str())
-                    .map_err(|_| Error::new_spanned(&elem_ty, "expected a scalar"))?;
-                info.slice_infos.push(SliceInfo {
-                    name: arg_ident.to_string(),
-                    scalar_type,
-                    mutable,
-                    elementwise,
-                });
-            } else if let Some(group_arg) = arg.group_arg.as_ref() {
-                let attr = arg.attr.as_ref().expect("group_arg.attr.is_some()");
-                let group_ty = &group_arg.ty;
-                if attr.ident == "group" {
-                    if let Some(wrapper_ty) = group_arg.wrapper_ty.as_ref() {
-                        if wrapper_ty != "GroupUninitMut" {
-                            return Err(Error::new_spanned(
-                                group_ty,
-                                "expected `krnl_core::mem::GroupUninitMut<_>`",
-                            ));
-                        }
-                        outer_args.push(parse_quote! {
-                            #[spirv(workgroup)]
-                            #arg_ident: & #mut_token #group_ty
-                        });
-                        inner_args.push(parse_quote! {
-                            #arg_ident: & #mut_token #wrapper_ty<#group_ty>
-                        });
-                    } else {
-                        return Err(Error::new_spanned(
-                            group_ty,
-                            "expected `krnl_core::mem::GroupUninitMut<_>`",
-                        ));
-                    }
-                } else if attr.ident == "subgroup" {
-                    outer_args.push(parse_quote! {
-                        #[spirv(subgroup)]
-                        #arg_ident: #group_ty
-                    });
-                    inner_args.push(parse_quote! {
-                        #arg_ident: #group_ty
-                    });
-                } else {
-                    return Err(Error::new_spanned(
-                        &arg_ident,
-                        "expected `krnl_core::mem::GroupUninitMut<_>`",
-                    ));
-                }
-                group_args.push((arg_ident.clone(), group_arg.clone()));
-            }
-            if let Some(arg_attr) = arg.attr.as_ref() {
-                let attr_string = arg_attr.ident.to_string();
-                match attr_string.as_str() {
-                    "subgroup" => {
-                        if info.elementwise {
-                            return Err(Error::new_spanned(
-                                &arg_ident,
-                                "`#[subgroup]` can not be used in elementwise kernel",
-                            ));
-                        }
-                    }
-                    _ => {}
-                }
-            }
-        }
-        if info.elementwise {
-            builtins.extend([
-                "global_threads",
-                "global_id",
-                "groups",
-                "threads",
-                "thread_id",
-            ]);
-            outer_args.push(parse_quote! {
-                #[spirv(global_invocation_id)]
-                global_id: ::krnl_core::glam::UVec3
-            });
-            outer_args.push(parse_quote! {
-                #[spirv(num_workgroups)]
-                groups: ::krnl_core::glam::UVec3
-            });
-            outer_args.push(parse_quote! {
-                #[spirv(local_invocation_id)]
-                thread_id: ::krnl_core::glam::UVec3
-            });
-            push_consts.push((
-                ScalarType::U32,
-                parse_quote! {
-                    __krnl_elements: u32
-                },
-            ));
-        } else {
-            for slice_info in info.slice_infos.iter() {
-                let ident = format_ident!("__krnl_len_{}", slice_info.name);
-                let ty = format_ident!("{}", slice_info.scalar_type.name());
-                push_consts.push((
-                    ScalarType::U32,
-                    parse_quote! {
-                        #ident: #ty
-                    },
-                ));
-            }
-        }
-        push_consts.sort_by_key(|x| x.0.size());
-        let mut offset = 0;
-        for (scalar_type, typed_arg) in push_consts.iter().rev() {
-            info.push_infos.push(PushInfo {
-                name: typed_arg.ident.to_string(),
-                scalar_type: *scalar_type,
-                offset,
-            });
-            offset += scalar_type.size() as u32;
-        }
-        info.num_push_words = offset / 4 + if offset % 4 != 0 { 1 } else { 0 };
-        let mut push_consts = push_consts
-            .into_iter()
-            .rev()
-            .map(|x| x.1)
-            .collect::<Punctuated<_, Comma>>();
-        for i in 0..offset % 4 {
-            let field = format_ident!("__krnl_pad{}", i);
-            push_consts.push(parse_quote! {
-                #field: u8
-            });
-        }
-        let push_consts_ident = if !push_consts.is_empty() {
-            let ident = format_ident!("__{}PushConsts", kernel.ident);
-            outer_args.push(parse_quote! {
-                #[spirv(push_constant)] push_consts: &#ident
-            });
-            Some(ident)
-        } else {
-            None
-        };
-        Ok(Self {
-            info,
-            has_vulkan_version,
-            thread_lits,
-            builtins,
-            dispatch_args,
-            outer_args,
-            inner_args,
-            group_args,
-            push_consts,
-            push_consts_ident,
-        })
-    }
-}
-
-#[allow(unused_variables)]
-fn kernel_impl(attr: TokenStream, item: TokenStream, module_info: &mut ModuleInfo) -> Result<()> {
-    let span = Span::call_site();
-    let kernel_attr: KernelAttributes = syn::parse(attr)?;
-    let kernel: Kernel = syn::parse(item)?;
-    let meta = KernelMeta::new(&kernel_attr, &kernel)?;
-    let info = &meta.info;
-    let mut host_tokens = TokenStream2::new();
-    let mut device_tokens = TokenStream2::new();
-    let builtins = &meta.builtins;
-    let slice_infos = &info.slice_infos;
-    let kernel_ident = &kernel.ident;
-    let block = &kernel.block;
-    let thread_lits = &meta.thread_lits;
-    let full_thread_lits = thread_lits
-        .iter()
-        .cloned()
-        .chain([LitInt::new("1", span), LitInt::new("1", span)])
-        .take(3)
-        .collect::<Punctuated<_, Comma>>();
-    let mut builtin_stmts = Vec::<Stmt>::new();
-    let outer_args = meta.outer_args;
-    let inner_args = meta.inner_args;
-    let group_args = meta.group_args;
-    let call_args = inner_args
-        .iter()
-        .map(|x| &x.ident)
-        .collect::<Punctuated<_, Comma>>();
-    let push_consts = meta.push_consts;
-    let push_const_idents = push_consts
-        .iter()
-        .map(|x| &x.ident)
-        .collect::<Punctuated<_, Comma>>();
-    if builtins.contains("threads") {
-        builtin_stmts.push(parse_quote! {
-            let threads = ::krnl_core::glam::UVec3::new(#full_thread_lits);
-        });
-    }
-    if builtins.contains("global_threads") {
-        builtin_stmts.push(parse_quote! {
-            let global_threads = groups * threads;
-        });
-    }
-    if let Some(push_consts_ident) = meta.push_consts_ident.as_ref() {
-        builtin_stmts.push(parse_quote! {
-            let &#push_consts_ident {
-                #push_const_idents
-            } = push_consts;
-        });
-    }
-    for slice_info in slice_infos {
-        let ident = format_ident!("{}", slice_info.name);
-        let mut_token = if slice_info.mutable {
-            Some(Mut::default())
-        } else {
-            None
-        };
-        if slice_info.mutable && !slice_info.elementwise {
-            builtin_stmts.push(parse_quote! {
-                let ref mut #ident = ::krnl_core::mem::GlobalMut::__new(#ident);
-            });
-        }
-    }
-    for (ident, group_arg) in group_args.iter() {
-        if let Some(wrapper_ty) = group_arg.wrapper_ty.as_ref() {
-            builtin_stmts.push(parse_quote! {
-                let ref mut #ident = #wrapper_ty::__new(#ident);
-            })
-        }
-    }
-    let mut elementwise_stmts = Vec::<Stmt>::new();
-    if meta.info.elementwise {
-        builtin_stmts.push(parse_quote! {
-            let elements = __krnl_elements;
-        });
-        if slice_infos.iter().any(|x| x.mutable) {
-            elementwise_stmts.push(parse_quote! {
-                use krnl_core::ops::{IndexUnchecked, IndexUncheckedMut};
-            });
-        } else if !slice_infos.is_empty() {
-            elementwise_stmts.push(parse_quote! {
-                use krnl_core::ops::IndexUnchecked;
-            });
-        }
-        for slice_info in meta.info.slice_infos.iter().filter(|x| x.elementwise) {
-            let ident = format_ident!("{}", slice_info.name);
-            let index_fn = if slice_info.mutable {
-                format_ident!("index_unchecked_mut")
-            } else {
-                format_ident!("index_unchecked")
-            };
-            elementwise_stmts.push(parse_quote! {
-                let #ident = unsafe {
-                    #ident . #index_fn(element_index as usize)
-                };
-            });
-        }
-    }
-    if let Some(push_consts_ident) = meta.push_consts_ident.as_ref() {
-        quote! {
-            #[allow(non_camel_case_types)]
-            #[repr(C)]
-            pub struct #push_consts_ident {
-                #push_consts
-            }
-        }
-        .to_tokens(&mut device_tokens);
-    }
-    let unsafe_token = &kernel.unsafe_token;
-    let call = if let Some(unsafe_token) = kernel.unsafe_token.as_ref() {
-        quote! {
-            #unsafe_token {
-                #kernel_ident(#call_args);
-            }
-        }
-    } else {
-        quote! {
-            #kernel_ident(#call_args);
-        }
-    };
-    let generated_body = if meta.info.elementwise {
-        quote! {
-            let mut element_index = global_id.x;
-            while element_index < elements {
-                #(#elementwise_stmts)*
-                #call
-                element_index += global_threads.x;
-            }
-        }
-    } else {
-        call
-    };
-    let mut kernel_cfg = format!("vulkan{}_{}", info.vulkan.0, info.vulkan.1);
-    let mut target_features = info.capabilities.iter().map(|x| x.to_string()).chain(info.extensions.iter().cloned()).collect::<Vec<_>>();
-    target_features.sort();
-    for target_feature in target_features.iter() {
-        write!(&mut kernel_cfg, "_{}", target_feature);
-    }
-    let kernel_cfg = format_ident!("{}", kernel_cfg);
-    device_tokens.extend(quote! {
-        #[cfg(#kernel_cfg)]
-        #[spirv(compute(threads(#thread_lits)))]
-        pub fn #kernel_ident (
-            #outer_args
-        ) {
-            #(#builtin_stmts)*
-            fn #kernel_ident (
-                #inner_args
-            ) #block
-            #generated_body
-        }
-    });
-    {
-        let kernel_struct_name = info.name.to_uppercase().replace("_", "");
-        let kernel_struct_ident = format_ident!("{}", kernel_struct_name);
-        let unsafe_token = if info.safe {
-            None
-        } else {
-            Some(Unsafe)
-        };
-        let dispatch_args = &meta.dispatch_args;
-        host_tokens.extend(quote! {
-            use #krnl::{anyhow::Result, device::Device, kernel::DispatchKind};
-            pub struct #kernel_struct_ident {
-
-            }
-            impl #kernel_struct_ident {
-                pub fn build(device: Device) -> Result<Self> {
-                    todo!()
-                }
-                pub #(#unsafe_token)* fn dispatch(#dispatch_args) -> Result<()> {
-                    todo!()
-                }
-            }
-        });
-    }
-    module_builder.kernels.insert(info.name.clone(), host_tokens);
-    module_info.source.push_str(&device_tokens.to_string());
-    Ok(())
-}
-*/

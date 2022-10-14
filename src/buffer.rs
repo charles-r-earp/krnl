@@ -6,7 +6,7 @@ use crate::{
 #[cfg(feature = "device")]
 use crate::{
     device::{DeviceBase, DeviceBuffer, HostBuffer},
-    //kernel::{module, Kernel},
+    kernel::module,
     krnl_core,
 };
 use anyhow::{bail, format_err, Result};
@@ -887,26 +887,14 @@ impl RawDataOwned for ScalarCowBufferRepr<'_> {
 
 impl ScalarDataOwned for ScalarCowBufferRepr<'_> {}
 
-/*
 #[cfg(feature = "device")]
-#[module(
-    vulkan("1.1"),
-    dependency("krnl-core", path="krnl-core", features = ["half", "spirv-panic"]),
-    dependency("paste", version = "1.0.7"),
-)]
+#[module]
 #[krnl(crate = crate)]
-mod kernels {
-    #[allow(unused_imports)]
-    //#[cfg(any(feature = "half", target_arch = "spirv"))]
-    // use krnl_core::half::{bf16, f16};
+mod buffer_fill {
     use krnl_core::kernel;
-    #[allow(unused_imports)]
-    use krnl_core::scalar::Scalar;
-
-    use paste::paste;
 
     #[kernel(
-        vulkan("1.2"),
+        vulkan(1, 2),
         threads(256),
         elementwise,
         capabilities("Int8", "StorageBuffer8BitAccess")
@@ -915,6 +903,7 @@ mod kernels {
         *y = x;
     }
     #[kernel(
+        vulkan(1, 1),
         threads(256),
         elementwise,
         capabilities("Int8", "Int16", "StorageBuffer16BitAccess")
@@ -922,27 +911,15 @@ mod kernels {
     pub fn fill_u16(y: &mut u16, x: u16) {
         *y = x;
     }
-    #[kernel(threads(256), elementwise)]
+    #[kernel(vulkan(1, 1), threads(256), elementwise)]
     pub fn fill_u32(y: &mut u32, x: u32) {
         *y = x;
     }
-    #[kernel(threads(256), elementwise, capabilities("Int64"))]
+    #[kernel(vulkan(1, 1), threads(256), elementwise, capabilities("Int64"))]
     pub fn fill_u64(y: &mut u64, x: u64) {
         *y = x;
     }
-
-    macro_rules! impl_cast {
-        ((version=$vers:literal, capabilities=$($cap:literal),* $(,)?) => ($x:ty, $y:ty)) => (
-            paste! {
-                #[kernel(vulkan($vers), threads(256), elementwise, capabilities($($cap),*))]
-                pub fn [<cast_ $x _ $y >](x: &$x, y: &mut $y) {
-                    *y = x.cast();
-                }
-            }
-        );
-    }
-    include!(concat!(env!("OUT_DIR"), "/buffer/buffer_cast_kernels.in"));
-}*/
+}
 
 #[derive(Clone)]
 pub struct BufferBase<S: Data> {
@@ -1257,30 +1234,62 @@ impl<S: ScalarDataMut> ScalarBufferBase<S> {
         }
         if !self.is_empty() {
             let x = elem.to_scalar_bits();
-            let scalar_type = x.scalar_type();
-            let mut y = self.bitcast_mut(scalar_type);
+            let y = self;
             match y.device().kind() {
-                DeviceKind::Host => match x {
-                    E::U8(x) => y.try_as_slice_mut().unwrap().fill(x),
-                    E::U16(x) => y.try_as_slice_mut().unwrap().fill(x),
-                    E::U32(x) => y.try_as_slice_mut().unwrap().fill(x),
-                    E::U64(x) => y.try_as_slice_mut().unwrap().fill(x),
-                    _ => unreachable!(),
+                DeviceKind::Host => {
+                    let mut y = y.bitcast_mut(x.scalar_type());
+                    match x {
+                        E::U8(x) => y.try_as_slice_mut().unwrap().fill(x),
+                        E::U16(x) => y.try_as_slice_mut().unwrap().fill(x),
+                        E::U32(x) => y.try_as_slice_mut().unwrap().fill(x),
+                        E::U64(x) => y.try_as_slice_mut().unwrap().fill(x),
+                        _ => unreachable!(),
+                    }
                 },
                 #[cfg(feature = "device")]
                 DeviceKind::Device => {
-                    /*
-                    let y = self.bitcast_mut(scalar_type);
-                    let kernel_info =
-                        kernels::module().kernel_info(format!("fill_{}", scalar_type.name()))?;
-                    Kernel::builder(y.device(), kernel_info)
-                        .build()?
-                        .dispatch_builder()
-                        .slice_mut("y", y)
-                        .push("x", x)
-                        .build()?
-                        .dispatch()*/
-                    todo!()
+                    use spirv::Capability;
+                    let device = y.device();
+                    let device_base = device.inner.device().unwrap();
+                    let n = y.len();
+                    let x = if n % 8 == 0 && device_base.capability_enabled(Capability::Int64) {
+                        match x {
+                            E::U8(x) => E::U64(u64::from_ne_bytes([x; 8])),
+                            E::U16(x) => {
+                                let [x1, x2] = x.to_ne_bytes();
+                                E::U64(u64::from_ne_bytes([x1, x2, x1, x2, x1, x2, x1, x2]))
+                            }
+                            E::U32(x) => {
+                                let [x1, x2, x3, x4] = x.to_ne_bytes();
+                                E::U64(u64::from_ne_bytes([x1, x2, x3, x4, x1, x2, x3, x4]))
+                            }
+                            x => x,
+                        }
+                    } else if n % 4 == 0 {
+                        match x {
+                            E::U8(x) => E::U32(u32::from_ne_bytes([x; 4])),
+                            E::U16(x) => {
+                                let [x1, x2] = x.to_ne_bytes();
+                                E::U32(u32::from_ne_bytes([x1, x2, x1, x2]))
+                            }
+                            x => x,
+                        }
+                    } else if n % 2 == 0 && device_base.capability_enabled(Capability::Int16) && device_base.capability_enabled(Capability::StorageBuffer16BitAccess) {
+                        match x {
+                            E::U8(x) => E::U16(u16::from_ne_bytes([x; 2])),
+                            x => x,
+                        }
+                    } else {
+                        x
+                    };
+                    let mut y = y.bitcast_mut(x.scalar_type());
+                    match x {
+                        E::U8(x) => buffer_fill::fill_u8::build(device)?.dispatch(y.try_as_slice_mut().unwrap(), x),
+                        E::U16(x) => buffer_fill::fill_u16::build(device)?.dispatch(y.try_as_slice_mut().unwrap(), x),
+                        E::U32(x) => buffer_fill::fill_u32::build(device)?.dispatch(y.try_as_slice_mut().unwrap(), x),
+                        E::U64(x) => buffer_fill::fill_u64::build(device)?.dispatch(y.try_as_slice_mut().unwrap(), x),
+                        _ => unreachable!(),
+                    }
                 }
             }
         } else {
@@ -1290,15 +1299,8 @@ impl<S: ScalarDataMut> ScalarBufferBase<S> {
 }
 
 impl ScalarSlice<'_> {
-    // for DispatchBuilder
+    // for kernel::__dispatch
     pub(crate) fn into_raw_slice(self) -> RawSlice {
-        self.data.raw
-    }
-}
-
-impl ScalarSliceMut<'_> {
-    // for DispatchBuilder
-    pub(crate) fn into_raw_slice_mut(self) -> RawSlice {
         self.data.raw
     }
 }
@@ -1416,40 +1418,28 @@ mod tests {
             #[test]
             fn $func() -> Result<()> $block
         );
-        (@Device u8 => $func:ident $block:block) => (
-            #[cfg(all(krnl_device_tests_cap_Int8, krnl_device_tests_ext_StorageBuffer8BitAccess))]
-            impl_buffer_fill_tests!(@Device => $func $block);
-        );
-        (@Device i8 => $func:ident $block:block) => (
-            impl_buffer_fill_tests!(@Device u8 => $func $block);
-        );
-        (@Device f16 => $func:ident $block:block) => (
-            #[cfg(all(krnl_device_tests_cap_Int8, krnl_device_tests_cap_Int16, krnl_device_tests_ext_StorageBuffer16BitAccess))]
-            impl_buffer_fill_tests!(@Device => $func $block);
-        );
         (@Device f16 => $func:ident $block:block) => (
             #[cfg(feature = "half")]
-            impl_buffer_fill_tests!(@Device u16 => $func $block);
-        );
-        (@Device bf16 => $func:ident $block:block) => (
-            impl_buffer_fill_tests!(@Device f16 => $func $block);
+            impl_buffer_fill_tests!(@Device => $func $block);
         );
         (@Device bf16 => $func:ident $block:block) => (
             #[cfg(feature = "half")]
             impl_buffer_fill_tests!(@Device => $func $block);
         );
-        (@Device u64 => $func:ident $block:block) => (
-            #[cfg(all(krnl_device_tests_cap_Int64))]
-            impl_buffer_fill_tests!(@Device => $func $block);
+        (@Device u32 => $func:ident $block:block) => (
+            #[cfg(feature = "device")]
+            #[test]
+            fn $func() -> Result<()> $block
         );
-        (@Device i64 => $func:ident $block:block) => (
-            impl_buffer_fill_tests!(@Device u64 => $func $block);
+        (@Device i32 => $func:ident $block:block) => (
+            impl_buffer_fill_tests!(@Device u32 => $func $block);
         );
-        (@Device f64 => $func:ident $block:block) => (
-            impl_buffer_fill_tests!(@Device u64 => $func $block);
+        (@Device f32 => $func:ident $block:block) => (
+            impl_buffer_fill_tests!(@Device u32 => $func $block);
         );
         (@Device $($t:ty)? => $func:ident $block:block) => (
             #[cfg(feature = "device")]
+            #[ignore]
             #[test]
             fn $func() -> Result<()> $block
         );
@@ -1462,10 +1452,10 @@ mod tests {
                     impl_buffer_fill_tests!(@Host $t => [<scalar_buffer_fill_host_ $t>] {
                         scalar_buffer_fill::<$t>(Device::host())
                     });
-                   impl_buffer_fill_tests!(@Device $t => [<buffer_fill_device_ $t>] {
+                    impl_buffer_fill_tests!(@Device $t => [<buffer_fill_device_ $t>] {
                         buffer_fill::<$t>(Device::new(0)?)
                     });
-                    impl_buffer_fill_tests!(@Host $t => [<scalar_buffer_fill_device_ $t>] {
+                    impl_buffer_fill_tests!(@Device $t => [<scalar_buffer_fill_device_ $t>] {
                         scalar_buffer_fill::<$t>(Device::new(0)?)
                     });
                 )*
@@ -1508,5 +1498,5 @@ mod tests {
         };
     }
 
-    include!(concat!(env!("OUT_DIR"), "/buffer/buffer_cast_tests.in"));
+    //include!(concat!(env!("OUT_DIR"), "/buffer/buffer_cast_tests.in"));
 }

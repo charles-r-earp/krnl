@@ -1,12 +1,8 @@
 #![allow(unused)]
-use crate::{device::DeviceOptions, scalar::Scalar};
+use crate::{device::DeviceOptions, scalar::Scalar, kernel::kernel_info::{KernelInfo, Spirv}};
 use anyhow::{format_err, Result};
 use crossbeam_channel::{bounded, Receiver, Sender};
 use dashmap::DashMap;
-use krnl_types::{
-    kernel::{KernelInfo, KernelInfoInner, ModuleInner},
-    version::Version,
-};
 use once_cell::sync::OnceCell;
 use parking_lot::{Mutex, RwLock};
 use spirv::Capability;
@@ -84,7 +80,7 @@ use vulkano::{
         AccessFlags, BufferMemoryBarrier, DependencyInfo, Fence, FenceCreateInfo, PipelineStages,
         Semaphore,
     },
-    DeviceSize, OomError, Version as VulkanoVersion,
+    DeviceSize, OomError, Version
 };
 
 #[cfg(any(target_os = "ios", target_os = "macos"))]
@@ -546,8 +542,27 @@ impl Engine {
             runner_result: self.runner.result.clone(),
         })
     }
-    pub(crate) fn kernel_cache(&self, info: KernelInfo) -> Result<Arc<KernelCache>> {
-        self.kernel_cache_map.kernel(info)
+    pub(crate) fn kernel_cache(&self, kernel_info: Arc<KernelInfo>, spirv: Arc<Spirv>) -> Result<Arc<KernelCache>> {
+        self.kernel_cache_map.kernel(kernel_info, spirv, |kernel_info| {
+            let kernel_path = &kernel_info.path;
+            let device_index = self.index();
+            let version = Version::major_minor(kernel_info.vulkan.0, kernel_info.vulkan.1);
+            let vulkan_version = self.vulkan_version();
+            if version > vulkan_version {
+                return Err(format_err!("Kernel `{kernel_path}` requires vulkan >= {version}, Device({device_index}) supports vulkan {vulkan_version}"));
+            }
+            for cap in kernel_info.capabilities.iter().copied() {
+                if !self.capability_enabled(cap) {
+                    return Err(format_err!("Kernel `{kernel_path}` requires capability `{cap:?}`, but it is not enabled for Device({device_index})!"));
+                }
+            }
+            for ext in kernel_info.extensions.iter() {
+                if !self.extension_enabled(ext) {
+                    return Err(format_err!("Kernel `{kernel_path}` requires extension {ext:?}, but it is not enabled for Device({device_index})!"));
+                }
+            }
+            Ok(())
+        })
     }
     pub(crate) fn compute(&self, compute: Compute) -> Result<()> {
         self.send_op(Op::Compute(compute))?;
@@ -966,7 +981,7 @@ impl BufferAllocator {
 #[derive(Debug)]
 struct KernelCacheMap {
     device: Arc<Device>,
-    kernels: DashMap<KernelCacheKey, Arc<KernelCache>>,
+    kernels: DashMap<(usize, usize), Arc<KernelCache>>,
 }
 
 impl KernelCacheMap {
@@ -976,32 +991,28 @@ impl KernelCacheMap {
             kernels: DashMap::new(),
         }
     }
-    fn kernel(&self, info: KernelInfo) -> Result<Arc<KernelCache>> {
-        let key = KernelCacheKey {
-            module_id: Arc::as_ptr(ModuleInner::get_from_kernel_info(&info)) as usize,
-            kernel: KernelInfoInner::get_from_kernel_info(&info)
-                .name
-                .to_string(),
-        };
+    fn kernel(&self, kernel_info: Arc<KernelInfo>, spirv: Arc<Spirv>, validate_cb: impl Fn(&KernelInfo) -> Result<()>) -> Result<Arc<KernelCache>> {
+        let key = (
+            Arc::as_ptr(&kernel_info) as usize,
+            Arc::as_ptr(&spirv) as usize,
+        );
         let kernel_cache = self
             .kernels
             .entry(key)
-            .or_try_insert_with(|| KernelCache::new(self.device.clone(), info))?
+            .or_try_insert_with(|| {
+                validate_cb(&kernel_info)?;
+                KernelCache::new(self.device.clone(), kernel_info, spirv)
+            })?
             .value()
             .clone();
         Ok(kernel_cache)
     }
 }
 
-#[derive(Eq, PartialEq, Hash, Debug)]
-struct KernelCacheKey {
-    module_id: usize,
-    kernel: String,
-}
-
 #[derive(Debug)]
 pub(crate) struct KernelCache {
-    info: KernelInfo,
+    kernel_info: Arc<KernelInfo>,
+    spirv: Arc<Spirv>,
     shader_module: Arc<ShaderModule>,
     descriptor_set_layout: Arc<DescriptorSetLayout>,
     pipeline_layout: Arc<PipelineLayout>,
@@ -1009,22 +1020,13 @@ pub(crate) struct KernelCache {
 }
 
 impl KernelCache {
-    fn new(device: Arc<Device>, info: KernelInfo) -> Result<Arc<Self>> {
+    fn new(device: Arc<Device>, kernel_info: Arc<KernelInfo>, spirv: Arc<Spirv>) -> Result<Arc<Self>> {
         use vulkano::descriptor_set::layout::DescriptorType;
-        let kernel_info = KernelInfoInner::get_from_kernel_info(&info);
-        let slice_infos = &kernel_info.slice_infos;
-        let vulkan_version = &kernel_info.vulkan_version;
-        let version = VulkanoVersion {
-            major: vulkan_version.major,
-            minor: vulkan_version.minor,
-            patch: vulkan_version.patch,
-        };
         let stages = ShaderStages {
             compute: true,
             ..ShaderStages::none()
         };
-        let descriptor_requirements = slice_infos
-            .iter()
+        let descriptor_requirements = kernel_info.slice_infos()
             .enumerate()
             .map(|(i, slice_info)| {
                 let set = 0u32;
@@ -1044,11 +1046,12 @@ impl KernelCache {
                 ((set, binding), descriptor_requirements)
             })
             .collect::<HashMap<_, _>>();
-        let push_constant_range = if kernel_info.num_push_words > 0 {
+        let push_const_bytes = kernel_info.push_infos().map(|x| x.scalar_type.size() as u32).sum();
+        let push_constant_range = if push_const_bytes > 0 {
             Some(PushConstantRange {
                 stages,
                 offset: 0,
-                size: kernel_info.num_push_words * 4,
+                size: push_const_bytes,
             })
         } else {
             None
@@ -1062,17 +1065,15 @@ impl KernelCache {
             input_interface: ShaderInterface::empty(),
             output_interface: ShaderInterface::empty(),
         };
+        let version = Version::major_minor(kernel_info.vulkan.0, kernel_info.vulkan.1);
         let mut capabilities = Vec::with_capacity(kernel_info.capabilities.len());
         for cap in kernel_info.capabilities.iter().copied() {
             capabilities.push(spirv_capability_to_vulkano_capability(cap)?);
         }
-        if kernel_info.spirv.is_none() {
-            dbg!(&kernel_info);
-        }
         let shader_module = unsafe {
             ShaderModule::from_words_with_data(
                 device.clone(),
-                &kernel_info.spirv.as_ref().unwrap().words,
+                &spirv.words,
                 version,
                 capabilities.iter(),
                 kernel_info.extensions.iter().map(Deref::deref),
@@ -1083,8 +1084,7 @@ impl KernelCache {
                 )],
             )?
         };
-        let bindings = slice_infos
-            .iter()
+        let bindings = kernel_info.slice_infos()
             .enumerate()
             .map(|(i, slice_info)| {
                 let descriptor_set_layout_binding = DescriptorSetLayoutBinding {
@@ -1118,15 +1118,19 @@ impl KernelCache {
             cache,
         )?;
         Ok(Arc::new(Self {
-            info,
+            kernel_info,
+            spirv,
             shader_module,
             pipeline_layout,
             descriptor_set_layout,
             compute_pipeline,
         }))
     }
-    pub(crate) fn info(&self) -> &KernelInfo {
-        &self.info
+    pub(crate) fn kernel_info(&self) -> &Arc<KernelInfo> {
+        &self.kernel_info
+    }
+    pub(crate) fn spirv(&self) -> &Arc<Spirv> {
+        &self.spirv
     }
 }
 
@@ -1339,9 +1343,8 @@ impl Encode for Compute {
         unsafe {
             descriptor_set.write(layout, writes.iter());
         }
-        let slice_infos = &KernelInfoInner::get_from_kernel_info(&cache.info).slice_infos;
         let mut cb_builder = &mut encoder.cb_builder;
-        for (buffer, slice_info) in self.buffers.iter().zip(slice_infos.iter()) {
+        for (buffer, slice_info) in self.buffers.iter().zip(cache.kernel_info.slice_infos()) {
             let barrier = Self::barrier(buffer, slice_info.mutable);
             let barrier_key = (buffer.chunk_id(), buffer.start);
             let prev_access = encoder

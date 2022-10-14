@@ -28,10 +28,16 @@ fn main() {
         let module_result = builder.build().unwrap().module;
         let spirv_paths = module_result.unwrap_multi();
         for kernel_info in kernel_infos.iter() {
-            let spirv_path = spirv_paths.get(&kernel_info.name).unwrap();
-            let spirv_bytes = fs::read(spirv_path).unwrap();
-            let words = process_spirv(&spirv_bytes, kernel_info);
-            spirvs.insert(kernel_info.name.clone(), Spirv { words });
+            if let Some(spirv_path) = spirv_paths.get(&kernel_info.name) {
+                let spirv_bytes = fs::read(spirv_path).unwrap();
+                let words = process_spirv(&spirv_bytes, kernel_info);
+                spirvs.insert(kernel_info.name.clone(), Spirv { words });
+            } else {
+                let kernel = &kernel_info.name;
+                dbg!(&compile_options);
+                dbg!(&kernel_info);
+                panic!("Spirv for {kernel:?} not generated!");
+            }
         }
     }
     fs::write(&spirvs_path, bincode::serialize(&spirvs).unwrap()).unwrap();

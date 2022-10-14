@@ -1,5 +1,4 @@
 use core::future::Future;
-use std::sync::Arc;
 
 pub trait BlockableFuture: Future {
     fn block(self) -> Self::Output;
