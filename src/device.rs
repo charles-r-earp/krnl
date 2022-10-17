@@ -101,6 +101,15 @@ impl Device {
                 StorageBuffer16BitAccess,
             ],
         };
+        #[cfg(test)] {
+            use once_cell::sync::OnceCell;
+            static DEVICE: OnceCell<Device> = OnceCell::new();
+            if index == 0 {
+                return DEVICE.get_or_try_init(|| {
+                    Device::new_ext(index, &options)
+                }).map(|x| x.clone());
+            }
+        }
         Self::new_ext(index, &options)
     }
     #[cfg_attr(not(feature = "device"), allow(unused_variables))]

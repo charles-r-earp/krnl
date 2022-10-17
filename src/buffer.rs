@@ -10,6 +10,7 @@ use crate::{
     krnl_core,
 };
 use anyhow::{bail, format_err, Result};
+use paste::paste;
 use core::{marker::PhantomData, mem::size_of};
 use futures_util::future::ready;
 use num_traits::AsPrimitive;
@@ -223,6 +224,9 @@ impl RawSlice {
         Ok(self.as_host_slice()?.to_vec())
     }
     fn to_raw_buffer(&self) -> Result<RawBuffer> {
+        if self.is_empty() {
+            return Ok(RawBuffer::new(self.device.clone(), self.scalar_type));
+        }
         match &self.inner {
             RawSliceInner::Host(host_slice) => {
                 let mut buffer = match self.scalar_type.size() {
@@ -236,7 +240,47 @@ impl RawSlice {
                 Ok(buffer)
             }
             #[cfg(feature = "device")]
-            RawSliceInner::Device(_) => todo!(),
+            RawSliceInner::Device(_) => {
+                use ScalarType::*;
+                let device = &self.device;
+                let cast_u8 = buffer_cast::cast_u8_u8::build(device.clone());
+                let cast_u16 = buffer_cast::cast_u16_u16::build(device.clone());
+                let cast_u32 = buffer_cast::cast_u32_u32::build(device.clone());
+                let cast_u64 = buffer_cast::cast_u64_u64::build(device.clone());
+                let n = self.inner.len();
+                let scalar_type = if n % 8 == 0 && cast_u64.is_ok() {
+                    U64
+                } else if n % 4 == 0 && cast_u32.is_ok() {
+                    U32
+                } else if n % 2 == 0 && cast_u16.is_ok() {
+                    U16
+                } else {
+                    U8
+                };
+                let x = ScalarSlice {
+                    data: ScalarSliceRepr::from_raw(self.clone().bitcast(scalar_type)),
+                };
+                let mut output = unsafe {
+                    ScalarBuffer::uninit(device.clone(), self.len(), self.scalar_type)?
+                };
+                let mut y = output.bitcast_mut(scalar_type);
+                match scalar_type {
+                    U8 => {
+                        cast_u8?.dispatch(x.try_as_slice().unwrap(), y.try_as_slice_mut().unwrap())?;
+                    }
+                    U16 => {
+                        cast_u16?.dispatch(x.try_as_slice().unwrap(), y.try_as_slice_mut().unwrap())?;
+                    }
+                    U32 => {
+                        cast_u32?.dispatch(x.try_as_slice().unwrap(), y.try_as_slice_mut().unwrap())?;
+                    }
+                    U64 => {
+                        cast_u64?.dispatch(x.try_as_slice().unwrap(), y.try_as_slice_mut().unwrap())?;
+                    }
+                    _ => unreachable!(),
+                }
+                Ok(output.data.raw)
+            }
         }
     }
     #[cfg(feature = "device")]
@@ -252,49 +296,46 @@ impl RawSlice {
         self
     }
     fn to_device(&self, device: Device) -> Result<RawBufferIntoDeviceFuture> {
-        if self.len() == 0 {
-            Ok(RawBufferIntoDeviceFuture::ready(unsafe {
-                RawBuffer::uninit(device, self.scalar_type, 0)
-            }))
-        } else {
+        if self.is_empty() {
+            return Ok(RawBufferIntoDeviceFuture::ready(Ok(RawBuffer::new(self.device.clone(), self.scalar_type))));
+        }
+        #[cfg(feature = "device")]
+        let scalar_type = self.scalar_type;
+        match (&self.inner, &device.inner) {
+            (RawSliceInner::Host(_), DeviceInner::Host) => {
+                Ok(RawBufferIntoDeviceFuture::ready(self.to_raw_buffer()))
+            }
             #[cfg(feature = "device")]
-            let scalar_type = self.scalar_type;
-            match (&self.inner, &device.inner) {
-                (RawSliceInner::Host(_), DeviceInner::Host) => {
-                    Ok(RawBufferIntoDeviceFuture::ready(self.to_raw_buffer()))
-                }
-                #[cfg(feature = "device")]
-                (RawSliceInner::Device(_), DeviceInner::Device(_)) => {
-                    Ok(RawBufferIntoDeviceFuture::ready(self.to_raw_buffer()))
-                }
-                #[cfg(feature = "device")]
-                (RawSliceInner::Host(host_slice), DeviceInner::Device(dst_device)) => {
-                    let bytes = unsafe { host_slice.as_slice() };
-                    let device_buffer = dst_device.upload(bytes)?;
-                    let device_slice = DeviceSlice {
-                        buffer: device_buffer,
-                        len: bytes.len(),
-                    };
-                    let buffer = RawBuffer {
-                        slice: RawSlice {
-                            device,
-                            scalar_type,
-                            inner: RawSliceInner::Device(device_slice),
-                        },
-                        cap: bytes.len(),
-                    };
-                    Ok(RawBufferIntoDeviceFuture::ready(Ok(buffer)))
-                }
-                #[cfg(feature = "device")]
-                (RawSliceInner::Device(device_slice), DeviceInner::Host) => {
-                    let dst_device = self.device.inner.device().unwrap();
-                    let device_buffer = device_slice.device_buffer().unwrap();
-                    let host_buffer_fut = dst_device.download(device_buffer.clone())?;
-                    Ok(RawBufferIntoDeviceFuture::future(
+            (RawSliceInner::Device(_), DeviceInner::Device(_)) => {
+                Ok(RawBufferIntoDeviceFuture::ready(self.to_raw_buffer()))
+            }
+            #[cfg(feature = "device")]
+            (RawSliceInner::Host(host_slice), DeviceInner::Device(dst_device)) => {
+                let bytes = unsafe { host_slice.as_slice() };
+                let device_buffer = dst_device.upload(bytes)?;
+                let device_slice = DeviceSlice {
+                    buffer: device_buffer,
+                    len: bytes.len(),
+                };
+                let buffer = RawBuffer {
+                    slice: RawSlice {
+                        device,
                         scalar_type,
-                        host_buffer_fut,
-                    ))
-                }
+                        inner: RawSliceInner::Device(device_slice),
+                    },
+                    cap: bytes.len(),
+                };
+                Ok(RawBufferIntoDeviceFuture::ready(Ok(buffer)))
+            }
+            #[cfg(feature = "device")]
+            (RawSliceInner::Device(device_slice), DeviceInner::Host) => {
+                let dst_device = self.device.inner.device().unwrap();
+                let device_buffer = device_slice.device_buffer().unwrap();
+                let host_buffer_fut = dst_device.download(device_buffer.clone())?;
+                Ok(RawBufferIntoDeviceFuture::future(
+                    scalar_type,
+                    host_buffer_fut,
+                ))
             }
         }
     }
@@ -339,6 +380,11 @@ impl RawBuffer {
                     cap,
                 })
             }
+        }
+    }
+    fn new(device: Device, scalar_type: ScalarType) -> Self {
+        unsafe {
+            Self::uninit(device, scalar_type, 0).unwrap()
         }
     }
     fn from_vec<T: Scalar>(vec: Vec<T>) -> Self {
@@ -921,6 +967,67 @@ mod buffer_fill {
     }
 }
 
+#[cfg(feature = "device")]
+#[module(
+    dependency("krnl-core", path = "krnl-core" , features = ["half"]),
+    dependency("paste", version = "1.0.7"),
+)]
+#[krnl(crate = crate)]
+mod buffer_cast {
+    #[allow(unused_imports)]
+    use krnl_core::{kernel, scalar::Scalar};
+    #[allow(unused_imports)]
+    #[cfg(any(feature = "half", krnl_device_crate))]
+    use krnl_core::half::{f16, bf16};
+    #[allow(unused_imports)]
+    use paste::paste;
+
+    macro_rules! impl_cast {
+        (@ForY features($($features:literal),*), vulkan(1, $minor:literal), capabilities($($caps:literal),*), $x:ty =>) => ();
+        (@ForY features($($features:literal),*), vulkan(1, $minor:literal), capabilities($($caps:literal),*), $x:ty => $y:ty $(,$ys:ty)*) => (
+            paste! {
+                $(#[cfg(any(krnl_device_crate, feature = $features))])*
+                #[kernel(vulkan(1, $minor), threads(256), elementwise, capabilities($($caps),*))]
+                pub fn [<cast_ $x _ $y>](x: &$x, y: &mut $y) {
+                    *y = x.cast();
+                }
+            }
+            impl_cast!(@ForY features($($features),*), vulkan(1, $minor), capabilities($($caps),*), $x => $($ys),*);
+        );
+        (features($($features:literal),*), vulkan(1, $minor:literal), capabilities($($caps:literal),*), => $($ys:ty),*) => ();
+        (features($($features:literal),*), vulkan(1, $minor:literal), capabilities($($caps:literal),*), $x:ty $(,$xs:ty)* => $($ys:ty),*) => (
+            impl_cast!(@ForY features($($features),*), vulkan(1, $minor), capabilities($($caps),*), $x => $($ys),*);
+            impl_cast!(features($($features),*), vulkan(1, $minor), capabilities($($caps),*), $($xs),* => $($ys),*);
+        );
+    }
+
+    impl_cast!(features(), vulkan(1, 1), capabilities("Int8"), u8, i8 => u8, i8, u32, i32, f32);
+    impl_cast!(features(), vulkan(1, 1), capabilities("Int8"), u32, i32, f32 => u8, i8);
+    impl_cast!(features(), vulkan(1, 1), capabilities("Int8", "Int16"), u8, i8 => u16, i16);
+    impl_cast!(features(), vulkan(1, 1), capabilities("Int8", "Int64"), u8, i8 => u64, i64);
+    impl_cast!(features(), vulkan(1, 1), capabilities("Int8", "Int64", "Float64"), u8, i8 => f64);
+    impl_cast!(features(), vulkan(1, 2), capabilities("Int16"), u16, i16 => u16, i16, u32, i32, f32);
+    impl_cast!(features(), vulkan(1, 2), capabilities("Int16"), u32, i32, f32 => u16, i16);
+    impl_cast!(features(), vulkan(1, 1), capabilities("Int8", "Int16"), u16, i16 => u8, i8);
+    impl_cast!(features(), vulkan(1, 2), capabilities("Int16", "Int64"), u16, i16 => u64, i64);
+    impl_cast!(features(), vulkan(1, 2), capabilities("Int16", "Int64", "Float64"), u16, i16 => f64);
+    impl_cast!(features("half"), vulkan(1, 2), capabilities("Int8", "Int16"), f16, bf16 => u8, i8, u16, i16, f16, bf16, u32, i32, f32);
+    impl_cast!(features("half"), vulkan(1, 2), capabilities("Int8", "Int16"), u8, i8, u16, i16, u32, i32, f32 => f16, bf16);
+    impl_cast!(features("half"), vulkan(1, 2), capabilities("Int8", "Int16", "Int64"), f16, bf16 => u64, i64);
+    impl_cast!(features("half"), vulkan(1, 2), capabilities("Int8", "Int16", "Int64", "Float64"), f16, bf16 => f64);
+    impl_cast!(features(), vulkan(1, 1), capabilities(), u32, i32, f32 => u32, i32, f32);
+    impl_cast!(features(), vulkan(1, 1), capabilities("Int8", "Int64"), u64, i64 => u8, i8);
+    impl_cast!(features(), vulkan(1, 1), capabilities("Int16", "Int64"), u64, i64 => u16, i16);
+    impl_cast!(features(), vulkan(1, 1), capabilities("Int64"), u64, i64 => u32, i32, f32, u64, i64);
+    impl_cast!(features(), vulkan(1, 1), capabilities("Int64"), u32, i32, f32 => u64, i64);
+    impl_cast!(features("half"), vulkan(1, 1), capabilities("Int8", "Int16", "Int64"), u64, i64 => f16, bf16);
+    impl_cast!(features(), vulkan(1, 1), capabilities("Int8", "Int64", "Float64"), f64 => u8, i8);
+    impl_cast!(features(), vulkan(1, 1), capabilities("Int16", "Int64", "Float64"), f64 => u16, i16);
+    impl_cast!(features("half"), vulkan(1, 1), capabilities("Int8", "Int16", "Int64", "Float64"), f64 => f16, bf16);
+    impl_cast!(features(), vulkan(1, 1), capabilities("Int64", "Float64"), f64 => u32, i32, f32, u64, i64, f64);
+    impl_cast!(features(), vulkan(1, 1), capabilities("Int64", "Float64"), u32, i32, f32, u64, i64 => f64);
+}
+
 #[derive(Clone)]
 pub struct BufferBase<S: Data> {
     data: S,
@@ -1018,27 +1125,10 @@ impl<T: Scalar, S: Data<Elem = T>> BufferBase<S> {
             let vec = slice.iter().map(|x| x.cast()).collect();
             Ok(CowBuffer::from_vec(vec))
         } else {
-            #[cfg(feature = "device")]
-            {
-                todo!()
-                /*
-                let kernel_name = format!(
-                    "cast_{}_{}",
-                    T::scalar_type().name(),
-                    T2::scalar_type().name()
-                );
-                let kernel_info = kernels::module().kernel_info(&kernel_name)?;
-                let mut output = unsafe { Buffer::<T2>::uninit(self.device(), self.len())? };
-                Kernel::builder(self.device(), kernel_info)
-                    .build()?
-                    .dispatch_builder()
-                    .slice("x", self.as_slice())
-                    .slice_mut("y", output.as_slice_mut())
-                    .build()?
-                    .dispatch()?;
-                return Ok(output.into());*/
-            }
-            unreachable!()
+            Ok(Buffer::try_from(self.as_scalar_slice().cast(T2::scalar_type())?.into_scalar_buffer()?)
+                .ok()
+                .unwrap()
+                .into())
         }
     }
 }
@@ -1144,6 +1234,21 @@ impl<'a, T: Scalar> From<Slice<'a, T>> for CowBuffer<'a, T> {
     }
 }
 
+impl<T: Scalar> TryFrom<ScalarBuffer> for Buffer<T> {
+    type Error = ScalarBuffer;
+    fn try_from(buffer: ScalarBuffer) -> Result<Self, Self::Error> {
+        if buffer.scalar_type() == T::scalar_type() {
+            Ok(Self {
+                data: unsafe {
+                    BufferRepr::from_raw_unchecked(buffer.data.raw)
+                },
+            })
+        } else {
+            Err(buffer)
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct ScalarBufferBase<S: ScalarData> {
     data: S,
@@ -1179,6 +1284,61 @@ impl<S: ScalarData> ScalarBufferBase<S> {
         } else {
             None
         }
+    }
+    pub fn to_buffer(&self) -> Result<ScalarBuffer> {
+        self.as_scalar_slice().into_scalar_buffer()
+    }
+    pub fn into_scalar_buffer(self) -> Result<ScalarBuffer> {
+        Ok(ScalarBuffer {
+            data: ScalarBufferRepr::from_raw_buffer(self.data.into_raw_buffer()?),
+        })
+    }
+    pub fn to_scalar_arc_buffer(&self) -> Result<ScalarArcBuffer> {
+        Ok(ScalarArcBuffer {
+            data: ScalarArcBufferRepr {
+                raw: self.data.to_arc_raw_buffer()?,
+            },
+        })
+    }
+    pub fn cast(&self, scalar_type: ScalarType) -> Result<ScalarCowBuffer> {
+        use ScalarType::*;
+        let x_ty = self.scalar_type();
+        let y_ty = scalar_type;
+        if x_ty == y_ty {
+            return Ok(self.as_scalar_slice().into());
+        }
+        let device = self.device();
+        macro_rules! cast {
+            (=> $($y:ty),*) => ();
+            ($x:ty $(,$xs:ty)* => $($y:ty),*) => (
+                paste! {
+                    $(
+                        if x_ty == [<$x:upper>] && y_ty == [<$y:upper>] {
+                            let x = self.try_as_slice::<$x>().unwrap();
+                            if device.is_host() {
+                                return Ok(ScalarBuffer::from(x.cast::<$y>()?.into_buffer()?).into());
+                            }
+                            #[cfg(feature = "device")] {
+                                let mut y = unsafe {
+                                    Buffer::<$y>::uninit(device.clone(), x.len())?
+                                };
+                                buffer_cast::[<cast_ $x _ $y>]::build(device)?.dispatch(x, y.as_slice_mut())?;
+                                return Ok(ScalarBuffer::from(y).into());
+                            }
+                            unreachable!()
+                        }
+                    )*
+                }
+                cast!($($xs),* => $($y),*);
+            );
+        }
+        cast!(u8, i8, u16, i16, u32, i32, f32, u64, i64, f64 => u8, i8, u16, i16, u32, i32, f32, u64, i64, f64);
+        #[cfg(feature = "half")] {
+            use half::{f16, bf16};
+            cast!(f16, bf16 => f16, bf16, u8, i8, u16, i16, u32, i32, f32, u64, i64, f64);
+            cast!(u8, i8, u16, i16, u32, i32, f32, u64, i64, f64 => f16, bf16);
+        }
+        todo!()
     }
 }
 
@@ -1305,6 +1465,16 @@ impl ScalarSlice<'_> {
     }
 }
 
+impl<T: Scalar> From<Buffer<T>> for ScalarBuffer {
+    fn from(buffer: Buffer<T>) -> Self {
+        Self {
+            data: ScalarBufferRepr {
+                raw: buffer.data.raw,
+            }
+        }
+    }
+}
+
 impl<'a, T: Scalar> From<Slice<'a, T>> for ScalarSlice<'a> {
     fn from(slice: Slice<'a, T>) -> Self {
         Self {
@@ -1323,6 +1493,34 @@ impl<'a, T: Scalar> From<SliceMut<'a, T>> for ScalarSliceMut<'a> {
                 raw: slice.data.raw,
                 _m: PhantomData::default(),
             },
+        }
+    }
+}
+
+impl From<ScalarBuffer> for ScalarCowBuffer<'_> {
+    fn from(buffer: ScalarBuffer) -> Self {
+        Self {
+            data: ScalarCowBufferRepr::Buffer(buffer.data),
+        }
+    }
+}
+
+impl<'a> From<ScalarSlice<'a>> for ScalarCowBuffer<'a> {
+    fn from(slice: ScalarSlice<'a>) -> Self {
+        Self {
+            data: ScalarCowBufferRepr::Slice(slice.data),
+        }
+    }
+}
+
+impl<'a, T: Scalar> From<CowBuffer<'a, T>> for ScalarCowBuffer<'a> {
+    fn from(buffer: CowBuffer<'a, T>) -> Self {
+        let data = match buffer.data {
+            CowBufferRepr::Buffer(buffer) => ScalarCowBufferRepr::Buffer(ScalarBufferRepr { raw: buffer.raw }),
+            CowBufferRepr::Slice(slice) => ScalarCowBufferRepr::Slice(ScalarSliceRepr::from_raw(slice.raw)),
+        };
+        Self {
+            data,
         }
     }
 }
@@ -1482,21 +1680,65 @@ mod tests {
         Ok(())
     }
 
+    fn scalar_buffer_cast<X: Scalar, Y: Scalar>(device: Device) -> Result<()> {
+        for n in buffer_test_lengths() {
+            let x_vec = (10u32..20)
+                .cycle()
+                .map(|x| X::from_u32(x).unwrap())
+                .take(n)
+                .collect::<Vec<X>>();
+            let y_vec_true = x_vec.iter().map(|x| x.cast()).collect::<Vec<Y>>();
+            let buffer = Buffer::from_vec(x_vec)
+                .into_device(device.clone())?
+                .block()?;
+            let buffer = buffer.as_scalar_slice().cast(Y::scalar_type())?.into_scalar_buffer()?;
+            let y_vec: Vec<Y> = buffer.try_as_slice().unwrap().into_vec()?.block()?;
+            assert_eq!(&y_vec, &y_vec_true);
+        }
+        Ok(())
+    }
+
     macro_rules! impl_buffer_cast_tests {
-        ($x:ty, $y:ty) => {
+        (@ForY features($($features:literal),*), $(@ignore($ignore:tt),)? $x:ty =>) => ();
+        (@ForY features($($features:literal),*), $(@ignore($ignore:tt),)? $x:ty => $y:ty $(,$ys:ty)*) => (
             paste! {
+                $(#[cfg(feature = $features)])*
                 #[test]
                 fn [<buffer_cast_ $x _ $y _host>]() -> Result<()> {
                     buffer_cast::<$x, $y>(Device::host())
                 }
+                $(#[cfg(feature = $features)])*
+                #[test]
+                fn [<scalar_buffer_cast_ $x _ $y _host>]() -> Result<()> {
+                    scalar_buffer_cast::<$x, $y>(Device::host())
+                }
+                $(#[cfg(feature = $features)])*
                 #[cfg(feature = "device")]
+                $(#[$ignore])?
                 #[test]
                 fn [<buffer_cast_ $x _ $y _device>]() -> Result<()> {
                     buffer_cast::<$x, $y>(Device::new(0)?)
                 }
+                $(#[cfg(feature = $features)])*
+                #[cfg(feature = "device")]
+                $(#[$ignore])?
+                #[test]
+                fn [<scalar_buffer_cast_ $x _ $y _device>]() -> Result<()> {
+                    scalar_buffer_cast::<$x, $y>(Device::new(0)?)
+                }
             }
-        };
+            impl_buffer_cast_tests!(features($($features),*), $(@ignore($ignore),)? $x => $($ys),*);
+        );
+        (features($($features:literal),*), $(@ignore($ignore:tt),)? => $($ys:ty),*) => ();
+        (features($($features:literal),*), $(@ignore($ignore:tt),)? $x:ty $(,$xs:ty)* => $($ys:ty),*) => (
+            impl_buffer_cast_tests!(@ForY features($($features),*), $(@ignore($ignore),)? $x => $($ys),*);
+            impl_buffer_cast_tests!(features($($features),*), $(@ignore($ignore),)? $($xs),* => $($ys),*);
+        );
     }
 
-    //include!(concat!(env!("OUT_DIR"), "/buffer/buffer_cast_tests.in"));
+    impl_buffer_cast_tests!(features(), u32, i32, f32 => u32, i32, f32);
+    impl_buffer_cast_tests!(features(), @ignore(ignore), u8, i8, u16, i16, u32, i32, f32, u64, i64, f64 => u8, i8, u16, i16, u64, i64, f64);
+    impl_buffer_cast_tests!(features(), @ignore(ignore), u8, i8, u16, u64, i64, f64 => u32, i32, f32);
+    impl_buffer_cast_tests!(features("half"), @ignore(ignore), f16, bf16 => u8, i8, u16, i16, f16, bf16, u32, i32, f32, u64, i64, f64);
+    impl_buffer_cast_tests!(features("half"), @ignore(ignore), u8, i8, u16, i16, u32, i32, f32, u64, i64, f64 => f16, bf16);
 }

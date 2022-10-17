@@ -462,6 +462,8 @@ struct TargetFeatureList {
 
 #[derive(Parse, Debug)]
 struct Kernel {
+    #[call(Attribute::parse_outer)]
+    attrs: Vec<Attribute>,
     #[allow(unused)]
     pub_token: Pub,
     unsafe_token: Option<Unsafe>,
@@ -998,6 +1000,7 @@ fn kernel_impl(attr: TokenStream, item: TokenStream) -> Result<TokenStream> {
         map.save();
         return Ok(TokenStream::new());
     }
+    let kernel_attrs = &kernel.attrs;
     let host_tokens = {
         let kernel_info_bytes = unwrap!(bincode::serialize(&info));
         let dispatch_safety = if info.safe {
@@ -1082,13 +1085,29 @@ fn kernel_impl(attr: TokenStream, item: TokenStream) -> Result<TokenStream> {
                 }
             }
         }
+        let half_import = if info.args.iter().any(|x| {
+            use ScalarType::*;
+            let scalar_type = match x {
+                Arg::Slice(x) => x.scalar_type,
+                Arg::Push(x) => x.scalar_type,
+            };
+            matches!(scalar_type, F16 | BF16)
+        }) {
+            quote! {
+                krnl_core::half::{f16, bf16},
+            }
+        } else {
+            TokenStream2::new()
+        };
         quote! {
             #[cfg(not(target_arch = "spirv"))]
+            #(#kernel_attrs)*
             pub mod #kernel_ident {
                 use super::{__krnl, __krnl_spirv};
                 use __krnl::{
                     anyhow::Result,
                     bincode,
+                    #half_import
                     __private::once_cell::sync::Lazy,
                     device::Device,
                     buffer::{Slice, SliceMut},
@@ -1271,12 +1290,14 @@ fn kernel_impl(attr: TokenStream, item: TokenStream) -> Result<TokenStream> {
         };
         quote! {
             #cfg
+            #(#kernel_attrs)*
             #[allow(non_camel_case_types)]
             #[repr(C)]
             pub struct #push_consts_ident {
                 #push_consts
             }
             #cfg
+            #(#kernel_attrs)*
             #[spirv(compute(threads(#thread_lits)))]
             pub fn #kernel_ident (
                 #outer_args
@@ -1334,6 +1355,8 @@ crate-type = ["dylib"]
 "#);
     manifest.push_str(&info.dependencies);
     unwrap!(fs::write(module_crate_dir.join("Cargo.toml"), manifest.as_bytes()));
+    let build_script = r#"fn main() { println!("cargo:rustc-cfg=krnl_device_crate") }"#;
+    unwrap!(fs::write(module_crate_dir.join("build.rs"), build_script.as_bytes()));
     let module_crate_src_dir = module_crate_dir.join("src");
     if !module_crate_src_dir.exists() {
         unwrap!(fs::create_dir(&module_crate_src_dir));
@@ -1344,7 +1367,7 @@ crate-type = ["dylib"]
         .current_dir(&module_crate_dir)
         .env_remove("RUSTUP_TOOLCHAIN")
         .env_remove("CARGO_CFG_krnl_build")
-        .env_remove("RUSTFLAGS")
+        .env("RUSTFLAGS", "--cfg krnl_device_crate_check")
         .env("KRNL_DEVICE_CRATE_CHECK", "1")
         .status();
     let status = unwrap!(Command::new("cargo")
@@ -1355,7 +1378,7 @@ crate-type = ["dylib"]
         .current_dir(&module_crate_dir)
         .env_remove("RUSTUP_TOOLCHAIN")
         .env_remove("CARGO_CFG_krnl_build")
-        .env_remove("RUSTFLAGS")
+        .env("RUSTFLAGS", "--cfg krnl_device_crate_check")
         .env("KRNL_DEVICE_CRATE_CHECK", "1")
         .status());
     assert!(status.success(), "check failed!");

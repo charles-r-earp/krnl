@@ -4,7 +4,7 @@ use bytemuck::Pod;
 use derive_more::Display;
 #[cfg(feature = "half")]
 use half::{bf16, f16};
-use num_traits::{FromPrimitive, NumAssign, NumCast};
+use num_traits::{FromPrimitive, NumAssign, NumCast, AsPrimitive};
 #[cfg(not(target_arch = "spirv"))]
 use serde::{Deserialize, Serialize};
 #[cfg(not(target_arch = "spirv"))]
@@ -393,9 +393,17 @@ impl From<f64> for ScalarElem {
 pub trait Scalar: Default + Copy + 'static + NumCast + FromPrimitive + NumAssign + PartialEq + Sealed {
     /// The [`ScalarType`] of the scalar.
     fn scalar_type() -> ScalarType;
-    fn cast<T: Scalar>(self) -> T {
-        todo!()
-    }
+    fn cast<T: Scalar>(self) -> T;
+}
+
+macro_rules! cast {
+    ($self:ident $(:$x:ty)? => $T:ident as $($y:ty),*) => {
+        $(
+            if <$T>::scalar_type() == <$y>::scalar_type() {
+                return NumCast::from(AsPrimitive::<$y>::as_($self)).unwrap();
+            }
+        )*
+    };
 }
 
 #[cfg(not(target_arch = "spirv"))]
@@ -403,14 +411,30 @@ pub trait Scalar: Default + Copy + 'static + NumCast + FromPrimitive + NumAssign
 pub trait Scalar: Default + Copy + 'static + NumCast + FromPrimitive + NumAssign + PartialEq + Into<ScalarElem> + Pod + Debug + Display + Serialize + for<'de> Deserialize<'de> + Sealed {
     /// The [`ScalarType`] of the scalar.
     fn scalar_type() -> ScalarType;
-    fn cast<T: Scalar>(self) -> T {
-        todo!()
-    }
+    fn cast<T: Scalar>(self) -> T;
 }
 
 impl Scalar for u8 {
     fn scalar_type() -> ScalarType {
         ScalarType::U8
+    }
+    fn cast<T: Scalar>(self) -> T {
+        #[cfg_attr(target_arch = "spirv", cfg(target_feature = "Int8"))] {
+            cast!(self: u8 => T as u8, i8, u32, i32, f32);
+            #[cfg_attr(target_arch = "spirv", cfg(target_feature = "Int16"))] {
+                cast!(self: u8 => T as u16, i16);
+                #[cfg(feature = "half")] {
+                    cast!(self: u8 => T as f16, bf16);
+                }
+            }
+            #[cfg_attr(target_arch = "spirv", cfg(target_feature = "Int64"))] {
+                cast!(self: u8 => T as u64, i64);
+                #[cfg_attr(target_arch = "spirv", cfg(target_feature = "Float64"))] {
+                    cast!(self: u8 => T as f64);
+                }
+            }
+        }
+        unreachable!()
     }
 }
 
@@ -418,17 +442,71 @@ impl Scalar for i8 {
     fn scalar_type() -> ScalarType {
         ScalarType::I8
     }
+    fn cast<T: Scalar>(self) -> T {
+        #[cfg_attr(target_arch = "spirv", cfg(target_feature = "Int8"))] {
+            cast!(self: i8 => T as u8, i8, u32, i32, f32);
+            #[cfg_attr(target_arch = "spirv", cfg(target_feature = "Int16"))] {
+                cast!(self: i8 => T as u16, i16);
+                #[cfg(feature = "half")] {
+                    cast!(self: i8 => T as f16, bf16);
+                }
+            }
+            #[cfg_attr(target_arch = "spirv", cfg(target_feature = "Int64"))] {
+                cast!(self: i8 => T as u64, i64);
+                #[cfg_attr(target_arch = "spirv", cfg(target_feature = "Float64"))] {
+                    cast!(self: i8 => T as f64);
+                }
+            }
+        }
+        unreachable!()
+    }
 }
 
 impl Scalar for u16 {
     fn scalar_type() -> ScalarType {
         ScalarType::U16
     }
+    fn cast<T: Scalar>(self) -> T {
+        #[cfg_attr(target_arch = "spirv", cfg(target_feature = "Int16"))] {
+            #[cfg_attr(target_arch = "spirv", cfg(target_feature = "Int8"))] {
+                cast!(self: u16 => T as u8, i8);
+            }
+            cast!(self: u16 => T as u16, i16, u32, i32, f32);
+            #[cfg(feature = "half")] {
+                cast!(self: u16 => T as f16, bf16);
+            }
+            #[cfg_attr(target_arch = "spirv", cfg(target_feature = "Int64"))] {
+                cast!(self: u16 => T as u64, i64);
+                #[cfg_attr(target_arch = "spirv", cfg(target_feature = "Float64"))] {
+                    cast!(self: u16 => T as f64);
+                }
+            }
+        }
+        unreachable!()
+    }
 }
 
 impl Scalar for i16 {
     fn scalar_type() -> ScalarType {
         ScalarType::I16
+    }
+    fn cast<T: Scalar>(self) -> T {
+        #[cfg_attr(target_arch = "spirv", cfg(target_feature = "Int16"))] {
+            #[cfg_attr(target_arch = "spirv", cfg(target_feature = "Int8"))] {
+                cast!(self: i16 => T as u8, i8);
+            }
+            cast!(self: i16 => T as u16, i16, u32, i32, f32);
+            #[cfg(feature = "half")] {
+                cast!(self: i16 => T as f16, bf16);
+            }
+            #[cfg_attr(target_arch = "spirv", cfg(target_feature = "Int64"))] {
+                cast!(self: i16 => T as u64, i64);
+                #[cfg_attr(target_arch = "spirv", cfg(target_feature = "Float64"))] {
+                    cast!(self: i16 => T as f64);
+                }
+            }
+        }
+        unreachable!()
     }
 }
 
@@ -437,6 +515,24 @@ impl Scalar for f16 {
     fn scalar_type() -> ScalarType {
         ScalarType::F16
     }
+    fn cast<T: Scalar>(self) -> T {
+        #[cfg_attr(target_arch = "spirv", cfg(target_feature = "Int16"))] {
+            #[cfg_attr(target_arch = "spirv", cfg(target_feature = "Int8"))] {
+                cast!(self: f16 => T as u8, i8);
+            }
+            cast!(self: f16 => T as u16, i16, f16, f32, u32, i32, f32);
+            if T::scalar_type() == ScalarType::BF16 {
+                return NumCast::from(bf16::from_f32(self.as_())).unwrap();
+            }
+            #[cfg_attr(target_arch = "spirv", cfg(target_feature = "Int64"))] {
+                cast!(self: u16 => T as u64, i64);
+                #[cfg_attr(target_arch = "spirv", cfg(target_feature = "Float64"))] {
+                    cast!(self: u16 => T as f64);
+                }
+            }
+        }
+        unreachable!()
+    }
 }
 
 #[cfg(feature = "half")]
@@ -444,11 +540,50 @@ impl Scalar for bf16 {
     fn scalar_type() -> ScalarType {
         ScalarType::BF16
     }
+    fn cast<T: Scalar>(self) -> T {
+        #[cfg_attr(target_arch = "spirv", cfg(target_feature = "Int16"))] {
+            #[cfg_attr(target_arch = "spirv", cfg(target_feature = "Int8"))] {
+                cast!(self: f16 => T as u8, i8);
+            }
+            cast!(self: f16 => T as u16, i16, bf16, f32, u32, i32, f32);
+            if T::scalar_type() == ScalarType::F16 {
+                return NumCast::from(f16::from_f32(self.as_())).unwrap();
+            }
+            #[cfg_attr(target_arch = "spirv", cfg(target_feature = "Int64"))] {
+                cast!(self: u16 => T as u64, i64);
+                #[cfg_attr(target_arch = "spirv", cfg(target_feature = "Float64"))] {
+                    cast!(self: u16 => T as f64);
+                }
+            }
+        }
+        unreachable!()
+    }
 }
 
 impl Scalar for u32 {
     fn scalar_type() -> ScalarType {
         ScalarType::U32
+    }
+    fn cast<T: Scalar>(self) -> T {
+        #[cfg_attr(target_arch = "spirv", cfg(target_feature = "Int8"))] {
+            cast!(self => T as u8, i8);
+        }
+        #[cfg_attr(target_arch = "spirv", cfg(target_feature = "Int16"))] {
+            cast!(self => T as u16, i16);
+        }
+        #[cfg_attr(target_arch = "spirv", cfg(all(target_feature ="Int8", target_feature = "Int16")))] {
+            #[cfg(feature = "half")] {
+                cast!(self => T as f16, bf16);
+            }
+        }
+        cast!(self => T as u32, i32, f32);
+        #[cfg_attr(target_arch = "spirv", cfg(target_feature = "Int64"))] {
+            cast!(self => T as u64, i64);
+            #[cfg_attr(target_arch = "spirv", cfg(target_feature = "Float64"))] {
+                cast!(self => T as f64);
+            }
+        }
+        unreachable!()
     }
 }
 
@@ -456,11 +591,53 @@ impl Scalar for i32 {
     fn scalar_type() -> ScalarType {
         ScalarType::I32
     }
+    fn cast<T: Scalar>(self) -> T {
+        #[cfg_attr(target_arch = "spirv", cfg(target_feature = "Int8"))] {
+            cast!(self => T as u8, i8);
+        }
+        #[cfg_attr(target_arch = "spirv", cfg(target_feature = "Int16"))] {
+            cast!(self => T as u16, i16);
+        }
+        #[cfg_attr(target_arch = "spirv", cfg(all(target_feature ="Int8", target_feature = "Int16")))] {
+            #[cfg(feature = "half")] {
+                cast!(self => T as f16, bf16);
+            }
+        }
+        cast!(self => T as u32, i32, f32);
+        #[cfg_attr(target_arch = "spirv", cfg(target_feature = "Int64"))] {
+            cast!(self => T as u64, i64);
+            #[cfg_attr(target_arch = "spirv", cfg(target_feature = "Float64"))] {
+                cast!(self => T as f64);
+            }
+        }
+        unreachable!()
+    }
 }
 
 impl Scalar for f32 {
     fn scalar_type() -> ScalarType {
         ScalarType::F32
+    }
+    fn cast<T: Scalar>(self) -> T {
+        #[cfg_attr(target_arch = "spirv", cfg(target_feature = "Int8"))] {
+            cast!(self => T as u8, i8);
+        }
+        #[cfg_attr(target_arch = "spirv", cfg(target_feature = "Int16"))] {
+            cast!(self => T as u16, i16);
+        }
+        #[cfg_attr(target_arch = "spirv", cfg(all(target_feature ="Int8", target_feature = "Int16")))] {
+            #[cfg(feature = "half")] {
+                cast!(self => T as f16, bf16);
+            }
+        }
+        cast!(self => T as u32, i32, f32);
+        #[cfg_attr(target_arch = "spirv", cfg(target_feature = "Int64"))] {
+            cast!(self => T as u64, i64);
+            #[cfg_attr(target_arch = "spirv", cfg(target_feature = "Float64"))] {
+                cast!(self => T as f64);
+            }
+        }
+        unreachable!()
     }
 }
 
@@ -468,16 +645,73 @@ impl Scalar for u64 {
     fn scalar_type() -> ScalarType {
         ScalarType::U64
     }
+    fn cast<T: Scalar>(self) -> T {
+        #[cfg_attr(target_arch = "spirv", cfg(target_feature = "Int64"))] {
+            #[cfg_attr(target_arch = "spirv", cfg(target_feature = "Int8"))] {
+                cast!(self: u64 => T as u8, i8);
+            }
+            #[cfg_attr(target_arch = "spirv", cfg(target_feature = "Int16"))] {
+                cast!(self: u64 => T as u16, i16);
+            }
+            #[cfg_attr(target_arch = "spirv", cfg(all(target_feature ="Int8", target_feature = "Int16")))] {
+                #[cfg(feature = "half")] {
+                    cast!(self => T as f16, bf16);
+                }
+            }
+            cast!(self: u64 => T as u32, i32, f32, u64, i64);
+            #[cfg_attr(target_arch = "spirv", cfg(target_feature = "Float64"))] {
+                cast!(self => T as f64);
+            }
+        }
+        unreachable!()
+    }
 }
 
 impl Scalar for i64 {
     fn scalar_type() -> ScalarType {
         ScalarType::I64
     }
+    fn cast<T: Scalar>(self) -> T {
+        #[cfg_attr(target_arch = "spirv", cfg(target_feature = "Int64"))] {
+            #[cfg_attr(target_arch = "spirv", cfg(target_feature = "Int8"))] {
+                cast!(self: u64 => T as u8, i8);
+            }
+            #[cfg_attr(target_arch = "spirv", cfg(target_feature = "Int16"))] {
+                cast!(self: u64 => T as u16, i16);
+            }
+            #[cfg_attr(target_arch = "spirv", cfg(all(target_feature ="Int8", target_feature = "Int16")))] {
+                #[cfg(feature = "half")] {
+                    cast!(self => T as f16, bf16);
+                }
+            }
+            cast!(self => T as u32, i32, f32, u64, i64);
+            #[cfg_attr(target_arch = "spirv", cfg(target_feature = "Float64"))] {
+                cast!(self => T as f64);
+            }
+        }
+        unreachable!()
+    }
 }
 
 impl Scalar for f64 {
     fn scalar_type() -> ScalarType {
         ScalarType::F64
+    }
+    fn cast<T: Scalar>(self) -> T {
+        #[cfg_attr(target_arch = "spirv", cfg(all(target_feature = "Int64", target_feature = "Float64")))] {
+            #[cfg_attr(target_arch = "spirv", cfg(target_feature = "Int8"))] {
+                cast!(self => T as u8, i8);
+            }
+            #[cfg_attr(target_arch = "spirv", cfg(target_feature = "Int16"))] {
+                cast!(self => T as u16, i16);
+            }
+            #[cfg_attr(target_arch = "spirv", cfg(all(target_feature ="Int8", target_feature = "Int16")))] {
+                #[cfg(feature = "half")] {
+                    cast!(self => T as f16, bf16);
+                }
+            }
+            cast!(self => T as u32, i32, f32, u64, i64, f64);
+        }
+        unreachable!()
     }
 }
