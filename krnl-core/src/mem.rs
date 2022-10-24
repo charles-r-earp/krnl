@@ -1,7 +1,7 @@
 pub struct GlobalMut<'a, T: ?Sized>(&'a mut T);
 
 #[doc(hidden)]
-pub fn __global_mut(x: &mut T) -> GlobalMut<T> {
+pub fn __global_mut<T: ?Sized>(x: &mut T) -> GlobalMut<T> {
     GlobalMut(x)
 }
 
@@ -20,7 +20,7 @@ impl<T> GlobalMut<'_, [T]> {
 pub struct GroupUninitMut<'a, T: ?Sized>(&'a mut T);
 
 #[doc(hidden)]
-pub fn __group_uninit_mut(x: &mut T) -> GroupUninitMut<T> {
+pub fn __group_uninit_mut<T: ?Sized>(x: &mut T) -> GroupUninitMut<T> {
     GroupUninitMut(x)
 }
 
@@ -30,8 +30,10 @@ impl<'a, T: ?Sized> GroupUninitMut<'a, T> {
     }
 }
 
-impl<'a, T, A: AsRef<[T]>> GroupUninitMut<A> {
+/*
+impl<T, A: AsRef<[T]>> GroupUninitMut<'_, A> {
     pub fn len(&self) -> usize {
         self.0.as_ref().len()
     }
 }
+*/

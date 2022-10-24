@@ -1,5 +1,9 @@
 #![allow(unused)]
-use crate::{device::DeviceOptions, scalar::Scalar, kernel::kernel_info::{KernelInfo, Spirv}};
+use crate::{
+    device::DeviceOptions,
+    kernel::kernel_info::{KernelInfo, Spirv},
+    scalar::Scalar,
+};
 use anyhow::{format_err, Result};
 use crossbeam_channel::{bounded, Receiver, Sender};
 use dashmap::DashMap;
@@ -10,6 +14,7 @@ use std::{
     collections::{HashMap, VecDeque},
     future::Future,
     iter::{once, Peekable},
+    mem::ManuallyDrop,
     ops::Deref,
     pin::Pin,
     ptr::NonNull,
@@ -80,7 +85,7 @@ use vulkano::{
         AccessFlags, BufferMemoryBarrier, DependencyInfo, Fence, FenceCreateInfo, PipelineStages,
         Semaphore,
     },
-    DeviceSize, OomError, Version
+    DeviceSize, OomError, Version,
 };
 
 #[cfg(any(target_os = "ios", target_os = "macos"))]
@@ -496,7 +501,7 @@ impl Engine {
         if let Err(e) = result {
             return Err(anyhow::Error::msg(e));
         }
-        self.runner.op_channel.sender.send(op).unwrap();
+        self.runner.op_sender.send(op).unwrap();
         Ok(())
     }
     // # Safety
@@ -519,13 +524,17 @@ impl Engine {
     pub(crate) fn upload(&self, bytes: &[u8]) -> Result<Option<Arc<DeviceBuffer>>> {
         let buffer = unsafe { self.alloc(bytes.len())? };
         if let Some(buffer) = buffer.as_ref() {
-            let mut src = self.buffer_allocator.alloc_host(bytes.len() as u32)?;
-            Arc::get_mut(&mut src).unwrap().write_slice(bytes)?;
-            let upload = Upload {
-                src,
-                dst: buffer.inner.clone(),
-            };
-            self.send_op(Op::Upload(upload))?;
+            let mut offset = 0;
+            for bytes in bytes.chunks(64_000_000) {
+                let mut src = self.buffer_allocator.alloc_host(bytes.len() as u32)?;
+                Arc::get_mut(&mut src).unwrap().write_slice(bytes)?;
+                let upload = Upload {
+                    src,
+                    dst: buffer.inner.slice_offset_len(offset as u32, bytes.len() as u32),
+                };
+                self.send_op(Op::Upload(upload))?;
+                offset += bytes.len();
+            }
         }
         Ok(buffer)
     }
@@ -541,8 +550,68 @@ impl Engine {
             host_buffer: Some(dst),
             runner_result: self.runner.result.clone(),
         })
+        /* TODO: break up host buffers into chunks?
+        // large copies are expensive, could be done in parallel?
+        // idea is to overlap host and device execution
+        use crate::future::BlockableFuture;
+        for _ in 0 .. 10 {
+            let chunk_size = 64_000_000;
+            let mut output = vec![0u8; buffer.len()];
+            let mut fut: Option<(&mut [u8], HostBufferFuture)> = None;
+            let mut offset = 0;
+            for bytes in output.chunks_mut(chunk_size) {
+                let mut dst = self.buffer_allocator.alloc_host(bytes.len() as u32)?;
+                let download = Download {
+                    src: buffer.inner.slice_offset_len(offset as u32, dst.len),
+                    dst: dst.clone(),
+                };
+                offset += bytes.len();
+                self.send_op(Op::Download(download))?;
+                if let Some((bytes, fut)) = fut.take() {
+                    bytes.copy_from_slice(fut.block()?.read()?);
+                }
+                fut.replace((bytes, HostBufferFuture {
+                    host_buffer: Some(dst),
+                    runner_result: self.runner.result.clone(),
+                }));
+            }
+            let (bytes, fut) = fut.take().unwrap();
+            bytes.copy_from_slice(fut.block()?.read()?);
+        }
+
+        let start = std::time::Instant::now();
+        let chunk_size = 64_000_000;
+        let mut output = vec![0u8; buffer.len()];
+        let mut fut: Option<(&mut [u8], HostBufferFuture)> = None;
+        let mut offset = 0;
+        for bytes in output.chunks_mut(chunk_size) {
+            let mut dst = self.buffer_allocator.alloc_host(bytes.len() as u32)?;
+            let download = Download {
+                src: buffer.inner.slice_offset_len(offset as u32, dst.len),
+                dst: dst.clone(),
+            };
+            offset += bytes.len();
+            self.send_op(Op::Download(download))?;
+            if let Some((bytes, fut)) = fut.take() {
+                bytes.copy_from_slice(fut.block()?.read()?);
+                dbg!(start.elapsed());
+            }
+            fut.replace((bytes, HostBufferFuture {
+                host_buffer: Some(dst),
+                runner_result: self.runner.result.clone(),
+            }));
+
+        }
+        let (bytes, fut) = fut.take().unwrap();
+        bytes.copy_from_slice(fut.block()?.read()?);
+        dbg!(start.elapsed());
+        todo!()*/
     }
-    pub(crate) fn kernel_cache(&self, kernel_info: Arc<KernelInfo>, spirv: Arc<Spirv>) -> Result<Arc<KernelCache>> {
+    pub(crate) fn kernel_cache(
+        &self,
+        kernel_info: Arc<KernelInfo>,
+        spirv: Arc<Spirv>,
+    ) -> Result<Arc<KernelCache>> {
         self.kernel_cache_map.kernel(kernel_info, spirv, |kernel_info| {
             let kernel_path = &kernel_info.path;
             let device_index = self.index();
@@ -567,6 +636,11 @@ impl Engine {
     pub(crate) fn compute(&self, compute: Compute) -> Result<()> {
         self.send_op(Op::Compute(compute))?;
         Ok(())
+    }
+    pub(super) fn sync(&self) -> Result<SyncFuture> {
+        let fut = SyncFuture::new(self.runner.result.clone());
+        self.send_op(Op::SyncGuard(fut.guard()))?;
+        Ok(fut)
     }
 }
 
@@ -660,6 +734,18 @@ pub(crate) struct DeviceBufferInner {
 impl DeviceBufferInner {
     fn chunk_id(&self) -> usize {
         Arc::as_ptr(&self.chunk) as usize
+    }
+    fn slice_offset_len(&self, offset: u32, len: u32) -> Arc<Self> {
+        let start = self.start + offset;
+        debug_assert!(start < self.start + self.len);
+        debug_assert!(len <= self.len);
+        Arc::new(Self {
+            chunk: self.chunk.clone(),
+            buffer: self.buffer.clone(),
+            usage: self.usage,
+            start,
+            len,
+        })
     }
 }
 
@@ -894,13 +980,19 @@ impl<M> Chunk<M> {
     }
 }
 
+#[derive(PartialEq, Eq, PartialOrd, Ord)]
+struct HostMemoryTypeOrderKey {
+    not_cached: bool,
+    neg_size: i64,
+}
+
 #[derive(Debug)]
 struct BufferAllocator {
     device: Arc<Device>,
     host_ids: Vec<u32>,
     device_ids: Vec<u32>,
-    host_chunks: Vec<Mutex<Weak<Chunk<HostMemory>>>>,
-    device_chunks: Vec<Mutex<Weak<Chunk<DeviceMemory>>>>,
+    host_chunks: Vec<OnceCell<Arc<Chunk<HostMemory>>>>,
+    device_chunks: Vec<OnceCell<Arc<Chunk<DeviceMemory>>>>,
 }
 
 impl BufferAllocator {
@@ -923,18 +1015,22 @@ impl BufferAllocator {
         }
         // sort largest heap first
         host_ids.sort_by_key(|x| {
-            -(physical_device.memory_type_by_id(*x).unwrap().heap().size() as i64)
+            let t = physical_device.memory_type_by_id(*x).unwrap();
+            HostMemoryTypeOrderKey {
+                not_cached: !t.is_host_cached(),
+                neg_size: -(t.heap().size() as i64),
+            }
         });
         device_ids.sort_by_key(|x| {
             -(physical_device.memory_type_by_id(*x).unwrap().heap().size() as i64)
         });
         let host_chunks = (0..max_host_chunks)
             .into_iter()
-            .map(|_| Mutex::default())
+            .map(|_| OnceCell::default())
             .collect();
         let device_chunks = (0..max_device_chunks)
             .into_iter()
-            .map(|_| Mutex::default())
+            .map(|_| OnceCell::default())
             .collect();
         Ok(Self {
             device,
@@ -946,15 +1042,10 @@ impl BufferAllocator {
     }
     fn alloc_host(&self, len: u32) -> Result<Arc<HostBuffer>> {
         for chunk in self.host_chunks.iter() {
-            let mut chunk = chunk.lock();
-            if let Some(chunk) = Weak::upgrade(&chunk) {
-                if let Some(alloc) = chunk.alloc(len) {
-                    return HostBuffer::new(alloc, len);
-                }
-            } else {
-                let new_chunk = Chunk::new(self.device.clone(), len as usize, &self.host_ids)?;
-                let alloc = new_chunk.alloc(len).unwrap();
-                *chunk = Arc::downgrade(&new_chunk);
+            let chunk = chunk.get_or_try_init(|| {
+                Chunk::new(self.device.clone(), len as usize, &self.host_ids)
+            })?;
+            if let Some(alloc) = chunk.alloc(len) {
                 return HostBuffer::new(alloc, len);
             }
         }
@@ -962,19 +1053,14 @@ impl BufferAllocator {
     }
     fn alloc_device(&self, len: u32) -> Result<Arc<DeviceBuffer>> {
         for chunk in self.device_chunks.iter() {
-            let mut chunk = chunk.lock();
-            if let Some(chunk) = Weak::upgrade(&chunk) {
-                if let Some(alloc) = chunk.alloc(len) {
-                    return DeviceBuffer::new(self.device.clone(), alloc, len);
-                }
-            } else {
-                let new_chunk = Chunk::new(self.device.clone(), len as usize, &self.device_ids)?;
-                let alloc = new_chunk.alloc(len).unwrap();
-                *chunk = Arc::downgrade(&new_chunk);
+            let chunk = chunk.get_or_try_init(|| {
+                Chunk::new(self.device.clone(), len as usize, &self.device_ids)
+            })?;
+            if let Some(alloc) = chunk.alloc(len) {
                 return DeviceBuffer::new(self.device.clone(), alloc, len);
             }
         }
-        Err(OomError::OutOfHostMemory.into())
+        Err(OomError::OutOfDeviceMemory.into())
     }
 }
 
@@ -991,7 +1077,12 @@ impl KernelCacheMap {
             kernels: DashMap::new(),
         }
     }
-    fn kernel(&self, kernel_info: Arc<KernelInfo>, spirv: Arc<Spirv>, validate_cb: impl Fn(&KernelInfo) -> Result<()>) -> Result<Arc<KernelCache>> {
+    fn kernel(
+        &self,
+        kernel_info: Arc<KernelInfo>,
+        spirv: Arc<Spirv>,
+        validate_cb: impl Fn(&KernelInfo) -> Result<()>,
+    ) -> Result<Arc<KernelCache>> {
         let key = (
             Arc::as_ptr(&kernel_info) as usize,
             Arc::as_ptr(&spirv) as usize,
@@ -1020,13 +1111,18 @@ pub(crate) struct KernelCache {
 }
 
 impl KernelCache {
-    fn new(device: Arc<Device>, kernel_info: Arc<KernelInfo>, spirv: Arc<Spirv>) -> Result<Arc<Self>> {
+    fn new(
+        device: Arc<Device>,
+        kernel_info: Arc<KernelInfo>,
+        spirv: Arc<Spirv>,
+    ) -> Result<Arc<Self>> {
         use vulkano::descriptor_set::layout::DescriptorType;
         let stages = ShaderStages {
             compute: true,
             ..ShaderStages::none()
         };
-        let descriptor_requirements = kernel_info.slice_infos()
+        let descriptor_requirements = kernel_info
+            .slice_infos()
             .enumerate()
             .map(|(i, slice_info)| {
                 let set = 0u32;
@@ -1046,7 +1142,10 @@ impl KernelCache {
                 ((set, binding), descriptor_requirements)
             })
             .collect::<HashMap<_, _>>();
-        let push_const_bytes = kernel_info.push_infos().map(|x| x.scalar_type.size() as u32).sum();
+        let push_const_bytes = kernel_info
+            .push_infos()
+            .map(|x| x.scalar_type.size() as u32)
+            .sum();
         let push_constant_range = if push_const_bytes > 0 {
             Some(PushConstantRange {
                 stages,
@@ -1084,7 +1183,8 @@ impl KernelCache {
                 )],
             )?
         };
-        let bindings = kernel_info.slice_infos()
+        let bindings = kernel_info
+            .slice_infos()
             .enumerate()
             .map(|(i, slice_info)| {
                 let descriptor_set_layout_binding = DescriptorSetLayoutBinding {
@@ -1399,12 +1499,71 @@ impl Encode for Compute {
     }
 }
 
+pub(super) struct SyncFuture {
+    inner: Option<Arc<()>>,
+    runner_result: Arc<RwLock<Result<(), Arc<anyhow::Error>>>>,
+}
+
+impl SyncFuture {
+    fn new(runner_result: Arc<RwLock<Result<(), Arc<anyhow::Error>>>>) -> Self {
+        Self {
+            inner: Some(Arc::default()),
+            runner_result,
+        }
+    }
+    fn guard(&self) -> SyncGuard {
+        SyncGuard {
+            inner: self.inner.as_ref().map_or(Arc::default(), Arc::clone),
+        }
+    }
+}
+
+impl Future for SyncFuture {
+    type Output = Result<()>;
+    fn poll(mut self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let inner = self.inner.take().unwrap();
+        match Arc::try_unwrap(inner) {
+            Ok(_) => {
+                let result = self.runner_result.read().clone();
+                if let Err(e) = result {
+                    Poll::Ready(Err(anyhow::Error::msg(e)))
+                } else {
+                    Poll::Ready(Ok(()))
+                }
+            }
+            Err(inner) => {
+                self.inner.replace(inner);
+                Poll::Pending
+            }
+        }
+    }
+}
+
+#[derive(Debug)]
+struct SyncGuard {
+    inner: Arc<()>,
+}
+
 #[derive(Debug)]
 enum Op {
     Upload(Upload),
     Download(Download),
     Compute(Compute),
+    SyncGuard(SyncGuard),
 }
+
+/*
+impl Op {
+    fn name(&self) -> &'static str {
+        match self {
+            Self::Upload(_) => "Upload",
+            Self::Download(_) => "Download",
+            Self::Compute(_) => "Compute",
+            Self::SyncGuard(_) => "SyncGuard",
+        }
+    }
+}
+*/
 
 impl Encode for Op {
     unsafe fn encode(&self, encoder: &mut Encoder) -> Result<bool> {
@@ -1412,6 +1571,7 @@ impl Encode for Op {
             Op::Upload(x) => unsafe { x.encode(encoder) },
             Op::Download(x) => unsafe { x.encode(encoder) },
             Op::Compute(x) => unsafe { x.encode(encoder) },
+            Op::SyncGuard(_) => Ok(true),
         }
     }
 }
@@ -1541,7 +1701,7 @@ struct Encoder {
 }
 
 impl Encoder {
-    const MAX_SETS: usize = 1_000;
+    const MAX_SETS: usize = Frame::MAX_OPS;
     const MAX_DESCRIPTORS: usize = Self::MAX_SETS * 2;
     fn new(mut frame: Frame) -> Result<Self> {
         debug_assert!(frame.fence.is_signaled()?);
@@ -1574,17 +1734,15 @@ impl Encoder {
             n_descriptors: 0,
         })
     }
-    fn extend(&mut self, op_iter: &mut Peekable<impl Iterator<Item = Op>>) -> Result<()> {
-        while let Some(op) = op_iter.peek() {
-            if self.is_full() {
-                break;
-            }
+    fn try_encode(&mut self, op: Op) -> Result<Option<Op>> {
+        if !self.is_full() {
             let push_op = unsafe { op.encode(self)? };
             if push_op {
-                self.frame.ops.push(op_iter.next().unwrap());
+                self.frame.ops.push(op);
+                return Ok(None);
             }
         }
-        Ok(())
+        Ok(Some(op))
     }
     fn finish(mut self) -> Result<Frame> {
         self.frame.command_buffer.replace(self.cb_builder.build()?);
@@ -1600,150 +1758,175 @@ impl Encoder {
     }
 }
 
-struct Channel<T> {
-    sender: Sender<T>,
-    receiver: Receiver<T>,
-}
-
-impl<T> Channel<T> {
-    fn bounded(len: usize) -> Self {
-        let (sender, receiver) = bounded(len);
-        Self { sender, receiver }
+fn write_runner_result(
+    runner_result: &Arc<RwLock<Result<(), Arc<anyhow::Error>>>>,
+    result: Result<()>,
+) {
+    if let Err(e) = result {
+        let mut runner_result = runner_result.write();
+        if runner_result.is_ok() {
+            *runner_result = Err(Arc::new(e));
+        }
     }
 }
 
 struct Runner {
-    queue: Arc<Queue>,
+    device: ManuallyDrop<Arc<Device>>,
     done: Arc<AtomicBool>,
-    op_channel: Channel<Op>,
-    encode_channel: Channel<Frame>,
-    submit_channel: Channel<Frame>,
-    poll_channel: Channel<Frame>,
+    op_sender: ManuallyDrop<Sender<Op>>,
     result: Arc<RwLock<Result<(), Arc<anyhow::Error>>>>,
 }
 
 impl Runner {
     fn new(queue: Arc<Queue>) -> Result<Arc<Self>> {
         let index = queue.device().physical_device().index();
-        let op_channel = Channel::bounded(1_000);
-        let encode_channel = Channel::bounded(3);
-        let submit_channel = Channel::bounded(1);
-        let poll_channel = Channel::bounded(1);
-        let runner = Arc::new(Self {
-            queue,
-            done: Arc::new(AtomicBool::new(false)),
-            op_channel,
-            encode_channel,
-            submit_channel,
-            poll_channel,
-            result: Arc::new(RwLock::new(Ok(()))),
-        });
-        let mut ready_frames = VecDeque::with_capacity(3);
-        for _ in 0..3 {
-            let frame = Frame::new(
-                runner.queue.clone(),
-                runner.done.clone(),
-                runner.result.clone(),
-            )?;
+        let done = Arc::new(AtomicBool::new(false));
+        let (op_sender, op_reciever) = bounded(Frame::MAX_OPS);
+        let n_frames = 3;
+        let (encode_sender, encode_receiver) = bounded(n_frames);
+        let (submit_sender, submit_receiver) = bounded(n_frames);
+        let (poll_sender, poll_receiver) = bounded(n_frames);
+        let result = Arc::new(RwLock::new(Ok(())));
+        let mut ready_frames = VecDeque::with_capacity(n_frames);
+        for _ in 0..n_frames {
+            let frame = Frame::new(queue.clone(), done.clone(), result.clone())?;
             ready_frames.push_back(frame);
         }
-        {
-            let runner = runner.clone();
-            std::thread::Builder::new()
-                .name(format!("krnl-device{}-encode", index))
-                .spawn(move || {
-                    if let Err(e) = runner.encode(ready_frames) {
-                        let mut result = runner.result.write();
-                        if result.is_ok() {
-                            *result = Err(Arc::new(e));
-                        }
-                    }
-                })?;
-        }
-        {
-            let runner = runner.clone();
-            std::thread::Builder::new()
-                .name(format!("krnl-device{}-submit", index))
-                .spawn(move || {
-                    if let Err(e) = runner.submit() {
-                        let mut result = runner.result.write();
-                        if result.is_ok() {
-                            *result = Err(Arc::new(e));
-                        }
-                    }
-                })?;
-        }
-        {
-            let runner = runner.clone();
-            std::thread::Builder::new()
-                .name(format!("krnl-device{}-poll", index))
-                .spawn(move || {
-                    if let Err(e) = runner.poll() {
-                        let mut result = runner.result.write();
-                        if result.is_ok() {
-                            *result = Err(Arc::new(e));
-                        }
-                    }
-                })?;
-        }
-        Ok(runner)
-    }
-    fn encode(&self, mut ready_frames: VecDeque<Frame>) -> Result<()> {
-        let mut last_submit = Instant::now();
-        let mut encoder = None;
-        let mut op_iter = self.op_channel.receiver.try_iter().peekable();
-        while !self.done.load(Ordering::Relaxed) {
-            ready_frames.extend(self.encode_channel.receiver.try_iter());
-            if encoder.is_none() {
-                if let Some(frame) = ready_frames.pop_front() {
-                    encoder.replace(Encoder::new(frame)?);
-                }
-            }
-            if let Some(encoder_mut) = encoder.as_mut() {
-                if op_iter.peek().is_none() {
-                    op_iter = self.op_channel.receiver.try_iter().peekable();
-                }
-                encoder_mut.extend(&mut op_iter);
-                if (ready_frames.len() >= 2
-                    && last_submit.elapsed().as_millis() >= 1
-                    && !encoder_mut.is_empty())
-                    || (ready_frames.len() >= 1 && encoder_mut.is_full())
-                {
-                    let frame = encoder.take().unwrap().finish()?;
-                    self.submit_channel.sender.send(frame).unwrap();
-                    last_submit = Instant::now();
-                }
-            }
-            std::thread::sleep(Duration::from_millis(1));
-        }
-        Ok(())
-    }
-    fn submit(&self) -> Result<()> {
-        let mut wait_semaphore: Option<Arc<Semaphore>> = None;
-        while !self.done.load(Ordering::Relaxed) {
-            for mut frame in self.submit_channel.receiver.try_iter() {
-                frame.submit(wait_semaphore.take().as_deref())?;
-                wait_semaphore.replace(frame.semaphore.clone());
-                self.poll_channel.sender.send(frame).unwrap();
-            }
-            std::thread::sleep(Duration::from_millis(1));
-        }
-        Ok(())
-    }
-    fn poll(&self) -> Result<()> {
-        while !self.done.load(Ordering::Relaxed) {
-            for mut frame in self.poll_channel.receiver.try_iter() {
-                frame.poll()?;
-                self.encode_channel.sender.send(frame).unwrap();
-            }
-            std::thread::sleep(Duration::from_millis(1));
-        }
-        Ok(())
+        let result2 = result.clone();
+        let done2 = done.clone();
+        std::thread::Builder::new()
+            .name(format!("krnl-device{}-encode", index))
+            .spawn(move || {
+                write_runner_result(
+                    &result2,
+                    encode(
+                        &done2,
+                        &mut ready_frames,
+                        &op_reciever,
+                        &encode_receiver,
+                        &submit_sender,
+                    ),
+                );
+            })?;
+        let result2 = result.clone();
+        std::thread::Builder::new()
+            .name(format!("krnl-device{}-submit", index))
+            .spawn(move || {
+                write_runner_result(&result2, submit(&submit_receiver, &poll_sender));
+            })?;
+        let result2 = result.clone();
+        std::thread::Builder::new()
+            .name(format!("krnl-device{}-poll", index))
+            .spawn(move || {
+                write_runner_result(&result2, poll(&poll_receiver, &encode_sender));
+            })?;
+        Ok(Arc::new(Self {
+            device: ManuallyDrop::new(queue.device().clone()),
+            done,
+            op_sender: ManuallyDrop::new(op_sender),
+            result,
+        }))
     }
 }
 
 impl Drop for Runner {
     fn drop(&mut self) {
         self.done.store(true, Ordering::SeqCst);
+        unsafe {
+            ManuallyDrop::drop(&mut self.op_sender);
+        }
+        let mut device = unsafe { ManuallyDrop::take(&mut self.device) };
+        loop {
+            match Arc::try_unwrap(device) {
+                Ok(device) => unsafe {
+                    device.wait().unwrap();
+                    break;
+                },
+                Err(d) => {
+                    device = d;
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+            }
+        }
     }
+}
+
+fn encode(
+    done: &AtomicBool,
+    ready_frames: &mut VecDeque<Frame>,
+    op_reciever: &Receiver<Op>,
+    encode_receiver: &Receiver<Frame>,
+    submit_sender: &Sender<Frame>,
+) -> Result<()> {
+    let mut queued_op: Option<Op> = None;
+    while !done.load(Ordering::Relaxed) {
+        if queued_op.is_none() {
+            loop {
+                if let Ok(op) = op_reciever.recv() {
+                    queued_op.replace(op);
+                    break;
+                } else {
+                    return Ok(());
+                }
+            }
+        }
+        if ready_frames.is_empty() {
+            if let Ok(frame) = encode_receiver.recv() {
+                ready_frames.push_back(frame);
+            } else {
+                return Ok(());
+            }
+        }
+        let mut encoder = Encoder::new(ready_frames.pop_front().unwrap())?;
+        loop {
+            while !encoder.is_full() {
+                if queued_op.is_none() {
+                    if let Ok(op) = op_reciever.try_recv() {
+                        queued_op.replace(op);
+                    } else {
+                        break;
+                    }
+                }
+                if let Some(op) = queued_op.take() {
+                    queued_op = encoder.try_encode(op)?;
+                } else {
+                    break;
+                }
+            }
+            ready_frames.extend(encode_receiver.try_iter());
+            if done.load(Ordering::Relaxed) {
+                return Ok(());
+            }
+            if ready_frames.len() >= 2 || (ready_frames.len() >= 1 && encoder.is_full()) {
+                let frame = encoder.finish()?;
+                if submit_sender.send(frame).is_err() {
+                    return Ok(());
+                }
+                break;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn submit(submit_receiver: &Receiver<Frame>, poll_sender: &Sender<Frame>) -> Result<()> {
+    let mut wait_semaphore: Option<Arc<Semaphore>> = None;
+    while let Ok(mut frame) = submit_receiver.recv() {
+        frame.submit(wait_semaphore.take().as_deref())?;
+        wait_semaphore.replace(frame.semaphore.clone());
+        if poll_sender.send(frame).is_err() {
+            break;
+        }
+    }
+    Ok(())
+}
+
+fn poll(poll_receiver: &Receiver<Frame>, encode_sender: &Sender<Frame>) -> Result<()> {
+    while let Ok(mut frame) = poll_receiver.recv() {
+        frame.poll()?;
+        if encode_sender.send(frame).is_err() {
+            return Ok(());
+        }
+    }
+    Ok(())
 }

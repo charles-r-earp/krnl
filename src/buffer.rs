@@ -10,10 +10,10 @@ use crate::{
     krnl_core,
 };
 use anyhow::{bail, format_err, Result};
-use paste::paste;
 use core::{marker::PhantomData, mem::size_of};
 use futures_util::future::ready;
 use num_traits::AsPrimitive;
+use paste::paste;
 use std::{pin::Pin, sync::Arc};
 
 type PinBox<T> = Pin<Box<T>>;
@@ -91,6 +91,8 @@ pub mod future {
         }
     }
 
+    use std::time::Instant;
+
     impl Future for RawBufferIntoDeviceFuture {
         type Output = Result<RawBuffer>;
 
@@ -106,7 +108,7 @@ pub mod future {
                     match Future::poll(host_buffer_fut, cx) {
                         Poll::Ready(host_buffer) => {
                             let buffer = host_buffer.and_then(|host_buffer| {
-                                RawSlice::from_bytes(scalar_type, host_buffer.read()?)
+                                unsafe { RawSlice::from_bytes(scalar_type, host_buffer.read()?) }
                                     .to_raw_buffer()
                             });
                             Poll::Ready(buffer)
@@ -193,12 +195,15 @@ impl RawSlice {
     pub(crate) fn is_empty(&self) -> bool {
         self.inner.len() == 0
     }
-    fn from_bytes(scalar_type: ScalarType, bytes: &[u8]) -> Self {
+    unsafe fn from_bytes(scalar_type: ScalarType, bytes: &[u8]) -> Self {
         Self {
             device: Device::host(),
             scalar_type,
             inner: RawSliceInner::Host(HostSlice::from_bytes(bytes)),
         }
+    }
+    unsafe fn from_host_slice<T: Scalar>(slice: &[T]) -> Self {
+        unsafe { Self::from_bytes(T::scalar_type(), bytemuck::cast_slice(slice)) }
     }
     fn as_host_slice<T: Scalar>(&self) -> Result<&[T], BufferOnDeviceError> {
         assert_eq!(T::scalar_type(), self.scalar_type);
@@ -260,22 +265,25 @@ impl RawSlice {
                 let x = ScalarSlice {
                     data: ScalarSliceRepr::from_raw(self.clone().bitcast(scalar_type)),
                 };
-                let mut output = unsafe {
-                    ScalarBuffer::uninit(device.clone(), self.len(), self.scalar_type)?
-                };
+                let mut output =
+                    unsafe { ScalarBuffer::uninit(device.clone(), self.len(), self.scalar_type)? };
                 let mut y = output.bitcast_mut(scalar_type);
                 match scalar_type {
                     U8 => {
-                        cast_u8?.dispatch(x.try_as_slice().unwrap(), y.try_as_slice_mut().unwrap())?;
+                        cast_u8?
+                            .dispatch(x.try_as_slice().unwrap(), y.try_as_slice_mut().unwrap())?;
                     }
                     U16 => {
-                        cast_u16?.dispatch(x.try_as_slice().unwrap(), y.try_as_slice_mut().unwrap())?;
+                        cast_u16?
+                            .dispatch(x.try_as_slice().unwrap(), y.try_as_slice_mut().unwrap())?;
                     }
                     U32 => {
-                        cast_u32?.dispatch(x.try_as_slice().unwrap(), y.try_as_slice_mut().unwrap())?;
+                        cast_u32?
+                            .dispatch(x.try_as_slice().unwrap(), y.try_as_slice_mut().unwrap())?;
                     }
                     U64 => {
-                        cast_u64?.dispatch(x.try_as_slice().unwrap(), y.try_as_slice_mut().unwrap())?;
+                        cast_u64?
+                            .dispatch(x.try_as_slice().unwrap(), y.try_as_slice_mut().unwrap())?;
                     }
                     _ => unreachable!(),
                 }
@@ -297,7 +305,10 @@ impl RawSlice {
     }
     fn to_device(&self, device: Device) -> Result<RawBufferIntoDeviceFuture> {
         if self.is_empty() {
-            return Ok(RawBufferIntoDeviceFuture::ready(Ok(RawBuffer::new(self.device.clone(), self.scalar_type))));
+            return Ok(RawBufferIntoDeviceFuture::ready(Ok(RawBuffer::new(
+                self.device.clone(),
+                self.scalar_type,
+            ))));
         }
         #[cfg(feature = "device")]
         let scalar_type = self.scalar_type;
@@ -383,9 +394,7 @@ impl RawBuffer {
         }
     }
     fn new(device: Device, scalar_type: ScalarType) -> Self {
-        unsafe {
-            Self::uninit(device, scalar_type, 0).unwrap()
-        }
+        unsafe { Self::uninit(device, scalar_type, 0).unwrap() }
     }
     fn from_vec<T: Scalar>(vec: Vec<T>) -> Self {
         let device = Device::host();
@@ -586,13 +595,13 @@ pub struct SliceRepr<'a, T: Scalar> {
 }
 
 impl<T: Scalar> SliceRepr<'_, T> {
-    /*unsafe fn from_raw_unchecked(raw: RawSlice) -> Self {
+    unsafe fn from_raw_unchecked(raw: RawSlice) -> Self {
         debug_assert_eq!(raw.scalar_type, T::scalar_type());
         Self {
             raw,
             _m: PhantomData::default(),
         }
-    }*/
+    }
     fn from_raw_ref(raw: &RawSlice) -> Option<Self> {
         if T::scalar_type() == raw.scalar_type {
             Some(Self {
@@ -975,10 +984,10 @@ mod buffer_fill {
 #[krnl(crate = crate)]
 mod buffer_cast {
     #[allow(unused_imports)]
-    use krnl_core::{kernel, scalar::Scalar};
-    #[allow(unused_imports)]
     #[cfg(any(feature = "half", krnl_device_crate))]
-    use krnl_core::half::{f16, bf16};
+    use krnl_core::half::{bf16, f16};
+    #[allow(unused_imports)]
+    use krnl_core::{kernel, scalar::Scalar};
     #[allow(unused_imports)]
     use paste::paste;
 
@@ -1125,10 +1134,14 @@ impl<T: Scalar, S: Data<Elem = T>> BufferBase<S> {
             let vec = slice.iter().map(|x| x.cast()).collect();
             Ok(CowBuffer::from_vec(vec))
         } else {
-            Ok(Buffer::try_from(self.as_scalar_slice().cast(T2::scalar_type())?.into_scalar_buffer()?)
-                .ok()
-                .unwrap()
-                .into())
+            Ok(Buffer::try_from(
+                self.as_scalar_slice()
+                    .cast(T2::scalar_type())?
+                    .into_scalar_buffer()?,
+            )
+            .ok()
+            .unwrap()
+            .into())
         }
     }
 }
@@ -1218,6 +1231,14 @@ impl<T: Scalar, S: DataOwned<Elem = T>> BufferBase<S> {
     }
 }
 
+impl<'a, T: Scalar> From<&'a [T]> for Slice<'a, T> {
+    fn from(slice: &'a [T]) -> Self {
+        Slice {
+            data: unsafe { SliceRepr::from_raw_unchecked(RawSlice::from_host_slice(slice)) },
+        }
+    }
+}
+
 impl<T: Scalar> From<Buffer<T>> for CowBuffer<'_, T> {
     fn from(buffer: Buffer<T>) -> Self {
         Self {
@@ -1239,9 +1260,7 @@ impl<T: Scalar> TryFrom<ScalarBuffer> for Buffer<T> {
     fn try_from(buffer: ScalarBuffer) -> Result<Self, Self::Error> {
         if buffer.scalar_type() == T::scalar_type() {
             Ok(Self {
-                data: unsafe {
-                    BufferRepr::from_raw_unchecked(buffer.data.raw)
-                },
+                data: unsafe { BufferRepr::from_raw_unchecked(buffer.data.raw) },
             })
         } else {
             Err(buffer)
@@ -1333,8 +1352,9 @@ impl<S: ScalarData> ScalarBufferBase<S> {
             );
         }
         cast!(u8, i8, u16, i16, u32, i32, f32, u64, i64, f64 => u8, i8, u16, i16, u32, i32, f32, u64, i64, f64);
-        #[cfg(feature = "half")] {
-            use half::{f16, bf16};
+        #[cfg(feature = "half")]
+        {
+            use half::{bf16, f16};
             cast!(f16, bf16 => f16, bf16, u8, i8, u16, i16, u32, i32, f32, u64, i64, f64);
             cast!(u8, i8, u16, i16, u32, i32, f32, u64, i64, f64 => f16, bf16);
         }
@@ -1405,7 +1425,7 @@ impl<S: ScalarDataMut> ScalarBufferBase<S> {
                         E::U64(x) => y.try_as_slice_mut().unwrap().fill(x),
                         _ => unreachable!(),
                     }
-                },
+                }
                 #[cfg(feature = "device")]
                 DeviceKind::Device => {
                     use spirv::Capability;
@@ -1434,7 +1454,10 @@ impl<S: ScalarDataMut> ScalarBufferBase<S> {
                             }
                             x => x,
                         }
-                    } else if n % 2 == 0 && device_base.capability_enabled(Capability::Int16) && device_base.capability_enabled(Capability::StorageBuffer16BitAccess) {
+                    } else if n % 2 == 0
+                        && device_base.capability_enabled(Capability::Int16)
+                        && device_base.capability_enabled(Capability::StorageBuffer16BitAccess)
+                    {
                         match x {
                             E::U8(x) => E::U16(u16::from_ne_bytes([x; 2])),
                             x => x,
@@ -1444,10 +1467,14 @@ impl<S: ScalarDataMut> ScalarBufferBase<S> {
                     };
                     let mut y = y.bitcast_mut(x.scalar_type());
                     match x {
-                        E::U8(x) => buffer_fill::fill_u8::build(device)?.dispatch(y.try_as_slice_mut().unwrap(), x),
-                        E::U16(x) => buffer_fill::fill_u16::build(device)?.dispatch(y.try_as_slice_mut().unwrap(), x),
-                        E::U32(x) => buffer_fill::fill_u32::build(device)?.dispatch(y.try_as_slice_mut().unwrap(), x),
-                        E::U64(x) => buffer_fill::fill_u64::build(device)?.dispatch(y.try_as_slice_mut().unwrap(), x),
+                        E::U8(x) => buffer_fill::fill_u8::build(device)?
+                            .dispatch(y.try_as_slice_mut().unwrap(), x),
+                        E::U16(x) => buffer_fill::fill_u16::build(device)?
+                            .dispatch(y.try_as_slice_mut().unwrap(), x),
+                        E::U32(x) => buffer_fill::fill_u32::build(device)?
+                            .dispatch(y.try_as_slice_mut().unwrap(), x),
+                        E::U64(x) => buffer_fill::fill_u64::build(device)?
+                            .dispatch(y.try_as_slice_mut().unwrap(), x),
                         _ => unreachable!(),
                     }
                 }
@@ -1470,7 +1497,7 @@ impl<T: Scalar> From<Buffer<T>> for ScalarBuffer {
         Self {
             data: ScalarBufferRepr {
                 raw: buffer.data.raw,
-            }
+            },
         }
     }
 }
@@ -1516,12 +1543,14 @@ impl<'a> From<ScalarSlice<'a>> for ScalarCowBuffer<'a> {
 impl<'a, T: Scalar> From<CowBuffer<'a, T>> for ScalarCowBuffer<'a> {
     fn from(buffer: CowBuffer<'a, T>) -> Self {
         let data = match buffer.data {
-            CowBufferRepr::Buffer(buffer) => ScalarCowBufferRepr::Buffer(ScalarBufferRepr { raw: buffer.raw }),
-            CowBufferRepr::Slice(slice) => ScalarCowBufferRepr::Slice(ScalarSliceRepr::from_raw(slice.raw)),
+            CowBufferRepr::Buffer(buffer) => {
+                ScalarCowBufferRepr::Buffer(ScalarBufferRepr { raw: buffer.raw })
+            }
+            CowBufferRepr::Slice(slice) => {
+                ScalarCowBufferRepr::Slice(ScalarSliceRepr::from_raw(slice.raw))
+            }
         };
-        Self {
-            data,
-        }
+        Self { data }
     }
 }
 
@@ -1691,7 +1720,10 @@ mod tests {
             let buffer = Buffer::from_vec(x_vec)
                 .into_device(device.clone())?
                 .block()?;
-            let buffer = buffer.as_scalar_slice().cast(Y::scalar_type())?.into_scalar_buffer()?;
+            let buffer = buffer
+                .as_scalar_slice()
+                .cast(Y::scalar_type())?
+                .into_scalar_buffer()?;
             let y_vec: Vec<Y> = buffer.try_as_slice().unwrap().into_vec()?.block()?;
             assert_eq!(&y_vec, &y_vec_true);
         }

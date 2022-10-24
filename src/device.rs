@@ -1,6 +1,9 @@
 use anyhow::Result;
 use spirv::Capability;
-use std::fmt::{self, Debug};
+use std::{
+    fmt::{self, Debug},
+    future::Future,
+};
 
 #[cfg(feature = "device")]
 pub(crate) mod engine;
@@ -25,9 +28,60 @@ pub mod error {
 use error::*;
 
 pub(crate) mod future {
+    use super::{Device, Result};
+    use std::{
+        future::Future,
+        pin::Pin,
+        task::{Context, Poll},
+    };
+
     #[cfg(feature = "device")]
     pub(crate) use super::engine::HostBufferFuture;
+
+    #[cfg(feature = "device")]
+    use super::engine::SyncFuture as SyncFutureInner;
+
+    pub(super) struct SyncFuture {
+        #[cfg(feature = "device")]
+        inner: Option<SyncFutureInner>,
+    }
+
+    impl SyncFuture {
+        pub(super) fn new(device: &Device) -> Result<Self> {
+            #[cfg(feature = "device")]
+            {
+                if let Some(device) = device.as_device() {
+                    Ok(Self {
+                        inner: Some(device.sync()?),
+                    })
+                } else {
+                    Ok(Self { inner: None })
+                }
+            }
+            #[cfg(not(feature = "device"))]
+            {
+                Ok(Self {})
+            }
+        }
+    }
+
+    impl Future for SyncFuture {
+        type Output = Result<()>;
+        fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+            #[cfg(feature = "device")]
+            {
+                if self.inner.is_some() {
+                    let inner = unsafe {
+                        Pin::map_unchecked_mut(self, |this| this.inner.as_mut().unwrap())
+                    };
+                    return Future::poll(inner, cx);
+                }
+            }
+            Poll::Ready(Ok(()))
+        }
+    }
 }
+use future::SyncFuture;
 
 mod options {
     use super::*;
@@ -101,13 +155,14 @@ impl Device {
                 StorageBuffer16BitAccess,
             ],
         };
-        #[cfg(test)] {
+        #[cfg(test)]
+        {
             use once_cell::sync::OnceCell;
             static DEVICE: OnceCell<Device> = OnceCell::new();
             if index == 0 {
-                return DEVICE.get_or_try_init(|| {
-                    Device::new_ext(index, &options)
-                }).map(|x| x.clone());
+                return DEVICE
+                    .get_or_try_init(|| Device::new_ext(index, &options))
+                    .map(|x| x.clone());
             }
         }
         Self::new_ext(index, &options)
@@ -141,6 +196,9 @@ impl Device {
             DeviceInner::Device(device) => Some(device),
         }
     }
+    pub fn sync(&self) -> Result<impl Future<Output = Result<()>>> {
+        SyncFuture::new(self)
+    }
 }
 
 impl Debug for Device {
@@ -159,11 +217,23 @@ impl Debug for Device {
 mod tests {
     #[allow(unused_imports)]
     use super::*;
+    use crate::future::BlockableFuture;
 
     #[cfg(feature = "device")]
     #[test]
     fn device_new() -> Result<()> {
         let device = Device::new(0)?;
         Ok(())
+    }
+
+    #[test]
+    fn sync_host() -> Result<()> {
+        Device::host().sync()?.block()
+    }
+
+    #[cfg(feature = "device")]
+    #[test]
+    fn sync_device() -> Result<()> {
+        Device::new(0)?.sync()?.block()
     }
 }

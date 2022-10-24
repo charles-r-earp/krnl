@@ -1,8 +1,8 @@
 #[cfg(feature = "device")]
-use crate::device::{KernelCache, Compute};
-use crate::{device::Device, buffer::ScalarSlice};
-use anyhow::{Result, format_err};
-use std::{sync::Arc, borrow::Cow};
+use crate::device::{Compute, KernelCache};
+use crate::{buffer::ScalarSlice, device::Device};
+use anyhow::{format_err, Result};
+use std::{borrow::Cow, sync::Arc};
 
 #[doc(inline)]
 pub use krnl_macros::module;
@@ -20,36 +20,44 @@ pub struct KernelBase {
 }
 
 #[doc(hidden)]
-pub fn __build(device: Device, kernel_info: Arc<KernelInfo>, spirv: Arc<Spirv>) -> Result<KernelBase> {
+pub fn __build(
+    device: Device,
+    kernel_info: Arc<KernelInfo>,
+    spirv: Arc<Spirv>,
+) -> Result<KernelBase> {
     #[cfg(feature = "device")]
     if let Some(device_base) = device.as_device() {
+        //dbg!(&kernel_info);
         let cache = device_base.kernel_cache(kernel_info, spirv)?;
-        return Ok(KernelBase {
-            device,
-            cache,
-        });
+        return Ok(KernelBase { device, cache });
     }
     let path = &kernel_info.path;
     Err(format_err!("Cannot build kernel `{path}` for {device:?}!"))
 }
 
 #[doc(hidden)]
-pub unsafe fn __dispatch(kernel_base: &KernelBase, dispatch_dim: DispatchDim<&[u32]>, slices: &[(&'static str, ScalarSlice)], push_consts: &[u8]) -> Result<()> {
+pub unsafe fn __dispatch(
+    kernel_base: &KernelBase,
+    dispatch_dim: DispatchDim<&[u32]>,
+    slices: &[(&'static str, ScalarSlice)],
+    push_consts: &[u8],
+) -> Result<()> {
     let device = &kernel_base.device;
     #[cfg(feature = "device")]
     if let Some(device_base) = device.as_device() {
         let kernel_info = kernel_base.cache.kernel_info();
+        let threads = kernel_info.threads;
         let kernel_path = &kernel_info.path;
         let elements = if kernel_info.elementwise {
-            match dispatch_dim {
-                DispatchDim::GlobalThreads(&[elements]) => Some(elements),
-                _ => unreachable!(),
+            if let DispatchDim::GlobalThreads(&[elements]) = dispatch_dim {
+                Some(elements)
+            } else {
+                unreachable!()
             }
         } else {
             None
         };
-        // TODO: choose dispatch groups for elementwise base on active groups
-        let groups = dispatch_dim.to_dispatch_groups(kernel_info.threads);
+        let groups = dispatch_dim.to_dispatch_groups(threads);
         if groups.iter().any(|x| *x == 0) {
             return Ok(());
         }
@@ -69,7 +77,9 @@ pub unsafe fn __dispatch(kernel_base: &KernelBase, dispatch_dim: DispatchDim<&[u
                 if let Some(device_buffer) = device_slice.device_buffer() {
                     buffers.push(device_buffer.inner());
                 } else {
-                    return Err(format_err!("Kernel `{kernel_path}` slice `{name}` is empty!"));
+                    return Err(format_err!(
+                        "Kernel `{kernel_path}` slice `{name}` is empty!"
+                    ));
                 }
             } else {
                 return Err(format_err!("Kernel `{kernel_path}` slice `{name}` is on {slice_device:?}, expected {device:?}!"));
@@ -87,6 +97,7 @@ pub unsafe fn __dispatch(kernel_base: &KernelBase, dispatch_dim: DispatchDim<&[u
     unreachable!()
 }
 
+#[derive(Debug)]
 pub enum DispatchDim<T> {
     GlobalThreads(T),
     Groups(T),
@@ -97,7 +108,7 @@ impl<T: AsRef<[u32]>> DispatchDim<T> {
     pub fn as_ref(&self) -> DispatchDim<&[u32]> {
         match self {
             Self::GlobalThreads(x) => DispatchDim::GlobalThreads(x.as_ref()),
-            Self::Groups(x) => DispatchDim::GlobalThreads(x.as_ref()),
+            Self::Groups(x) => DispatchDim::Groups(x.as_ref()),
         }
     }
 }
@@ -107,7 +118,11 @@ impl DispatchDim<&[u32]> {
         let mut output = [1; 3];
         match self {
             Self::GlobalThreads(global_threads) => {
-                for ((gt, t), y) in global_threads.iter().zip(threads.iter()).zip(output.iter_mut()) {
+                for ((gt, t), y) in global_threads
+                    .iter()
+                    .zip(threads.iter())
+                    .zip(output.iter_mut())
+                {
                     *y = *gt / *t + if *gt % *t != 0 { 1 } else { 0 };
                 }
             }

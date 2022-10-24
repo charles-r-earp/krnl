@@ -1,0 +1,28 @@
+[package]
+name = "compute-benchmarks"
+version = "0.1.0"
+edition = "2021"
+authors = ["Charles R Earp <charles.r.earp@gmail.com>"]
+license = "MIT/Apache-2.0"
+publish = false
+
+[dependencies]
+approx = "0.5.1"
+argparse = "0.2.2"
+criterion = { version = "0.4.0", default-features = false }
+cust = { version = "0.3.2", optional = true }
+krnl = { path = "../../", features = ["device"] }
+ocl = { version = "0.19.4", optional = true }
+rand = "0.8.5"
+
+[features]
+cuda = ["dep:cust"]
+ocl = ["dep:ocl"]
+
+[build-dependencies]
+anyhow = "1.0.65"
+
+
+[[bench]]
+name = "benchmarks"
+harness = false

@@ -10,4 +10,5 @@ pub use spirv_std;
 #[doc(inline)]
 pub use krnl_macros::kernel;
 
+pub mod mem;
 pub mod scalar;

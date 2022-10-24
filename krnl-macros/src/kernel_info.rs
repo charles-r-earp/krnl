@@ -1,7 +1,10 @@
 #![allow(warnings)]
+use serde::{Deserialize, Serialize};
 use spirv::Capability;
-use std::{hash::Hash, fmt::{self, Debug, Write}};
-use serde::{Serialize, Deserialize};
+use std::{
+    fmt::{self, Debug, Write},
+    hash::Hash,
+};
 
 #[doc(hidden)]
 #[derive(Eq, PartialEq, Hash, Serialize, Deserialize, Debug)]
@@ -52,13 +55,13 @@ impl KernelInfo {
             extensions,
         }
     }
-    pub fn slice_infos(&self) -> impl Iterator<Item=&SliceInfo> {
+    pub fn slice_infos(&self) -> impl Iterator<Item = &SliceInfo> {
         self.args.iter().filter_map(|x| match x {
             Arg::Slice(x) => Some(x),
             _ => None,
         })
     }
-    pub fn push_infos(&self) -> impl Iterator<Item=&PushInfo> {
+    pub fn push_infos(&self) -> impl Iterator<Item = &PushInfo> {
         self.args.iter().filter_map(|x| match x {
             Arg::Push(x) => Some(x),
             _ => None,
