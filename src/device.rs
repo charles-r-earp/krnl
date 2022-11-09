@@ -3,13 +3,14 @@ use spirv::Capability;
 use std::{
     fmt::{self, Debug},
     future::Future,
+    sync::Arc,
 };
 
 #[cfg(feature = "device")]
 pub(crate) mod engine;
 #[cfg(feature = "device")]
 pub(crate) use engine::{
-    ArcEngine as DeviceBase, Compute, DeviceBuffer, DeviceBufferInner, HostBuffer, KernelCache,
+    Engine, Compute, DeviceBuffer, DeviceBufferInner, HostBuffer, KernelCache,
 };
 
 pub mod error {
@@ -83,6 +84,7 @@ pub(crate) mod future {
 }
 use future::SyncFuture;
 
+/*
 mod options {
     use super::*;
 
@@ -100,12 +102,48 @@ mod options {
     }
 }
 use options::DeviceOptions;
+*/
+
+#[cfg(feature = "device")]
+#[derive(Clone, derive_more::Deref)]
+pub(crate) struct VulkanDevice {
+    #[deref]
+    engine: Arc<Engine>,
+}
+#[cfg(feature = "device")]
+pub(crate) use VulkanDevice as DeviceBase;
+
+#[cfg(feature = "device")]
+impl VulkanDevice {
+    fn new(index: usize) -> Result<Self> {
+        Ok(Self {
+            engine: Arc::new(Engine::new(index)?)
+        })
+    }
+}
+
+#[cfg(feature = "device")]
+impl PartialEq for VulkanDevice {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.engine, &other.engine)
+    }
+}
+
+#[cfg(feature = "device")]
+impl Eq for VulkanDevice {}
+
+#[cfg(feature = "device")]
+impl Debug for VulkanDevice {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "Device({})", self.index())
+    }
+}
 
 #[derive(Clone, derive_more::IsVariant, derive_more::Unwrap, Eq, PartialEq)]
 pub(crate) enum DeviceInner {
     Host,
     #[cfg(feature = "device")]
-    Device(DeviceBase),
+    Device(VulkanDevice),
 }
 
 impl DeviceInner {
@@ -144,35 +182,26 @@ impl Device {
         }
     }
     pub fn new(index: usize) -> Result<Self, anyhow::Error> {
-        use spirv::Capability::*;
-        let options = DeviceOptions {
-            optimal_capabilities: vec![
-                Int8,
-                Int16,
-                Int64,
-                Float64,
-                StorageBuffer8BitAccess,
-                StorageBuffer16BitAccess,
-            ],
-        };
         #[cfg(test)]
         {
-            use once_cell::sync::OnceCell;
-            static DEVICE: OnceCell<Device> = OnceCell::new();
-            if index == 0 {
-                return DEVICE
-                    .get_or_try_init(|| Device::new_ext(index, &options))
-                    .map(|x| x.clone());
+            #[cfg(test)] {
+                use once_cell::sync::OnceCell;
+                static DEVICE: OnceCell<Device> = OnceCell::new();
+                if index == 0 {
+                    return DEVICE
+                        .get_or_try_init(|| Device::new_impl(index))
+                        .map(|x| x.clone());
+                }
             }
         }
-        Self::new_ext(index, &options)
+        Self::new_impl(index)
     }
     #[cfg_attr(not(feature = "device"), allow(unused_variables))]
-    fn new_ext(index: usize, options: &DeviceOptions) -> Result<Self, anyhow::Error> {
+    fn new_impl(index: usize) -> Result<Self, anyhow::Error> {
         #[cfg(feature = "device")]
         {
             return Ok(Self {
-                inner: DeviceInner::Device(DeviceBase::new(index, options)?),
+                inner: DeviceInner::Device(VulkanDevice::new(index)?),
             });
         }
         #[cfg(not(feature = "device"))]
@@ -199,6 +228,14 @@ impl Device {
     pub fn sync(&self) -> Result<impl Future<Output = Result<()>>> {
         SyncFuture::new(self)
     }
+    pub fn features(&self) -> Option<&Features> {
+        #[cfg(feature = "device")] {
+            self.inner.device().map(|x| x.features())
+        }
+        #[cfg(not(feature = "device"))] {
+            None
+        }
+    }
 }
 
 impl Debug for Device {
@@ -212,6 +249,60 @@ impl Debug for Device {
         }
     }
 }
+
+#[derive(Default, Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Features {
+    shader_int8: bool,
+    shader_int16: bool,
+    shader_int64: bool,
+    shader_float64: bool,
+}
+
+impl Features {
+    pub fn shader_int8(&self) -> bool {
+        self.shader_int8
+    }
+    pub fn set_shader_int8(&mut self, shader_int8: bool) -> &mut Self {
+        self.shader_int8 = shader_int8;
+        self
+    }
+    pub fn shader_int16(&self) -> bool {
+        self.shader_int16
+    }
+    pub fn set_shader_int16(&mut self, shader_int16: bool) -> &mut Self {
+        self.shader_int16 = shader_int16;
+        self
+    }
+    pub fn shader_int64(&self) -> bool {
+        self.shader_int64
+    }
+    pub fn set_shader_int64(&mut self, shader_int64: bool) -> &mut Self {
+        self.shader_int64 = shader_int64;
+        self
+    }
+    pub fn shader_float64(&self) -> bool {
+        self.shader_float64
+    }
+    pub fn set_shader_float64(&mut self, shader_float64: bool) -> &mut Self {
+        self.shader_float64 = shader_float64;
+        self
+    }
+    pub fn contains(&self, other: &Features) -> bool {
+        (self.shader_int8 || !other.shader_int8)
+        && (self.shader_int16 || !other.shader_int16)
+        && (self.shader_int64 || !other.shader_int64)
+        && (self.shader_float64 || !other.shader_float64)
+    }
+    pub fn union(mut self, other: &Features) -> Self {
+        self.shader_int8 |= other.shader_int8;
+        self.shader_int16 |= other.shader_int16;
+        self.shader_int64 |= other.shader_int64;
+        self.shader_float64 |= other.shader_float64;
+        self
+    }
+}
+
+
 
 #[cfg(test)]
 mod tests {

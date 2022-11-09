@@ -2,8 +2,7 @@
 use bytemuck::Pod;
 #[cfg(not(target_arch = "spirv"))]
 use derive_more::Display;
-#[cfg(feature = "half")]
-use half::{bf16, f16};
+//use half::{bf16, f16};
 use num_traits::{AsPrimitive, FromPrimitive, NumAssign, NumCast};
 #[cfg(not(target_arch = "spirv"))]
 use serde::{Deserialize, Serialize};
@@ -14,7 +13,6 @@ use std::{
 };
 
 mod sealed {
-    #[cfg(feature = "half")]
     use half::{bf16, f16};
 
     #[doc(hidden)]
@@ -28,9 +26,7 @@ mod sealed {
         };
     }
 
-    impl_sealed! {u8, i8, u16, i16, u32, i32, f32, u64, i64, f64}
-    #[cfg(feature = "half")]
-    impl_sealed! {f16, bf16}
+    impl_sealed!(u8, i8, u16, i16, f16, bf16, u32, i32, f32, u64, i64, f64);
 }
 use sealed::Sealed;
 
@@ -72,9 +68,7 @@ pub enum ScalarType {
     I8 = 2,
     U16 = 3,
     I16 = 4,
-    #[cfg(feature = "half")]
     F16 = 5,
-    #[cfg(feature = "half")]
     BF16 = 6,
     U32 = 7,
     I32 = 8,
@@ -104,9 +98,7 @@ impl ScalarType {
         use ScalarType::*;
         match self {
             U8 | I8 => 1,
-            U16 | I16 => 2,
-            #[cfg(feature = "half")]
-            F16 | BF16 => 2,
+            U16 | I16 | F16 | BF16 => 2,
             U32 | I32 | F32 => 4,
             U64 | I64 | F64 => 8,
         }
@@ -122,9 +114,7 @@ impl ScalarType {
             I8 => "i8",
             U16 => "u16",
             I16 => "i16",
-            #[cfg(feature = "half")]
             F16 => "f16",
-            #[cfg(feature = "half")]
             BF16 => "bf16",
             U32 => "u32",
             I32 => "i32",
@@ -151,9 +141,7 @@ impl TryFrom<u32> for ScalarType {
             2 => Ok(I8),
             3 => Ok(U16),
             4 => Ok(I16),
-            #[cfg(feature = "half")]
             5 => Ok(F16),
-            #[cfg(feature = "half")]
             6 => Ok(BF16),
             7 => Ok(U32),
             8 => Ok(I32),
@@ -203,10 +191,8 @@ pub enum ScalarElem {
     I8(i8),
     U16(u16),
     I16(i16),
-    #[cfg(feature = "half")]
-    F16(f16),
-    #[cfg(feature = "half")]
-    BF16(bf16),
+    //F16(f16),
+    //BF16(bf16),
     U32(u32),
     I32(i32),
     F32(f32),
@@ -232,16 +218,15 @@ impl ScalarElem {
             S::I8 => E::I8(x.cast()),
             S::U16 => E::U16(x.cast()),
             S::I16 => E::I16(x.cast()),
-            #[cfg(feature = "half")]
-            S::F16 => E::F16(x.cast()),
-            #[cfg(feature = "half")]
-            S::BF16 => E::BF16(x.cast()),
+            //S::F16 => E::F16(x.cast()),
+            //S::BF16 => E::BF16(x.cast()),
             S::U32 => E::U32(x.cast()),
             S::I32 => E::I32(x.cast()),
             S::F32 => E::F32(x.cast()),
             S::U64 => E::U64(x.cast()),
             S::I64 => E::I64(x.cast()),
             S::F64 => E::F64(x.cast()),
+            _ => todo!(),
         }
     }
     pub fn cast<T: Scalar>(self) -> T {

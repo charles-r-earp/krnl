@@ -5,8 +5,8 @@ use crate::{
 };
 #[cfg(feature = "device")]
 use crate::{
-    device::{DeviceBase, DeviceBuffer, HostBuffer},
-    kernel::module,
+    device::{VulkanDevice as DeviceBase, DeviceBuffer, HostBuffer},
+    //kernel::module,
     krnl_core,
 };
 use anyhow::{bail, format_err, Result};
@@ -189,6 +189,9 @@ impl RawSlice {
     pub(crate) fn device_ref(&self) -> &Device {
         &self.device
     }
+    pub(crate) fn scalar_type(&self) -> ScalarType {
+        self.scalar_type
+    }
     pub(crate) fn len(&self) -> usize {
         self.inner.len() / self.scalar_type.size()
     }
@@ -246,6 +249,8 @@ impl RawSlice {
             }
             #[cfg(feature = "device")]
             RawSliceInner::Device(_) => {
+                todo!()
+                /*
                 use ScalarType::*;
                 let device = &self.device;
                 let cast_u8 = buffer_cast::cast_u8_u8::build(device.clone());
@@ -287,7 +292,7 @@ impl RawSlice {
                     }
                     _ => unreachable!(),
                 }
-                Ok(output.data.raw)
+                Ok(output.data.raw)*/
             }
         }
     }
@@ -941,7 +946,7 @@ impl RawDataOwned for ScalarCowBufferRepr<'_> {
 }
 
 impl ScalarDataOwned for ScalarCowBufferRepr<'_> {}
-
+/*
 #[cfg(feature = "device")]
 #[module]
 #[krnl(crate = crate)]
@@ -1035,7 +1040,7 @@ mod buffer_cast {
     impl_cast!(features("half"), vulkan(1, 1), capabilities("Int8", "Int16", "Int64", "Float64"), f64 => f16, bf16);
     impl_cast!(features(), vulkan(1, 1), capabilities("Int64", "Float64"), f64 => u32, i32, f32, u64, i64, f64);
     impl_cast!(features(), vulkan(1, 1), capabilities("Int64", "Float64"), u32, i32, f32, u64, i64 => f64);
-}
+}*/
 
 #[derive(Clone)]
 pub struct BufferBase<S: Data> {
@@ -1338,11 +1343,13 @@ impl<S: ScalarData> ScalarBufferBase<S> {
                                 return Ok(ScalarBuffer::from(x.cast::<$y>()?.into_buffer()?).into());
                             }
                             #[cfg(feature = "device")] {
+                                todo!()
+                                /*
                                 let mut y = unsafe {
                                     Buffer::<$y>::uninit(device.clone(), x.len())?
                                 };
                                 buffer_cast::[<cast_ $x _ $y>]::build(device)?.dispatch(x, y.as_slice_mut())?;
-                                return Ok(ScalarBuffer::from(y).into());
+                                return Ok(ScalarBuffer::from(y).into());*/
                             }
                             unreachable!()
                         }
@@ -1428,6 +1435,8 @@ impl<S: ScalarDataMut> ScalarBufferBase<S> {
                 }
                 #[cfg(feature = "device")]
                 DeviceKind::Device => {
+                    todo!()
+                    /*
                     use spirv::Capability;
                     let device = y.device();
                     let device_base = device.inner.device().unwrap();
@@ -1476,7 +1485,7 @@ impl<S: ScalarDataMut> ScalarBufferBase<S> {
                         E::U64(x) => buffer_fill::fill_u64::build(device)?
                             .dispatch(y.try_as_slice_mut().unwrap(), x),
                         _ => unreachable!(),
-                    }
+                    }*/
                 }
             }
         } else {
