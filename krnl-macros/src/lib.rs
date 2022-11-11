@@ -78,7 +78,6 @@ pub fn module(attr: TokenStream, item: TokenStream) -> TokenStream {
             const krnlc__krnl_module_data: [u8; #data_len] = [#(#data),*];
             static __module_check: () = {
                 let mod_path = module_path!();
-                let mod_path_len = mod_path.len() - "::module".len();
                 let src = #module_src.as_bytes();
                 let mut success = false;
                 if let Some(cached_src) = __module(mod_path) {
