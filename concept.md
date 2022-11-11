@@ -433,3 +433,27 @@ pub mod kernels {
         }
     }
 }
+
+/* options */
+#[module(
+    dependencies(r#"
+        foo = { version = "0.1", git = "https:/github.com/myuser/mycrate", }
+    "#)
+)]
+#[krnl(crate=krnl)]
+#[krnl(no_build)]
+```
+
+/* krnl dir */
+```
+- .krnl
+    - packages
+        - <package>
+            - .gitignore // ignore modules
+            - cache
+            - modules
+                - <module>
+                    - Cargo.toml
+                    - config.toml
+                    - src
+                        - lib.rs
