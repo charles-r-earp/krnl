@@ -1,5 +1,6 @@
-use crate::{
-    device::{Device, Features},
+/*use crate::{
+    krnl_core::vek::vec::{Vec2, Vec3},
+    device::{Device, DeviceInner, Features},
     scalar::{ScalarType, ScalarElem},
     buffer::{Slice, SliceMut, ScalarSlice, ScalarSliceMut},
 };
@@ -7,7 +8,379 @@ use crate::{
 use crate::device::{VulkanDevice, KernelCache, DeviceBufferInner, Compute};
 use std::{marker::PhantomData, borrow::Cow, sync::Arc, fmt::{self, Debug}, convert::TryInto, collections::{HashMap, HashSet}};
 use anyhow::{Result, format_err, bail};
+*/
+#[doc(inline)]
+pub use krnl_macros::module;
 
+#[doc(hidden)]
+pub mod __private {
+    use crate::{
+        anyhow::{Result, format_err, bail},
+        scalar::{Scalar, ScalarType, ScalarElem},
+        device::{Device, DeviceInner, Features},
+        buffer::{Slice, SliceMut, ScalarSlice, ScalarSliceMut, RawSlice},
+        krnl_core::glam::{UVec2, UVec3},
+    };
+    #[cfg(feature = "device")]
+    use crate::device::{DeviceBufferInner, KernelCache, Compute};
+    use std::{marker::PhantomData, collections::HashMap, borrow::Cow, sync::Arc, fmt::{self, Debug}};
+
+    pub mod builder {
+        use super::*;
+
+        pub struct KernelBuilder {
+            name: Cow<'static, str>,
+            spirv: &'static [u32],
+            threads: UVec3,
+            spec_consts: Vec<u32>,
+            buffer_descs: &'static [BufferDesc],
+            push_consts_size: u32,
+            features: Features,
+        }
+
+        impl KernelBuilder {
+            pub(super) fn new(name: Cow<'static, str>, spirv: &'static [u32]) -> Self {
+                KernelBuilder {
+                    name,
+                    spirv,
+                    threads: UVec3::new(1, 1, 1),
+                    spec_consts: Vec::new(),
+                    buffer_descs: &[],
+                    push_consts_size: 0,
+                    features: Features::default(),
+                }
+            }
+            pub fn threads(mut self, threads: UVec3) -> Self {
+                self.threads = threads;
+                self
+            }
+            pub fn specs(mut self, specs: &[ScalarElem]) -> Self {
+                self.spec_consts = specs.iter().flat_map(|x| {
+                    use ScalarElem::*;
+                    match x.to_scalar_bits() {
+                        U8(x) => [u32::from_ne_bytes([x, 0, 0, 0]), 0].into_iter().take(1),
+                        U16(x) => {
+                            let [x1, x2] = x.to_ne_bytes();
+                            [u32::from_ne_bytes([x1, x2, 0, 0]), 0].into_iter().take(1)
+                        }
+                        U32(x) => [x, 0].into_iter().take(1),
+                        U64(x) => {
+                            let x = x.to_ne_bytes();
+                            [
+                                u32::from_ne_bytes([x[0], x[1], x[2], x[3]]),
+                                u32::from_ne_bytes([x[4], x[5], x[6], x[7]]),
+                            ].into_iter().take(2)
+                        }
+                        _ => unreachable!(),
+                    }
+                }).collect();
+                self
+            }
+            pub fn buffer_descs(mut self, buffer_descs: &'static [BufferDesc]) -> Self {
+                self.buffer_descs = buffer_descs;
+                self
+            }
+            pub fn push_consts_size(mut self, push_consts_size: u32) -> Self {
+                self.push_consts_size = push_consts_size;
+                self
+            }
+            pub fn features(mut self, features: Features) -> Self {
+                self.features = features;
+                self
+            }
+            pub fn build(self, device: Device) -> Result<Kernel> {
+                let kernel_name = &self.name;
+                match &device.inner {
+                    #[cfg(feature = "device")]
+                    DeviceInner::Device(vulkan_device) => {
+                        let features = &self.features;
+                        let device_features = vulkan_device.features();
+                        if !device.features().contains(&self.features) {
+                            bail!("Kernel `{kernel_name}` requires {features:?}, device has {device_features:?}!");
+                        }
+                        let desc = KernelDesc {
+                            name: self.name,
+                            buffer_descs: self.buffer_descs,
+                            threads: self.threads,
+                            push_consts_size: self.push_consts_size,
+                        };
+                        let cache = vulkan_device.kernel_cache(self.spirv, self.spec_consts, desc)?;
+                        Ok(Kernel {
+                            device,
+                            cache,
+                        })
+                    }
+                    DeviceInner::Host => Err(format_err!("Kernel `{kernel_name}` cannot be built for the host!")),
+                }
+            }
+        }
+
+        pub enum DispatchDim {
+            U32(u32),
+            UVec2(UVec2),
+            UVec3(UVec3),
+        }
+
+        impl DispatchDim {
+            fn to_array(&self) -> [u32; 3] {
+                match self {
+                    Self::U32(dim) => [*dim, 1, 1],
+                    Self::UVec2(dim) => [dim.x, dim.y, 1],
+                    Self::UVec3(dim) => dim.to_array(),
+                }
+            }
+        }
+
+        impl From<u32> for DispatchDim {
+            fn from(dim: u32) -> Self {
+                Self::U32(dim)
+            }
+        }
+
+        impl From<UVec2> for DispatchDim {
+            fn from(dim: UVec2) -> Self {
+                Self::UVec2(dim)
+            }
+        }
+
+        impl From<UVec3> for DispatchDim {
+            fn from(dim: UVec3) -> Self {
+                Self::UVec3(dim)
+            }
+        }
+
+        impl Debug for DispatchDim {
+            fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+                match self {
+                    Self::U32(dim) => dim.fmt(f),
+                    Self::UVec2(dim) => dim.fmt(f),
+                    Self::UVec3(dim) => dim.fmt(f),
+                }
+            }
+        }
+
+        pub enum DispatchSlice<'a> {
+            Slice(ScalarSlice<'a>),
+            SliceMut(ScalarSliceMut<'a>),
+        }
+
+        impl DispatchSlice<'_> {
+            fn as_raw_slice(&self) -> &RawSlice {
+                match self {
+                    Self::Slice(slice) => slice.as_raw_slice(),
+                    Self::SliceMut(slice) => slice.as_raw_slice(),
+                }
+            }
+        }
+
+        impl<'a, T: Scalar> From<Slice<'a, T>> for DispatchSlice<'a> {
+            fn from(slice: Slice<'a, T>) -> Self {
+                Self::Slice(ScalarSlice::from(slice))
+            }
+        }
+
+        impl<'a, T: Scalar> From<SliceMut<'a, T>> for DispatchSlice<'a> {
+            fn from(slice: SliceMut<'a, T>) -> Self {
+                Self::SliceMut(ScalarSliceMut::from(slice))
+            }
+        }
+
+        pub struct DispatchBuilder<'a> {
+            device: Device,
+            #[cfg(feature = "device")]
+            cache: Arc<KernelCache>,
+            groups: Option<[u32; 3]>,
+            #[cfg(feature = "device")]
+            buffers: Vec<Arc<DeviceBufferInner>>,
+            push_consts: Vec<u32>,
+            _m: PhantomData<&'a ()>,
+        }
+
+        impl<'a> DispatchBuilder<'a> {
+            #[cfg(feature = "device")]
+            pub(super) fn new(device: Device, cache: Arc<KernelCache>, slices: &mut [DispatchSlice<'a>], push_consts: &[u8]) -> Result<Self> {
+                let desc = cache.desc();
+                let kernel_name = &desc.name;
+                if device.is_host() {
+                    bail!("Kernel `{kernel_name}` expected Device(_), found Host!");
+                }
+                let mut push_consts: Vec<u32> = bytemuck::cast_slice(push_consts).to_vec();
+                let slice_push_start = push_consts.len().checked_sub(slices.len() * 2).unwrap();
+                let slice_push_consts: &mut [[u32; 2]] = bytemuck::cast_slice_mut(&mut push_consts[slice_push_start..]);
+                let mut items: Option<usize> = None;
+                let mut buffers = Vec::with_capacity(slices.len());
+                for ((buffer_desc, slice), [offset, len]) in desc.buffer_descs.iter().zip(slices).zip(slice_push_consts) {
+                    let name = buffer_desc.name;
+                    let slice = slice.as_raw_slice();
+                    if buffer_desc.item {
+                        if let Some(items) = items {
+                            if items != slice.len() {
+                                bail!("Kernel `{kernel_name}` `{name}` has {} items, expected {items}!", slice.len());
+                            }
+                        } else {
+                            items.replace(slice.len());
+                        }
+                    }
+                    let slice_device = slice.device_ref();
+                    if slice_device != &device {
+                        bail!("Kernel `{kernel_name}` `{name}` expected {device:?} found {slice_device:?}!");
+                    }
+                    let device_slice = slice.as_device_slice().unwrap();
+                    if let Some(device_buffer) = device_slice.device_buffer() {
+                        buffers.push(device_buffer.inner().clone());
+                    } else {
+                        bail!("Kernel `{kernel_name}` `{name}` is empty!");
+                    }
+                    *offset = device_slice.offset() as u32;
+                    *len = device_slice.len() as u32;
+                }
+                let mut builder = Self {
+                    device,
+                    cache,
+                    groups: None,
+                    buffers,
+                    push_consts,
+                    _m: PhantomData::default(),
+                };
+                if let Some(items) = items {
+                    builder = builder.global_threads((items as u32).into())?;
+                }
+                Ok(builder)
+            }
+            pub fn global_threads(mut self, global_threads: DispatchDim) -> Result<Self> {
+                #[cfg(feature = "device")] {
+                    let desc = self.cache.desc();
+                    let threads = desc.threads;
+                    let kernel_name = &desc.name;
+                    if global_threads.to_array().iter().any(|x| *x == 0) {
+                        bail!("Kernel `{kernel_name}` global_threads cannot be 0, found {global_threads:?}!");
+                    }
+                    let mut groups = [0; 3];
+                    for (g, (gt, t)) in groups.as_mut().iter_mut().zip(global_threads.to_array().iter().zip(threads.as_ref())) {
+                        *g = gt / t;
+                        if gt % t != 0 {
+                            *g += 1;
+                        }
+                    }
+                    self.groups.replace(groups);
+                    Ok(self)
+                }
+                #[cfg(not(feature = "device"))] {
+                    unreachable!()
+                }
+            }
+            pub fn groups(mut self, groups: DispatchDim) -> Result<Self> {
+                #[cfg(feature = "device")] {
+                    let kernel_name = &self.cache.desc().name;
+                    if groups.to_array().iter().any(|x| *x == 0) {
+                        bail!("Kernel `{kernel_name}` groups cannot be 0, found {groups:?}!");
+                    }
+                    self.groups.replace(groups.to_array());
+                    Ok(self)
+                }
+                #[cfg(not(feature = "device"))] {
+                    unreachable!()
+                }
+            }
+            pub unsafe fn dispatch(self) -> Result<()> {
+                #[cfg(feature = "device")] {
+                    let groups = if let Some(groups) = self.groups {
+                        groups
+                    } else {
+                        let kernel_name = &self.cache.desc().name;
+                        bail!("Kernel `{kernel_name}` global_threads or groups are required!");
+                    };
+                    let compute = Compute {
+                        cache: self.cache,
+                        groups,
+                        buffers: self.buffers,
+                        push_consts: self.push_consts,
+                    };
+                    self.device.as_device().unwrap().compute(compute)
+                }
+                #[cfg(not(feature = "device"))] {
+                    unreachable!()
+                }
+            }
+        }
+    }
+    use builder::{KernelBuilder, DispatchBuilder, DispatchSlice};
+
+    #[derive(Debug)]
+    pub(crate) struct KernelDesc {
+        name: Cow<'static, str>,
+        buffer_descs: &'static [BufferDesc],
+        threads: UVec3,
+        push_consts_size: u32,
+    }
+
+    impl KernelDesc {
+        pub(crate) fn name(&self) -> &str {
+            &self.name
+        }
+        pub(crate) fn buffer_descs(&self) -> &[BufferDesc] {
+            &self.buffer_descs
+        }
+        pub(crate) fn threads(&self) -> UVec3 {
+            self.threads
+        }
+        pub(crate) fn push_consts_size(&self) -> u32 {
+            self.push_consts_size
+        }
+    }
+
+    #[derive(Debug)]
+    pub struct BufferDesc {
+        name: &'static str,
+        scalar_type: ScalarType,
+        mutable: bool,
+        item: bool,
+    }
+
+    impl BufferDesc {
+        pub const fn new(name: &'static str, scalar_type: ScalarType) -> Self {
+            Self {
+                name,
+                scalar_type,
+                mutable: false,
+                item: false,
+            }
+        }
+        pub const fn with_mutable(mut self, mutable: bool) -> Self {
+            self.mutable = mutable;
+            self
+        }
+        pub(crate) fn mutable(&self) -> bool {
+            self.mutable
+        }
+        pub const fn with_item(mut self, item: bool) -> Self {
+            self.item = true;
+            self
+        }
+    }
+
+    pub struct Kernel {
+        device: Device,
+        #[cfg(feature = "device")]
+        cache: Arc<KernelCache>,
+    }
+
+    impl Kernel {
+        pub fn builder(name: impl Into<Cow<'static, str>>, spirv: &'static [u32]) -> KernelBuilder {
+            KernelBuilder::new(name.into(), spirv)
+        }
+        pub fn dispatch_builder<'a>(&self, slices: &mut [DispatchSlice<'a>], push_consts: &[u8]) -> Result<DispatchBuilder<'a>> {
+            #[cfg(feature = "device")] {
+                DispatchBuilder::new(self.device.clone(), self.cache.clone(), slices, push_consts)
+            }
+            #[cfg(not(feature = "device"))] {
+                unreachable!()
+            }
+        }
+    }
+}
+
+/*
 pub struct KernelProto {
     desc: Arc<ProtoDesc>,
 }
@@ -190,7 +563,7 @@ impl KernelProto {
                         non_writable.insert(*id);
                     }
                     [Operand::IdRef(_), Operand::Decoration(decoration @ Decoration::BufferBlock)] => {
-                        //*decoration = Decoration::Block;
+                        // *decoration = Decoration::Block;
                     }
                     _ => (),
                 }
@@ -258,7 +631,7 @@ impl KernelProto {
                         if matches!(*storage_class, StorageBuffer | Uniform | PushConstant) {
                             if let Some((id, ptr)) = inst.result_id.zip(inst.result_type) {
                                 if *storage_class == Uniform {
-                                    //*storage_class = StorageBuffer;
+                                    // *storage_class = StorageBuffer;
                                 }
                                 vars.insert(id, (*storage_class, ptr));
                             }
@@ -273,7 +646,7 @@ impl KernelProto {
                         if matches!(*storage_class, StorageBuffer | Uniform | PushConstant) {
                             if let Some(id) = inst.result_id {
                                 if *storage_class == Uniform {
-                                    //*storage_class = StorageBuffer;
+                                    // *storage_class = StorageBuffer;
                                 }
                                 ptrs.insert(id, *ty);
                             }
@@ -758,109 +1131,111 @@ impl KernelBuilder {
     pub fn build(self, device: Device) -> Result<Kernel> {
         let proto_desc = &self.proto_desc;
         let kernel_name = &proto_desc.name;
-        let vulkan_device = device.inner.device().ok_or_else(|| {
-            format_err!("Kernel `{kernel_name}` can only be built for a device, found host!")
-        })?;
-        #[cfg(feature = "device")] {
-            use rspirv::{dr::{Builder, Operand, Instruction}, binary::{Assemble, Disassemble}, spirv::{Op, Decoration, Capability}};
-            use spirv_tools::opt::Passes;
-
-            fn extend_scalar_elem_bytes(vec: &mut Vec<u8>, elem: ScalarElem) {
-                use ScalarElem::*;
-                match elem {
-                    U8(x) => vec.push(x),
-                    I8(x) => vec.push(x.to_ne_bytes()[0]),
-                    U16(x) => vec.extend_from_slice(&x.to_ne_bytes()),
-                    I16(x) => vec.extend_from_slice(&x.to_ne_bytes()),
-                    // TODO f16, bf16
-                    U32(x) => vec.extend_from_slice(&x.to_ne_bytes()),
-                    I32(x) => vec.extend_from_slice(&x.to_ne_bytes()),
-                    F32(x) => vec.extend_from_slice(&x.to_ne_bytes()),
-                    U64(x) => vec.extend_from_slice(&x.to_ne_bytes()),
-                    I64(x) => vec.extend_from_slice(&x.to_ne_bytes()),
-                    F64(x) => vec.extend_from_slice(&x.to_ne_bytes()),
-                }
+        match device.inner {
+            DeviceInner::Host => Err(
+                format_err!("Kernel `{kernel_name}` can only be built for a device, found host!")
+            ),
+            #[cfg(feature = "device")]
+            DeviceInner::Device(vulkan_device) => self.build_impl(vulkan_device),
+        }
+    }
+    #[cfg(feature = "device")]
+    fn build_impl(self, vulkan_device: VulkanDevice) -> Result<Kernel> {
+        use rspirv::{dr::{Builder, Operand, Instruction}, binary::{Assemble, Disassemble}, spirv::{Op, Decoration, Capability}};
+        use spirv_tools::opt::Passes;
+        let proto_desc = &self.proto_desc;
+        let kernel_name = &proto_desc.name;
+        fn extend_scalar_elem_bytes(vec: &mut Vec<u8>, elem: ScalarElem) {
+            use ScalarElem::*;
+            match elem {
+                U8(x) => vec.push(x),
+                I8(x) => vec.push(x.to_ne_bytes()[0]),
+                U16(x) => vec.extend_from_slice(&x.to_ne_bytes()),
+                I16(x) => vec.extend_from_slice(&x.to_ne_bytes()),
+                // TODO f16, bf16
+                U32(x) => vec.extend_from_slice(&x.to_ne_bytes()),
+                I32(x) => vec.extend_from_slice(&x.to_ne_bytes()),
+                F32(x) => vec.extend_from_slice(&x.to_ne_bytes()),
+                U64(x) => vec.extend_from_slice(&x.to_ne_bytes()),
+                I64(x) => vec.extend_from_slice(&x.to_ne_bytes()),
+                F64(x) => vec.extend_from_slice(&x.to_ne_bytes()),
             }
-
-            fn update_spec_const(inst: &mut Instruction, spec: ScalarElem) {
-                use rspirv::dr::Operand::{LiteralInt32 as Int32, LiteralInt64 as Int64, LiteralFloat32 as Float32, LiteralFloat64 as Float64};
-                use ScalarElem::*;
-                inst.operands[0] = match spec {
-                    U8(x) => Int32(x.into()),
-                    I8(x) => Int32(x.to_ne_bytes()[0].into()),
-                    U16(x) => Int32(x.into()),
-                    I16(x) => Int32(u16::from_ne_bytes(x.to_ne_bytes()).into()),
-                    // TODO f16, bf16
-                    U32(x) => Int32(x),
-                    I32(x) => Int32(u32::from_ne_bytes(x.to_ne_bytes())),
-                    F32(x) => Float32(x),
-                    U64(x) => Int64(x),
-                    I64(x) => Int64(u64::from_ne_bytes(x.to_ne_bytes())),
-                    F64(x) => Float64(x),
-                }
+        }
+        fn update_spec_const(inst: &mut Instruction, spec: ScalarElem) {
+            use rspirv::dr::Operand::{LiteralInt32 as Int32, LiteralInt64 as Int64, LiteralFloat32 as Float32, LiteralFloat64 as Float64};
+            use ScalarElem::*;
+            inst.operands[0] = match spec {
+                U8(x) => Int32(x.into()),
+                I8(x) => Int32(x.to_ne_bytes()[0].into()),
+                U16(x) => Int32(x.into()),
+                I16(x) => Int32(u16::from_ne_bytes(x.to_ne_bytes()).into()),
+                // TODO f16, bf16
+                U32(x) => Int32(x),
+                I32(x) => Int32(u32::from_ne_bytes(x.to_ne_bytes())),
+                F32(x) => Float32(x),
+                U64(x) => Int64(x),
+                I64(x) => Int64(u64::from_ne_bytes(x.to_ne_bytes())),
+                F64(x) => Float64(x),
             }
-            let spec_descs = &proto_desc.spec_descs;
-            let spec_const_bytes = if !spec_descs.is_empty() {
-                let spec_consts_size = spec_descs.iter().map(|x| x.scalar_type.size()).sum();
-                let mut spec_const_bytes = Vec::with_capacity(spec_consts_size);
-                for spec_desc in spec_descs.iter() {
-                    if let Some(spec) = self.spec_consts.get(&spec_desc.id) {
-                        extend_scalar_elem_bytes(&mut spec_const_bytes, *spec);
-                    } else {
-                        let name = &spec_desc.name;
-                        bail!("Kernel `{kernel_name}` expected spec `{name}`!");
-                    }
-                }
-                Some(Arc::from(spec_const_bytes))
-            } else {
-                None
-            };
-            let cache = vulkan_device.kernel_cache(
-                self.proto_desc.clone(),
-                spec_const_bytes,
-                || {
-                let (features, spirv) = if !proto_desc.spec_descs.is_empty() {
-                    let mut module = rspirv::dr::load_words(&proto_desc.spirv.0).map_err(|e| format_err!("{e}"))?;
-                    let mut spec_ids = HashMap::with_capacity(proto_desc.spec_descs.len());
-                    for inst in module.annotations.iter() {
-                        let op = inst.class.opcode;
-                        let operands = inst.operands.as_slice();
-                        if op == Op::Decorate {
-                            if let [Operand::IdRef(id), Operand::Decoration(Decoration::SpecId), Operand::LiteralInt32(spec_id)] = operands {
-                                debug_assert!(proto_desc.spec_descs.iter().find(|x| x.id == *spec_id).is_some());
-                                spec_ids.insert(*id, *spec_id);
-                            }
-                        }
-                    }
-                    for inst in module.types_global_values.iter_mut() {
-                        if let Some(id) = inst.result_id {
-                            if let Some(spec_id) = spec_ids.get(&id) {
-                                let spec_id = spec_ids.get(&id).unwrap();
-                                let spec = self.spec_consts.get(spec_id).unwrap();
-                                update_spec_const(inst, *spec);
-                            }
-                        }
-                    }
-                    let words = module.assemble();
-                    let (features, spirv) = optimize_spirv(kernel_name, &words, &[Passes::FreezeSpecConstantValue])?;
-                    (features, Arc::new(spirv))
+        }
+        let spec_descs = &proto_desc.spec_descs;
+        let spec_const_bytes = if !spec_descs.is_empty() {
+            let spec_consts_size = spec_descs.iter().map(|x| x.scalar_type.size()).sum();
+            let mut spec_const_bytes = Vec::with_capacity(spec_consts_size);
+            for spec_desc in spec_descs.iter() {
+                if let Some(spec) = self.spec_consts.get(&spec_desc.id) {
+                    extend_scalar_elem_bytes(&mut spec_const_bytes, *spec);
                 } else {
-                    (proto_desc.features, proto_desc.spirv.clone())
-                };
-                let device_features = vulkan_device.features();
-                if !device_features.contains(&features) {
-                    bail!("Kernel `{kernel_name}` requires {features:?}, device has {device_features:?}!");
+                    let name = &spec_desc.name;
+                    bail!("Kernel `{kernel_name}` expected spec `{name}`!");
                 }
-                Ok(spirv)
-            })?;
-            Ok(Kernel {
-                vulkan_device: vulkan_device.clone(),
-                cache,
-            })
-        }
-        #[cfg(not(feature = "device"))] {
-            unreachable!()
-        }
+            }
+            Some(Arc::from(spec_const_bytes))
+        } else {
+            None
+        };
+        let cache = vulkan_device.kernel_cache(
+            self.proto_desc.clone(),
+            spec_const_bytes,
+            || {
+            let (features, spirv) = if !proto_desc.spec_descs.is_empty() {
+                let mut module = rspirv::dr::load_words(&proto_desc.spirv.0).map_err(|e| format_err!("{e}"))?;
+                let mut spec_ids = HashMap::with_capacity(proto_desc.spec_descs.len());
+                for inst in module.annotations.iter() {
+                    let op = inst.class.opcode;
+                    let operands = inst.operands.as_slice();
+                    if op == Op::Decorate {
+                        if let [Operand::IdRef(id), Operand::Decoration(Decoration::SpecId), Operand::LiteralInt32(spec_id)] = operands {
+                            debug_assert!(proto_desc.spec_descs.iter().find(|x| x.id == *spec_id).is_some());
+                            spec_ids.insert(*id, *spec_id);
+                        }
+                    }
+                }
+                for inst in module.types_global_values.iter_mut() {
+                    if let Some(id) = inst.result_id {
+                        if let Some(spec_id) = spec_ids.get(&id) {
+                            let spec_id = spec_ids.get(&id).unwrap();
+                            let spec = self.spec_consts.get(spec_id).unwrap();
+                            update_spec_const(inst, *spec);
+                        }
+                    }
+                }
+                let words = module.assemble();
+                let (features, spirv) = optimize_spirv(kernel_name, &words, &[Passes::FreezeSpecConstantValue])?;
+                (features, Arc::new(spirv))
+            } else {
+                (proto_desc.features, proto_desc.spirv.clone())
+            };
+            let device_features = vulkan_device.features();
+            if !device_features.contains(&features) {
+                bail!("Kernel `{kernel_name}` requires {features:?}, device has {device_features:?}!");
+            }
+            Ok(spirv)
+        })?;
+        Ok(Kernel {
+            vulkan_device: vulkan_device.clone(),
+            cache,
+        })
     }
 }
 
@@ -873,16 +1248,7 @@ pub struct Kernel {
 
 #[cfg(feature = "device")]
 impl Kernel {
-    /*
-    errors
-        - groups cannot be 0
-        - groups must be less than max supported ?
-    */
-    pub fn unsafe_dispatch_builder(&self, groups: [u32; 3]) -> Result<UnsafeDispatchBuilder> {
-        if groups.iter().any(|x| *x == 0) {
-            let kernel_name = &self.cache.proto_desc().name;
-            bail!("Kernel `{kernel_name}` group dims cannot be 0, found {groups:?}!");
-        }
+    pub fn dispatch_builder(&self) -> DispatchBuilder {
         let proto_desc = self.cache.proto_desc();
         let buffers = HashMap::with_capacity(proto_desc.slice_descs.len());
         let n_push_descs = proto_desc.push_consts_desc.push_descs.len();
@@ -894,26 +1260,26 @@ impl Kernel {
         let hidden_push_consts_size = 2 * proto_desc.slice_descs.len();
         let push_consts = vec![0u32; push_consts_size + hidden_push_consts_size];
         let hidden_start = push_consts_size / 4;
-        Ok(UnsafeDispatchBuilder {
-            inner: UnsafeDispatchBuilderInner {
+        DispatchBuilder {
+            inner: DispatchBuilderInner {
                 vulkan_device: self.vulkan_device.clone(),
                 cache: self.cache.clone(),
-                groups,
+                groups: None,
                 buffers,
                 push_const_indices,
                 push_consts,
                 hidden_start,
             },
             _m: PhantomData::default(),
-        })
+        }
     }
 }
 
 #[cfg(feature = "device")]
-struct UnsafeDispatchBuilderInner {
+struct DispatchBuilderInner {
     vulkan_device: VulkanDevice,
     cache: Arc<KernelCache>,
-    groups: [u32; 3],
+    groups: Option<Vec3<u32>>,
     buffers: HashMap<u32, Arc<DeviceBufferInner>>,
     push_const_indices: HashSet<u32>,
     push_consts: Vec<u32>,
@@ -921,20 +1287,20 @@ struct UnsafeDispatchBuilderInner {
 }
 
 #[cfg(feature = "device")]
-pub struct UnsafeDispatchBuilder<'a> {
-    inner: UnsafeDispatchBuilderInner,
+pub struct DispatchBuilder<'a> {
+    inner: DispatchBuilderInner,
     _m: PhantomData<&'a ()>,
 }
 
 #[cfg(feature = "device")]
-impl<'a> UnsafeDispatchBuilder<'a> {
+impl<'a> DispatchBuilder<'a> {
     /*
     errors
         - check name
         - must not be mutable
         - not empty
     */
-    pub fn slice<'b>(self, name: &str, slice: impl Into<ScalarSlice<'b>>) -> Result<UnsafeDispatchBuilder<'b>> where 'b: 'a {
+    pub fn slice<'b>(self, name: &str, slice: impl Into<ScalarSlice<'b>>) -> Result<DispatchBuilder<'b>> where 'b: 'a {
         let slice = slice.into().into_raw_slice();
         unsafe {
             self.slice_impl(name, slice, false)
@@ -944,13 +1310,13 @@ impl<'a> UnsafeDispatchBuilder<'a> {
         - check name
         - not empty
     */
-    pub fn slice_mut<'b>(self, name: &str, slice: impl Into<ScalarSliceMut<'b>>) -> Result<UnsafeDispatchBuilder<'b>> where 'b: 'a {
+    pub fn slice_mut<'b>(self, name: &str, slice: impl Into<ScalarSliceMut<'b>>) -> Result<DispatchBuilder<'b>> where 'b: 'a {
         let slice = slice.into().as_scalar_slice().into_raw_slice();
         unsafe {
             self.slice_impl(name, slice, true)
         }
     }
-    unsafe fn slice_impl<'b>(self, name: &str, slice: crate::buffer::RawSlice, mutable: bool) -> Result<UnsafeDispatchBuilder<'b>> where 'b: 'a {
+    unsafe fn slice_impl<'b>(self, name: &str, slice: crate::buffer::RawSlice, mutable: bool) -> Result<DispatchBuilder<'b>> where 'b: 'a {
         let mut inner = self.inner;
         let proto_desc = inner.cache.proto_desc();
         let kernel_name = &proto_desc.name;
@@ -981,7 +1347,7 @@ impl<'a> UnsafeDispatchBuilder<'a> {
             let index = inner.hidden_start + 2 * i;
             inner.push_consts[index] = 0; // TODO offset
             inner.push_consts[index+1] = slice.len() as u32;
-            Ok(UnsafeDispatchBuilder {
+            Ok(DispatchBuilder {
                 inner,
                 _m: PhantomData::default(),
             })
@@ -1065,31 +1431,59 @@ impl<'a> UnsafeDispatchBuilder<'a> {
             - Improperly handle shared access to global, group, or subgroup memory
         - Panics in kernel execution will not be caught
     */
-    pub unsafe fn unsafe_dispatch(self) -> Result<()> {
+    pub fn global_threads(mut self, global_threads: impl Into<Vec3<u32>>) -> Result<Self> {
+        todo!()
+    }
+    pub fn groups(mut self, groups: impl Into<Vec3<u32>>) -> Result<Self> {
+        let mut inner = self.inner;
+        let proto_desc = inner.cache.proto_desc();
+        let kernel_name = &proto_desc.name;
+        let groups = groups.into();
+        if groups.iter().any(|x| *x == 0) {
+            bail!("Kernel `{kernel_name}` group dims cannot be 0, found {groups:?}!");
+        }
+        inner.groups.replace(groups);
+        Ok(Self {
+            inner,
+            _m: PhantomData::default(),
+        })
+    }
+    pub unsafe fn dispatch(self) -> Result<()> {
         use std::fmt::Write;
         let inner = self.inner;
         let proto_desc = inner.cache.proto_desc();
+        let kernel_name = &proto_desc.name;
         let missing_slice = inner.buffers.len() != proto_desc.slice_descs.len();
         let missing_push_consts = inner.push_const_indices.len() != proto_desc.push_consts_desc.push_descs.len();
         if missing_slice || missing_push_consts {
-            let kernel_name = &proto_desc.name;
-            let mut msg = format!("Kernel `{kernel_name}`");
+            let mut msg = String::new();
             for slice_desc in proto_desc.slice_descs.iter() {
                 if !inner.buffers.contains_key(&slice_desc.binding) {
-                    write!(&mut msg, " expected slice `{}`", slice_desc.name);
+                    if !msg.is_empty() {
+                        msg.push(',');
+                    }
+                    write!(&mut msg, " slice `{}`", slice_desc.name);
                 }
             }
             for (i, push_desc) in proto_desc.push_consts_desc.push_descs.iter().enumerate() {
                 let index = i as u32;
                 if !inner.push_const_indices.contains(&index) {
-                    write!(&mut msg, " expected push `{}`", push_desc.name);
+                    if !msg.is_empty() {
+                        msg.push(',');
+                    }
+                    write!(&mut msg, " push `{}`", push_desc.name);
                 }
             }
-            bail!("{msg}!");
+            bail!("Kernel `{kernel_name}` expected{msg}!");
         }
+        let groups = if let Some(groups) = inner.groups {
+            groups.into_array()
+        } else {
+            bail!("Kernel `{kernel_name}` expected `global_threads` or `groups`!");
+        };
         let compute = Compute {
             cache: inner.cache,
-            groups: inner.groups,
+            groups,
             buffers: inner.buffers,
             push_consts: inner.push_consts,
         };
@@ -1147,17 +1541,17 @@ mod tests {
         let mut y = Slice::from([0f32; 10].as_ref()).into_device(device.clone())?.block()?;
         let kernel = proto.kernel_builder()
             .build(device.clone())?;
-        device.sync()?.block()?;
-        let builder = kernel.unsafe_dispatch_builder([1, 1, 1])?
+        let builder = kernel.dispatch_builder()
             .slice("x", x.as_slice())?
             .push("alpha", alpha)?
-            .slice_mut("y", y.as_slice_mut())?;
+            .slice_mut("y", y.as_slice_mut())?
+            .groups([1, 1, 1])?;
         unsafe {
-            builder.unsafe_dispatch()?;
+            builder.dispatch()?;
         }
-        device.sync()?.block()?;
         let y = y.to_vec()?.block()?;
         dbg!(y);
         todo!()
     }
 }
+*/

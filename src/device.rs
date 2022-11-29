@@ -255,10 +255,20 @@ pub struct Features {
     shader_int8: bool,
     shader_int16: bool,
     shader_int64: bool,
+    shader_float16: bool,
     shader_float64: bool,
 }
 
 impl Features {
+    pub const fn new() -> Self {
+        Self {
+            shader_int8: false,
+            shader_int16: false,
+            shader_int64: false,
+            shader_float16: false,
+            shader_float64: false,
+        }
+    }
     pub fn shader_int8(&self) -> bool {
         self.shader_int8
     }
@@ -280,6 +290,13 @@ impl Features {
         self.shader_int64 = shader_int64;
         self
     }
+    pub fn shader_float16(&self) -> bool {
+        self.shader_float16
+    }
+    pub fn set_shader_float16(&mut self, shader_float16: bool) -> &mut Self {
+        self.shader_float16 = shader_float16;
+        self
+    }
     pub fn shader_float64(&self) -> bool {
         self.shader_float64
     }
@@ -291,12 +308,14 @@ impl Features {
         (self.shader_int8 || !other.shader_int8)
         && (self.shader_int16 || !other.shader_int16)
         && (self.shader_int64 || !other.shader_int64)
+        && (self.shader_float16 || !other.shader_float16)
         && (self.shader_float64 || !other.shader_float64)
     }
     pub fn union(mut self, other: &Features) -> Self {
         self.shader_int8 |= other.shader_int8;
         self.shader_int16 |= other.shader_int16;
         self.shader_int64 |= other.shader_int64;
+        self.shader_float16 |= other.shader_float16;
         self.shader_float64 |= other.shader_float64;
         self
     }

@@ -113,7 +113,9 @@ pub mod future {
                             });
                             Poll::Ready(buffer)
                         }
-                        Poll::Pending => Poll::Pending,
+                        Poll::Pending => {
+                            Poll::Pending
+                        }
                     }
                 }
             }
@@ -147,6 +149,7 @@ impl HostSlice {
 #[derive(Clone)]
 pub(crate) struct DeviceSlice {
     buffer: Option<Arc<DeviceBuffer>>,
+    offset: usize,
     len: usize,
 }
 
@@ -154,6 +157,9 @@ pub(crate) struct DeviceSlice {
 impl DeviceSlice {
     pub(crate) fn device_buffer(&self) -> Option<&Arc<DeviceBuffer>> {
         self.buffer.as_ref()
+    }
+    pub(crate) fn offset(&self) -> usize {
+        self.offset
     }
     pub(crate) fn len(&self) -> usize {
         self.len
@@ -331,6 +337,7 @@ impl RawSlice {
                 let device_buffer = dst_device.upload(bytes)?;
                 let device_slice = DeviceSlice {
                     buffer: device_buffer,
+                    offset: 0,
                     len: bytes.len(),
                 };
                 let buffer = RawBuffer {
@@ -385,7 +392,7 @@ impl RawBuffer {
                 let len = len * scalar_type.size();
                 let cap = len;
                 let buffer = unsafe { device_base.alloc(len)? };
-                let device_slice = DeviceSlice { buffer, len };
+                let device_slice = DeviceSlice { buffer, offset: 0, len };
                 let inner = RawSliceInner::Device(device_slice);
                 Ok(Self {
                     slice: RawSlice {
@@ -946,41 +953,36 @@ impl RawDataOwned for ScalarCowBufferRepr<'_> {
 }
 
 impl ScalarDataOwned for ScalarCowBufferRepr<'_> {}
-/*
+
 #[cfg(feature = "device")]
-#[module]
+#[module(
+    dependencies(
+        "\"krnl-core\" = { path = \"/home/charles/Documents/rust/krnl/krnl-core\" }"
+    )
+)]
 #[krnl(crate = crate)]
 mod buffer_fill {
     use krnl_core::kernel;
 
-    #[kernel(
-        vulkan(1, 2),
-        threads(256),
-        elementwise,
-        capabilities("Int8", "StorageBuffer8BitAccess")
-    )]
-    pub fn fill_u8(y: &mut u8, x: u8) {
+    #[kernel(for_each, threads(256))]
+    pub fn fill_u8(#[item] y: &mut u8, #[push] x: u8) {
         *y = x;
     }
-    #[kernel(
-        vulkan(1, 1),
-        threads(256),
-        elementwise,
-        capabilities("Int8", "Int16", "StorageBuffer16BitAccess")
-    )]
-    pub fn fill_u16(y: &mut u16, x: u16) {
+    #[kernel(for_each, threads(256))]
+    pub fn fill_u16(#[item] y: &mut u16, #[push] x: u16) {
         *y = x;
     }
-    #[kernel(vulkan(1, 1), threads(256), elementwise)]
-    pub fn fill_u32(y: &mut u32, x: u32) {
+    #[kernel(for_each, threads(256))]
+    pub fn fill_u32(#[item] y: &mut u32, #[push] x: u32) {
         *y = x;
     }
-    #[kernel(vulkan(1, 1), threads(256), elementwise, capabilities("Int64"))]
-    pub fn fill_u64(y: &mut u64, x: u64) {
+    #[kernel(for_each, threads(256))]
+    pub fn fill_u64(#[item] y: &mut u64, #[push] x: u64) {
         *y = x;
     }
 }
 
+/*
 #[cfg(feature = "device")]
 #[module(
     dependency("krnl-core", path = "krnl-core" , features = ["half"]),
@@ -1128,7 +1130,9 @@ impl<T: Scalar, S: Data<Elem = T>> BufferBase<S> {
     }
     pub fn into_vec(self) -> Result<impl BlockableFuture<Output = Result<Vec<T>>>> {
         let fut = self.data.into_device(Device::host())?;
-        Ok(async move { Ok(fut.await?.into_vec().unwrap()) })
+        Ok(async move {
+            Ok(fut.await?.into_vec().unwrap())
+        })
     }
     pub fn cast<T2: Scalar>(&self) -> Result<CowBuffer<T2>> {
         if let Some(slice) = self.try_as_slice::<T2>() {
@@ -1236,6 +1240,12 @@ impl<T: Scalar, S: DataOwned<Elem = T>> BufferBase<S> {
     }
 }
 
+impl<T: Scalar, S: DataOwned<Elem=T>> From<Vec<T>> for BufferBase<S> {
+    fn from(vec: Vec<T>) -> Self {
+        Self::from_vec(vec)
+    }
+}
+
 impl<'a, T: Scalar> From<&'a [T]> for Slice<'a, T> {
     fn from(slice: &'a [T]) -> Self {
         Slice {
@@ -1296,6 +1306,10 @@ impl<S: ScalarData> ScalarBufferBase<S> {
     }
     pub fn is_empty(&self) -> bool {
         self.data.as_raw_slice().is_empty()
+    }
+    // for kernel::__private::DispatchBuilder
+    pub(crate) fn as_raw_slice(&self) -> &RawSlice {
+        self.data.as_raw_slice()
     }
     pub fn as_scalar_slice(&self) -> ScalarSlice {
         ScalarSlice {
@@ -1435,13 +1449,10 @@ impl<S: ScalarDataMut> ScalarBufferBase<S> {
                 }
                 #[cfg(feature = "device")]
                 DeviceKind::Device => {
-                    todo!()
-                    /*
-                    use spirv::Capability;
                     let device = y.device();
-                    let device_base = device.inner.device().unwrap();
+                    let features = device.features().unwrap();
                     let n = y.len();
-                    let x = if n % 8 == 0 && device_base.capability_enabled(Capability::Int64) {
+                    let x = if n % 8 == 0 && features.shader_int64() {
                         match x {
                             E::U8(x) => E::U64(u64::from_ne_bytes([x; 8])),
                             E::U16(x) => {
@@ -1463,9 +1474,7 @@ impl<S: ScalarDataMut> ScalarBufferBase<S> {
                             }
                             x => x,
                         }
-                    } else if n % 2 == 0
-                        && device_base.capability_enabled(Capability::Int16)
-                        && device_base.capability_enabled(Capability::StorageBuffer16BitAccess)
+                    } else if n % 2 == 0 && features.shader_int16()
                     {
                         match x {
                             E::U8(x) => E::U16(u16::from_ne_bytes([x; 2])),
@@ -1476,28 +1485,29 @@ impl<S: ScalarDataMut> ScalarBufferBase<S> {
                     };
                     let mut y = y.bitcast_mut(x.scalar_type());
                     match x {
-                        E::U8(x) => buffer_fill::fill_u8::build(device)?
-                            .dispatch(y.try_as_slice_mut().unwrap(), x),
-                        E::U16(x) => buffer_fill::fill_u16::build(device)?
-                            .dispatch(y.try_as_slice_mut().unwrap(), x),
-                        E::U32(x) => buffer_fill::fill_u32::build(device)?
-                            .dispatch(y.try_as_slice_mut().unwrap(), x),
-                        E::U64(x) => buffer_fill::fill_u64::build(device)?
-                            .dispatch(y.try_as_slice_mut().unwrap(), x),
+                        E::U8(x) => buffer_fill::fill_u8::Kernel::builder()
+                            .build(device)?
+                            .dispatch_builder(y.try_as_slice_mut().unwrap(), x)?
+                            .dispatch(),
+                        E::U16(x) => buffer_fill::fill_u16::Kernel::builder()?
+                            .build(device)?
+                            .dispatch_builder(y.try_as_slice_mut().unwrap(), x)?
+                            .dispatch(),
+                        E::U32(x) => buffer_fill::fill_u32::Kernel::builder()?
+                            .build(device)?
+                            .dispatch_builder(y.try_as_slice_mut().unwrap(), x)?
+                            .dispatch(),
+                        E::U64(x) => buffer_fill::fill_u64::Kernel::builder()
+                            .build(device)?
+                            .dispatch_builder(y.try_as_slice_mut().unwrap(), x)?
+                            .dispatch(),
                         _ => unreachable!(),
-                    }*/
+                    }
                 }
             }
         } else {
             Ok(())
         }
-    }
-}
-
-impl ScalarSlice<'_> {
-    // for kernel::__dispatch
-    pub(crate) fn into_raw_slice(self) -> RawSlice {
-        self.data.raw
     }
 }
 

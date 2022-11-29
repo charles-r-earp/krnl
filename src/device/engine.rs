@@ -1,7 +1,7 @@
 #![allow(unused)]
 use crate::{
     device::Features,
-    kernel::{Spirv, ProtoDesc},
+    kernel::__private::KernelDesc,
     scalar::Scalar,
 };
 use anyhow::{format_err, Result};
@@ -18,6 +18,7 @@ use std::{
     ops::Deref,
     pin::Pin,
     ptr::NonNull,
+    cell::RefCell,
     str::FromStr,
     sync::{
         atomic::{AtomicBool, Ordering},
@@ -26,6 +27,8 @@ use std::{
     task::{Context, Poll},
     time::{Duration, Instant},
     hash::{Hash, Hasher},
+    fmt::{self, Debug},
+    borrow::Cow,
 };
 use vulkano::{
     buffer::{
@@ -80,7 +83,7 @@ use vulkano::{
     shader::{
         spirv::{Capability as VulkanoCapability, ExecutionModel},
         DescriptorRequirements, EntryPointInfo, ShaderExecution, ShaderInterface, ShaderModule,
-        ShaderStages,
+        ShaderStages, SpecializationConstants, SpecializationMapEntry, SpecializationConstantRequirements,
     },
     sync::{
         AccessFlags, BufferMemoryBarrier, DependencyInfo, Fence, FenceCreateInfo, PipelineStages,
@@ -392,11 +395,12 @@ fn get_compute_family<'a>(
 }
 
 pub(crate) struct Engine {
+    runner: Arc<Runner>,
     device: Arc<Device>,
     features: Features,
     buffer_allocator: BufferAllocator,
     kernel_cache_map: KernelCacheMap,
-    runner: Arc<Runner>,
+
 }
 
 impl Engine {
@@ -426,6 +430,7 @@ impl Engine {
             shader_int8: device_features.shader_int8,
             shader_int16: device_features.shader_int16,
             shader_int64: device_features.shader_int64,
+            shader_float16: device_features.shader_float16,
             shader_float64: device_features.shader_float64,
         };
         let mut queue_create_info = QueueCreateInfo::family(compute_family);
@@ -601,11 +606,11 @@ impl Engine {
     }
     pub(crate) fn kernel_cache(
         &self,
-        proto_desc: Arc<ProtoDesc>,
-        spec_const_bytes: Option<Arc<Vec<u8>>>,
-        spirv_fn: impl Fn() -> Result<Arc<Spirv>>,
+        spirv: &'static [u32],
+        spec_consts: Vec<u32>,
+        desc: KernelDesc,
     ) -> Result<Arc<KernelCache>> {
-        self.kernel_cache_map.kernel(proto_desc, spec_const_bytes, spirv_fn)
+        self.kernel_cache_map.kernel(spirv, spec_consts, desc)
     }
     pub(crate) fn compute(&self, compute: Compute) -> Result<()> {
         self.send_op(Op::Compute(compute))?;
@@ -698,8 +703,8 @@ impl Future for HostBufferFuture {
 
 #[derive(Debug)]
 pub(crate) struct DeviceBufferInner {
-    chunk: Arc<Chunk<DeviceMemory>>,
     buffer: Arc<UnsafeBuffer>,
+    chunk: Arc<Chunk<DeviceMemory>>,
     usage: BufferUsage,
     start: u32,
     len: u32,
@@ -714,8 +719,8 @@ impl DeviceBufferInner {
         debug_assert!(start < self.start + self.len);
         debug_assert!(len <= self.len);
         Arc::new(Self {
-            chunk: self.chunk.clone(),
             buffer: self.buffer.clone(),
+            chunk: self.chunk.clone(),
             usage: self.usage,
             start,
             len,
@@ -746,8 +751,8 @@ unsafe impl BufferAccess for DeviceBufferInner {
 
 #[derive(Debug)]
 pub(crate) struct DeviceBuffer {
-    alloc: Arc<ChunkAlloc<DeviceMemory>>,
     inner: Arc<DeviceBufferInner>,
+    alloc: Arc<ChunkAlloc<DeviceMemory>>,
 }
 
 impl DeviceBuffer {
@@ -780,8 +785,8 @@ impl DeviceBuffer {
         )?;
         unsafe { buffer.bind_memory(alloc.memory(), start as DeviceSize)? };
         let inner = Arc::new(DeviceBufferInner {
-            chunk: alloc.chunk.clone(),
             buffer,
+            chunk: alloc.chunk.clone(),
             usage,
             start,
             len,
@@ -791,8 +796,8 @@ impl DeviceBuffer {
     pub(crate) fn len(&self) -> usize {
         self.inner.len as usize
     }
-    pub(crate) fn inner(&self) -> Arc<DeviceBufferInner> {
-        self.inner.clone()
+    pub(crate) fn inner(&self) -> &Arc<DeviceBufferInner> {
+        &self.inner
     }
 }
 
@@ -831,8 +836,8 @@ impl<M> Drop for ChunkAlloc<M> {
 
 #[derive(Debug)]
 struct HostMemory {
-    memory: MappedDeviceMemory,
     buffer: Arc<UnsafeBuffer>,
+    memory: MappedDeviceMemory,
     usage: BufferUsage,
 }
 
@@ -867,8 +872,8 @@ impl ChunkMemory for HostMemory {
         unsafe { buffer.bind_memory(&device_memory, 0)? };
         let memory = MappedDeviceMemory::new(device_memory, 0..buffer.size())?;
         Ok(Self {
-            memory,
             buffer,
+            memory,
             usage,
         })
     }
@@ -879,7 +884,7 @@ const CHUNK_SIZE_MULTIPLE: usize = 256_000_000;
 
 #[derive(Debug)]
 struct Chunk<M> {
-    memory: M,
+    memory: ManuallyDrop<M>,
     len: usize,
     blocks: Mutex<Vec<Block>>,
 }
@@ -903,7 +908,7 @@ impl<M> Chunk<M> {
                 Ok(device_memory) => {
                     let memory = M::from_device_memory(device_memory)?;
                     return Ok(Arc::new(Self {
-                        memory,
+                        memory: ManuallyDrop::new(memory),
                         len,
                         blocks: Mutex::default(),
                     }));
@@ -1038,16 +1043,24 @@ impl BufferAllocator {
     }
 }
 
-#[derive(Debug)]
 struct KernelCacheKey {
-    proto_desc: Arc<ProtoDesc>,
-    spec_const_bytes: Option<Arc<Vec<u8>>>,
+    spirv: &'static [u32],
+    spec_consts: Vec<u32>,
+}
+
+impl Debug for KernelCacheKey {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.debug_struct("KernelCacheKey")
+            .field("spirv", &self.spirv.as_ptr())
+            .field("spec_consts", &self.spec_consts)
+            .finish()
+    }
 }
 
 impl PartialEq for KernelCacheKey {
     fn eq(&self, other: &Self) -> bool {
-        Arc::ptr_eq(&self.proto_desc, &other.proto_desc)
-        && self.spec_const_bytes == other.spec_const_bytes
+        self.spirv.as_ptr() == other.spirv.as_ptr()
+        && self.spec_consts == other.spec_consts
     }
 }
 
@@ -1056,9 +1069,9 @@ impl Eq for KernelCacheKey {}
 impl Hash for KernelCacheKey {
     fn hash<H>(&self, state: &mut H)
         where H: Hasher {
-        state.write_u64(Arc::as_ptr(&self.proto_desc) as u64);
-        if let Some(bytes) = self.spec_const_bytes.as_ref() {
-            state.write(bytes);
+        state.write_usize(self.spirv.as_ptr() as usize);
+        for spec in self.spec_consts.iter() {
+            spec.hash(state);
         }
     }
 }
@@ -1078,48 +1091,100 @@ impl KernelCacheMap {
     }
     fn kernel(
         &self,
-        proto_desc: Arc<ProtoDesc>,
-        spec_const_bytes: Option<Arc<Vec<u8>>>,
-        spirv_fn: impl Fn() -> Result<Arc<Spirv>>,
+        spirv: &'static [u32],
+        spec_consts: Vec<u32>,
+        desc: KernelDesc,
     ) -> Result<Arc<KernelCache>> {
         let key = KernelCacheKey {
-            proto_desc,
-            spec_const_bytes,
+            spirv,
+            spec_consts,
         };
-        if let Some(cache) = self.kernels.get(&key) {
-            Ok(cache.clone())
-        } else {
-            let spirv = spirv_fn()?;
-            let cache = KernelCache::new(self.device.clone(), key.proto_desc, spirv)?;
-            Ok(Arc::new(cache))
+        use dashmap::mapref::entry::Entry;
+        match self.kernels.entry(key) {
+            Entry::Occupied(occupied) => {
+                let cache = occupied.get();
+                Ok(cache.clone())
+            }
+            Entry::Vacant(vacant) => {
+                let key = vacant.key();
+                let cache = Arc::new(KernelCache::new(self.device.clone(), &key.spirv, &key.spec_consts, desc)?);
+                vacant.insert(cache.clone());
+                Ok(cache)
+            }
         }
     }
 }
 
 #[derive(Debug)]
 pub(crate) struct KernelCache {
-    proto_desc: Arc<ProtoDesc>,
-    descriptor_set_layout: Arc<DescriptorSetLayout>,
-    pipeline_layout: Arc<PipelineLayout>,
+    desc: KernelDesc,
     compute_pipeline: Arc<ComputePipeline>,
+}
+
+fn specialize(spirv: &[u32], mut spec_consts: &[u32]) -> Result<Vec<u32>> {
+    use rspirv::{dr::{Instruction, Operand}, binary::Assemble, spirv::{Op, Decoration}};
+    let mut module = rspirv::dr::load_words(spirv).map_err(|e| format_err!("{e}"))?;
+    let mut spec_ids = HashMap::<u32, Vec<u32>>::new();
+    for inst in module.annotations.iter() {
+        let op = inst.class.opcode;
+        if op == Op::Decorate {
+            if let [Operand::IdRef(id), Operand::Decoration(Decoration::SpecId), Operand::LiteralInt32(spec_id)] = inst.operands.as_slice() {
+                spec_ids.entry(*spec_id)
+                    .or_default()
+                    .push(*id);
+            }
+        }
+    }
+    let mut spec_ops = HashMap::<u32, &mut Instruction>::new();
+    for inst in module.types_global_values.iter_mut() {
+        let op = inst.class.opcode;
+        if op == Op::SpecConstant {
+            if let Some(id) = inst.result_id {
+                spec_ops.insert(id, inst);
+            }
+        }
+    }
+    let mut spec_id = 0;
+    while !spec_consts.is_empty() {
+        let mut len = 1;
+        for id in spec_ids.get(&spec_id).unwrap() {
+            if let Some(inst) = spec_ops.get_mut(id) {
+                if let [Operand::LiteralInt32(a)] = inst.operands.as_mut_slice() {
+                    *a = spec_consts.get(0).copied().unwrap_or_default();
+                } else if let [Operand::LiteralInt32(a), Operand::LiteralInt32(b)] = inst.operands.as_mut_slice() {
+                    *a = spec_consts.get(0).copied().unwrap_or_default();
+                    *b = spec_consts.get(1).copied().unwrap_or_default();
+                    len = 2;
+                }
+            }
+        }
+        spec_consts = spec_consts.get(len..).unwrap_or(&[]);
+    }
+    Ok(module.assemble())
 }
 
 impl KernelCache {
     fn new(
         device: Arc<Device>,
-        proto_desc: Arc<ProtoDesc>,
-        spirv: Arc<Spirv>,
+        spirv: &[u32],
+        spec_consts: &[u32],
+        desc: KernelDesc,
     ) -> Result<Self> {
         use vulkano::descriptor_set::layout::DescriptorType;
-
+        let spirv: Cow<[u32]> = if spec_consts.is_empty() {
+            spirv.into()
+        } else {
+            specialize(spirv, spec_consts)?.into()
+        };
         let stages = ShaderStages {
             compute: true,
             ..ShaderStages::none()
         };
-        let descriptor_requirements = proto_desc.bindings()
-            .map(|(binding, mutable)| {
+        let descriptor_requirements = desc.buffer_descs().iter().enumerate()
+            .map(|(i, desc)| {
                 let set = 0u32;
-                let storage_write = if mutable {
+                let binding = i as u32;
+                let storage_write = if desc.mutable() {
                     Some(binding)
                 } else {
                     None
@@ -1134,7 +1199,7 @@ impl KernelCache {
                 ((set, binding), descriptor_requirements)
             })
             .collect::<HashMap<_, _>>();
-        let push_consts_size = proto_desc.push_consts_size();
+        let push_consts_size = desc.push_consts_size();
         let push_constant_range = if push_consts_size > 0 {
             Some(PushConstantRange {
                 stages,
@@ -1144,28 +1209,23 @@ impl KernelCache {
         } else {
             None
         };
-        let specialization_constant_requirements = HashMap::new();
         let entry_point_info = EntryPointInfo {
             execution: ShaderExecution::Compute,
             descriptor_requirements,
             push_constant_requirements: push_constant_range,
-            specialization_constant_requirements,
+            specialization_constant_requirements: Default::default(),
             input_interface: ShaderInterface::empty(),
             output_interface: ShaderInterface::empty(),
         };
         let version = Version::major_minor(1, 2);
-        /*let mut capabilities = Vec::with_capacity(kernel_info.capabilities.len());
-        for cap in kernel_info.capabilities.iter().copied() {
-            capabilities.push(spirv_capability_to_vulkano_capability(cap)?);
-        }*/
-        let entry_point = proto_desc.entry_point();
+        let entry_point = "main";
         let shader_module = unsafe {
             ShaderModule::from_words_with_data(
                 device.clone(),
-                spirv.words(),
+                &spirv,
                 version,
-                [],// capabilities.iter(),
-                [],// kernel_info.extensions.iter().map(Deref::deref),
+                [],
+                [],
                 [(
                     entry_point.to_string(),
                     ExecutionModel::GLCompute,
@@ -1173,14 +1233,14 @@ impl KernelCache {
                 )],
             )?
         };
-        let bindings = proto_desc.bindings()
-            .map(|(binding, _)| {
+        let bindings = (0 .. desc.buffer_descs().len())
+            .map(|(binding)| {
                 let descriptor_set_layout_binding = DescriptorSetLayoutBinding {
                     descriptor_count: 1,
                     stages,
                     ..DescriptorSetLayoutBinding::descriptor_type(DescriptorType::StorageBuffer)
                 };
-                (binding, descriptor_set_layout_binding)
+                (binding as u32, descriptor_set_layout_binding)
             })
             .collect();
         let descriptor_set_layout_create_info = DescriptorSetLayoutCreateInfo {
@@ -1190,29 +1250,27 @@ impl KernelCache {
         let descriptor_set_layout =
             DescriptorSetLayout::new(device.clone(), descriptor_set_layout_create_info)?;
         let pipeline_layout_create_info = PipelineLayoutCreateInfo {
-            set_layouts: vec![descriptor_set_layout.clone()],
+            set_layouts: vec![descriptor_set_layout],
             push_constant_ranges: push_constant_range.into_iter().collect(),
             ..PipelineLayoutCreateInfo::default()
         };
         let pipeline_layout = PipelineLayout::new(device.clone(), pipeline_layout_create_info)?;
-        let specialization_constants = ();
         let cache = None;
+        let specialization_constants = ();
         let compute_pipeline = ComputePipeline::with_pipeline_layout(
-            device.clone(),
+            device,
             shader_module.entry_point(entry_point).unwrap(),
             &specialization_constants,
-            pipeline_layout.clone(),
+            pipeline_layout,
             cache,
         )?;
         Ok(Self {
-            proto_desc,
-            pipeline_layout,
-            descriptor_set_layout,
+            desc,
             compute_pipeline,
         })
     }
-    pub(crate) fn proto_desc(&self) -> &Arc<ProtoDesc> {
-        &self.proto_desc
+    pub(crate) fn desc(&self) -> &KernelDesc {
+        &self.desc
     }
 }
 
@@ -1358,7 +1416,7 @@ impl Encode for Download {
 pub(crate) struct Compute {
     pub(crate) cache: Arc<KernelCache>,
     pub(crate) groups: [u32; 3],
-    pub(crate) buffers: HashMap<u32, Arc<DeviceBufferInner>>,
+    pub(crate) buffers: Vec<Arc<DeviceBufferInner>>,
     pub(crate) push_consts: Vec<u32>,
 }
 
@@ -1398,12 +1456,14 @@ impl Compute {
 
 impl Encode for Compute {
     unsafe fn encode(&self, encoder: &mut Encoder) -> Result<bool> {
+        use vulkano::pipeline::Pipeline;
         let n_descriptors = self.buffers.len();
         if encoder.n_descriptors + n_descriptors > Encoder::MAX_DESCRIPTORS {
             return Ok(false);
         }
         let cache = &self.cache;
-        let layout = &cache.descriptor_set_layout;
+        let pipeline_layout = cache.compute_pipeline.layout();
+        let layout = &pipeline_layout.set_layouts()[0];
         let descriptor_set_allocate_info = DescriptorSetAllocateInfo {
             layout,
             variable_descriptor_count: 0,
@@ -1419,14 +1479,15 @@ impl Encode for Compute {
         let writes = self
             .buffers
             .iter()
-            .map(|(binding, buffer)| WriteDescriptorSet::buffer(*binding, buffer.clone()))
+            .enumerate()
+            .map(|(i, buffer)| WriteDescriptorSet::buffer(i as u32, buffer.clone()))
             .collect::<Vec<_>>();
         unsafe {
             descriptor_set.write(layout, writes.iter());
         }
         let mut cb_builder = &mut encoder.cb_builder;
-        for ((_, buffer), (_, mutable)) in self.buffers.iter().zip(cache.proto_desc.bindings()) {
-            let barrier = Self::barrier(buffer, mutable);
+        for (buffer, desc) in self.buffers.iter().zip(cache.desc.buffer_descs()) {
+            let barrier = Self::barrier(buffer, desc.mutable());
             let barrier_key = (buffer.chunk_id(), buffer.start);
             let prev_access = encoder
                 .barriers
@@ -1450,7 +1511,7 @@ impl Encode for Compute {
         unsafe {
             cb_builder.bind_descriptor_sets(
                 PipelineBindPoint::Compute,
-                &cache.pipeline_layout,
+                pipeline_layout,
                 first_set,
                 sets.iter(),
                 [],
@@ -1462,14 +1523,15 @@ impl Encode for Compute {
         };
         if !self.push_consts.is_empty() {
             let offset = 0;
-            let size = (self.push_consts.len() * 4) as u32;
+            let size = self.cache.desc.push_consts_size();
+            let push_consts: &[u32] = self.push_consts.as_slice();
             unsafe {
                 cb_builder.push_constants(
-                    &cache.pipeline_layout,
+                    pipeline_layout,
                     stages,
                     offset,
                     size,
-                    self.push_consts.as_slice(),
+                    push_consts,
                 );
             }
         }
@@ -1561,6 +1623,7 @@ struct Frame {
     queue: Arc<Queue>,
     done: Arc<AtomicBool>,
     result: Arc<RwLock<Result<(), Arc<anyhow::Error>>>>,
+    ops: Vec<Op>,
     command_pool: UnsafeCommandPool,
     command_pool_alloc: Option<UnsafeCommandPoolAlloc>,
     command_buffer: Option<UnsafeCommandBuffer>,
@@ -1568,7 +1631,6 @@ struct Frame {
     descriptor_sets: Vec<UnsafeDescriptorSet>,
     semaphore: Arc<Semaphore>,
     fence: Fence,
-    ops: Vec<Op>,
 }
 
 impl Frame {
@@ -1612,6 +1674,7 @@ impl Frame {
             queue,
             done,
             result,
+            ops,
             command_pool,
             command_pool_alloc: None,
             command_buffer: None,
@@ -1619,7 +1682,6 @@ impl Frame {
             descriptor_sets,
             semaphore,
             fence,
-            ops,
         })
     }
     fn submit(&mut self, wait_semaphore: Option<&Semaphore>) -> Result<()> {
@@ -1670,7 +1732,9 @@ impl Drop for Frame {
                 *result = Err(Arc::new(format_err!("Device({}) panicked!", index)));
             }
         }
-        self.queue.wait().unwrap();
+        if !self.ops.is_empty() {
+            self.poll().unwrap();
+        }
     }
 }
 
@@ -1752,10 +1816,10 @@ fn write_runner_result(
 }
 
 struct Runner {
-    device: ManuallyDrop<Arc<Device>>,
     done: Arc<AtomicBool>,
-    op_sender: ManuallyDrop<Sender<Op>>,
+    op_sender: Sender<Op>,
     result: Arc<RwLock<Result<(), Arc<anyhow::Error>>>>,
+    device: Arc<Device>,
 }
 
 impl Runner {
@@ -1802,10 +1866,10 @@ impl Runner {
                 write_runner_result(&result2, poll(&poll_receiver, &encode_sender));
             })?;
         Ok(Arc::new(Self {
-            device: ManuallyDrop::new(queue.device().clone()),
             done,
-            op_sender: ManuallyDrop::new(op_sender),
+            op_sender,
             result,
+            device: queue.device().clone(),
         }))
     }
 }
@@ -1813,22 +1877,6 @@ impl Runner {
 impl Drop for Runner {
     fn drop(&mut self) {
         self.done.store(true, Ordering::SeqCst);
-        unsafe {
-            ManuallyDrop::drop(&mut self.op_sender);
-        }
-        let mut device = unsafe { ManuallyDrop::take(&mut self.device) };
-        loop {
-            match Arc::try_unwrap(device) {
-                Ok(device) => unsafe {
-                    device.wait().unwrap();
-                    break;
-                },
-                Err(d) => {
-                    device = d;
-                    std::thread::sleep(Duration::from_millis(1));
-                }
-            }
-        }
     }
 }
 

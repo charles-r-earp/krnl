@@ -1,39 +1,63 @@
-pub struct GlobalMut<'a, T: ?Sized>(&'a mut T);
-
-#[doc(hidden)]
-pub fn __global_mut<T: ?Sized>(x: &mut T) -> GlobalMut<T> {
-    GlobalMut(x)
+pub trait ArrayLength {
+    fn length(&self) -> usize;
 }
 
-impl<'a, T: ?Sized> GlobalMut<'a, T> {
-    pub unsafe fn global_mut(&mut self) -> &mut T {
-        &mut self.0
+impl<T> ArrayLength for [T] {
+    fn length(&self) -> usize {
+        self.len()
     }
 }
 
-impl<T> GlobalMut<'_, [T]> {
-    pub fn len(&self) -> usize {
-        self.0.len()
+impl<T, const N: usize> ArrayLength for [T; N] {
+    fn length(&self) -> usize {
+        self.len()
     }
 }
 
-pub struct GroupUninitMut<'a, T: ?Sized>(&'a mut T);
-
-#[doc(hidden)]
-pub fn __group_uninit_mut<T: ?Sized>(x: &mut T) -> GroupUninitMut<T> {
-    GroupUninitMut(x)
+#[repr(transparent)]
+pub struct UnsafeMut<'a, T: ?Sized> {
+    inner: &'a mut T,
 }
 
-impl<'a, T: ?Sized> GroupUninitMut<'a, T> {
-    pub unsafe fn group_uninit_mut(&mut self) -> &mut T {
-        &mut self.0
+impl<'a, T: ?Sized> UnsafeMut<'a, T> {
+    pub fn from_mut(inner: &'a mut T) -> Self {
+        Self {
+            inner,
+        }
+    }
+    pub fn len(&self) -> usize
+        where T: ArrayLength {
+        self.inner.length()
+    }
+    pub unsafe fn unsafe_ref(&self) -> &T {
+        &self.inner
+    }
+    pub unsafe fn unsafe_mut(&mut self) -> &mut T {
+        &mut self.inner
     }
 }
 
-/*
-impl<T, A: AsRef<[T]>> GroupUninitMut<'_, A> {
-    pub fn len(&self) -> usize {
-        self.0.as_ref().len()
+#[repr(transparent)]
+pub struct UninitUnsafeMut<'a, T: ?Sized> {
+    inner: UnsafeMut<'a, T>,
+}
+
+impl<'a, T: ?Sized> UninitUnsafeMut<'a, T> {
+    pub fn from_mut(inner: &'a mut T) -> Self {
+        Self {
+            inner: UnsafeMut::from_mut(inner),
+        }
+    }
+    pub fn len(&self) -> usize
+        where T: ArrayLength {
+        self.inner.len()
+    }
+    pub unsafe fn uninit_unsafe_mut(&mut self) -> &mut T {
+        unsafe {
+            self.inner.unsafe_mut()
+        }
+    }
+    pub unsafe fn assume_init(&mut self) -> &mut UnsafeMut<'a, T> {
+        &mut self.inner
     }
 }
-*/

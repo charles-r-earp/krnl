@@ -7,11 +7,10 @@ publish = false
 
 [dependencies]
 krnl-macros = { path = "../krnl-macros" }
-spirv-std = { git = "https://github.com/EmbarkStudios/rust-gpu", rev = "9e2e66729d440fdbf53ce21d173b683240aa2805" }
-glam = { version = "0.21.3", default-features = false, features = ["libm"] }
-
+spirv-std = { git = "https://github.com/EmbarkStudios/rust-gpu", tag = "v0.4.0-alpha.17" }
 
 [target."cfg(not(target_arch = \"spirv\"))".dependencies]
+glam = "0.22.0"
 num-traits = "0.2.14"
 half = { git = "https://github.com/starkat99/half-rs", features = ["num-traits", "bytemuck", "serde"] }
 bytemuck = "1.4.1"
@@ -19,6 +18,8 @@ serde = { version = "1.0.143", features = ["derive"] }
 thiserror = "1.0.32"
 derive_more = { version = "0.99.11", default-features = false, features = ["display", "is_variant"] }
 
+
 [target."cfg(target_arch = \"spirv\")".dependencies]
-num-traits = { version = "0.2.14", default-features = false }
+glam = { version = "0.22.0", default-features = false, features = ["libm"] }
+num-traits = { version = "0.2.14", default-features = false, features = ["libm"] }
 half = { git = "https://github.com/starkat99/half-rs", default-features = false, features = ["num-traits", "bytemuck"] }
