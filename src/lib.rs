@@ -16,5 +16,5 @@ pub mod kernel;
 
 #[doc(hidden)]
 pub mod __private {
-    pub use once_cell;
+    pub use bytemuck;
 }

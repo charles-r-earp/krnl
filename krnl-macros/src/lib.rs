@@ -1,1068 +1,159 @@
-#![cfg_attr(krnl_build, feature(proc_macro_span))]
 #![allow(warnings)]
-
 use derive_syn_parse::Parse;
-use krnl_types::{
-    kernel::{CompileOptions, KernelInfoInner, ModuleInner, PushInfo, SliceInfo, SpecInfo},
-    scalar::ScalarType,
-    version::Version,
-};
-use once_cell::sync::OnceCell;
-use parking_lot::Mutex;
-use proc_macro::{Span as StdSpan, TokenStream};
-use proc_macro2::{Span, TokenStream as TokenStream2};
+use proc_macro::TokenStream;
+use proc_macro2::{Span as Span2, TokenStream as TokenStream2};
 use quote::{format_ident, quote, ToTokens};
-use serde::{Deserialize, Serialize};
-use spirv::Capability;
+use siphasher::sip::SipHasher13;
 use std::{
-    borrow::BorrowMut,
-    cell::{RefCell, RefMut},
-    collections::{hash_map::DefaultHasher, HashMap, HashSet},
-    convert::TryFrom,
-    fs,
-    hash::{Hash, Hasher},
-    path::{Path, PathBuf},
-    rc::Rc,
+    collections::{HashMap, HashSet},
+    hash::Hasher,
     str::FromStr,
-    sync::Arc,
-    thread_local,
 };
 use syn::{
     parse::{Parse, ParseStream},
-    parse_quote,
+    parse_macro_input, parse_quote,
     punctuated::Punctuated,
     token::{
-        And, Brace, Bracket, Colon, Colon2, Comma, Eq, Fn, Gt, Lt, Mod, Mut, Paren, Pound, Pub,
-        Unsafe,
+        And, Brace, Bracket, Colon, Colon2, Comma, Const, Eq as SynEq, Fn, Gt, Lt, Mod, Mut, Paren,
+        Pound, Pub, Semi, Unsafe,
     },
-    Attribute, Block, Error, Ident, ItemMod, LitBool, LitInt, LitStr, Stmt, Type, Visibility,
+    Attribute, Block, Error, Expr, FnArg, Ident, ItemFn, ItemMod, Lit, LitBool, LitInt, LitStr,
+    Result, Stmt, Type, Visibility,
 };
 
-type Result<T, E = Error> = core::result::Result<T, E>;
-
-trait IntoSynResult {
-    type Output;
-    fn into_syn_result(self, span: Span) -> Result<Self::Output>;
-}
-
-impl<T, E: std::fmt::Display> IntoSynResult for Result<T, E> {
-    type Output = T;
-    fn into_syn_result(self, span: Span) -> Result<T> {
-        self.or_else(|e| Err(Error::new(span, e)))
-    }
-}
-
-fn get_hash<T: Hash>(x: &T) -> u64 {
-    let mut h = DefaultHasher::new();
-    x.hash(&mut h);
-    h.finish()
-}
-
-fn crate_is_krnl() -> bool {
-    use std::env::var;
-    var("CARGO_PKG_HOMEPAGE").as_deref() == Ok("https://github.com/charles-r-earp/krnl")
-        && var("CARGO_CRATE_NAME").as_deref() == Ok("krnl")
-}
-
-fn get_krnl_path() -> syn::Path {
-    // TODO: detect doc / tests?
-    if crate_is_krnl() {
-        parse_quote! {
-            crate
-        }
-    } else {
-        parse_quote! {
-            krnl
-        }
-    }
-}
-
-#[derive(Parse, Debug)]
-struct KernelAttributes {
-    #[call(Punctuated::parse_terminated)]
-    attr: Punctuated<KernelAttribute, Comma>,
-}
-
-#[derive(Parse, Debug)]
-struct KernelAttribute {
-    ident: Ident,
-    #[parse_if(ident == "vulkan")]
-    vulkan: Option<Vulkan>,
-    #[parse_if(ident == "threads")]
-    threads: Option<Threads>,
-    #[parse_if(ident == "capabilities" || ident == "extensions")]
-    features: Option<TargetFeatureList>,
-}
-
-#[derive(Parse, Debug)]
-struct Vulkan {
-    #[paren]
-    paren: Paren,
-    #[inside(paren)]
-    version: LitStr,
-}
-
-impl Vulkan {
-    fn version(&self) -> Result<Version> {
-        Version::try_from(self.version.value().as_str()).into_syn_result(self.version.span())
-    }
-}
-
-#[derive(Parse, Debug)]
-struct Threads {
-    #[allow(unused)]
-    #[paren]
-    paren: Paren,
-    #[inside(paren)]
-    #[call(Punctuated::parse_terminated)]
-    threads: Punctuated<LitInt, Comma>,
-}
-
-#[derive(Parse, Debug)]
-struct TargetFeatureList {
-    #[allow(unused)]
-    #[paren]
-    paren: Paren,
-    #[inside(paren)]
-    #[call(Punctuated::parse_terminated)]
-    features: Punctuated<LitStr, Comma>,
-}
-
-#[derive(Parse, Debug)]
-struct Kernel {
-    #[allow(unused)]
-    pub_token: Pub,
-    unsafe_token: Option<Unsafe>,
-    #[allow(unused)]
-    fn_token: Fn,
-    ident: Ident,
-    #[paren]
-    paren: Paren,
-    #[inside(paren)]
-    #[call(Punctuated::parse_terminated)]
-    args: Punctuated<KernelArg, Comma>,
-    block: Block,
-}
-
-#[derive(Parse, Debug)]
-struct KernelArg {
-    #[allow(unused)]
-    pound: Option<Pound>,
-    #[parse_if(pound.is_some())]
-    attr: Option<KernelArgAttribute>,
-    ident: Ident,
-    #[allow(unused)]
-    colon: Colon,
-    #[allow(unused)]
-    and: Option<And>,
-    mut_token: Option<Mut>,
-    #[parse_if(and.is_none())]
-    ty: Option<Ident>,
-    #[parse_if(attr.is_none() && and.is_some())]
-    slice_arg: Option<KernelSliceArg>,
-    #[parse_if(attr.is_some() && and.is_some())]
-    group_arg: Option<KernelGroupArg>,
-}
-
-#[derive(Debug)]
-struct KernelSliceArg {
-    wrapper_ty: Option<Ident>,
-    elem_ty: Ident,
-    elementwise: bool,
-}
-
-impl Parse for KernelSliceArg {
-    fn parse(input: ParseStream<'_>) -> Result<Self> {
-        if input.peek(Ident) {
-            let ident1: Ident = input.parse()?;
-            if input.peek(Lt) {
-                input.parse::<Lt>()?;
-                let content;
-                let _ = syn::bracketed!(content in input);
-                let elem_ty = content.parse()?;
-                let _ = input.parse::<Gt>()?;
-                Ok(Self {
-                    wrapper_ty: Some(ident1),
-                    elem_ty,
-                    elementwise: false,
-                })
-            } else {
-                Ok(Self {
-                    wrapper_ty: None,
-                    elem_ty: ident1,
-                    elementwise: true,
-                })
-            }
-        } else {
-            let content;
-            let _ = syn::bracketed!(content in input);
-            let elem_ty = content.parse()?;
-            Ok(Self {
-                wrapper_ty: None,
-                elem_ty,
-                elementwise: false,
-            })
-        }
-    }
-}
-
-#[derive(Clone, Debug)]
-struct KernelGroupArg {
-    wrapper_ty: Option<Ident>,
-    ty: Type,
-}
-
-impl Parse for KernelGroupArg {
-    fn parse(input: ParseStream<'_>) -> Result<Self> {
-        if input.peek2(Lt) {
-            let wrapper_ty = input.parse()?;
-            input.parse::<Lt>()?;
-            let ty = input.parse()?;
-            input.parse::<Gt>()?;
-            Ok(Self { wrapper_ty, ty })
-        } else {
-            Ok(Self {
-                wrapper_ty: None,
-                ty: input.parse()?,
-            })
-        }
-    }
-}
-
-#[derive(Parse, Debug)]
-struct KernelArgAttribute {
-    #[bracket]
-    bracket: Bracket,
-    #[inside(bracket)]
-    ident: Ident,
-}
-
-#[derive(Clone, Parse, Debug)]
-struct TypedArg {
-    #[call(Attribute::parse_outer)]
-    attr: Vec<Attribute>,
-    ident: Ident,
-    #[allow(unused)]
-    colon: Colon,
-    ty: Type,
-}
-
-impl ToTokens for TypedArg {
-    fn to_tokens(&self, tokens: &mut TokenStream2) {
-        for attr in self.attr.iter() {
-            attr.to_tokens(tokens);
-        }
-        self.ident.to_tokens(tokens);
-        self.colon.to_tokens(tokens);
-        self.ty.to_tokens(tokens);
-    }
-}
-
-static BUILTINS: &[(&str, &str)] = &[
-    ("global_threads", "UVec3"),
-    ("global_id", "UVec3"),
-    ("groups", "UVec3"),
-    ("group_id", "UVec3"),
-    ("subgroup_id", "UVec3"),
-    ("subgroups", "UVec3"),
-    ("threads", "UVec3"),
-    ("thread_id", "UVec3"),
-    ("thread_index", "u32"),
-    ("elements", "u32"),
-    ("element_index", "u32"),
-];
-
-#[derive(Debug)]
-struct KernelMeta {
-    info: KernelInfoInner,
-    has_vulkan_version: bool,
-    thread_lits: Punctuated<LitInt, Comma>,
-    builtins: HashSet<&'static str>,
-    outer_args: Punctuated<TypedArg, Comma>,
-    inner_args: Punctuated<TypedArg, Comma>,
-    group_args: Vec<(Ident, KernelGroupArg)>,
-    push_consts: Punctuated<TypedArg, Comma>,
-    push_consts_ident: Option<Ident>,
-}
-
-impl KernelMeta {
-    fn new(kernel_attr: &KernelAttributes, kernel: &Kernel) -> Result<Self> {
-        let safe = kernel.unsafe_token.is_none();
-        let mut info = KernelInfoInner {
-            name: kernel.ident.to_string(),
-            vulkan_version: Version::from_major_minor(0, 0),
-            capabilities: Vec::new(),
-            extensions: Vec::new(),
-            safe,
-            threads: Vec::new(),
-            slice_infos: Vec::new(),
-            push_infos: Vec::new(),
-            spec_infos: Vec::new(),
-            num_push_words: 0,
-            elementwise: false,
-            spirv: None,
-        };
-        let mut has_vulkan_version = false;
-        let mut thread_lits = Punctuated::<LitInt, Comma>::new();
-        for attr in kernel_attr.attr.iter() {
-            let attr_string = attr.ident.to_string();
-            if let Some(vulkan) = attr.vulkan.as_ref() {
-                info.vulkan_version = vulkan.version()?;
-                has_vulkan_version = true;
-            } else if attr_string == "elementwise" {
-                info.elementwise = true;
-            } else if let Some(threads) = attr.threads.as_ref() {
-                if !info.threads.is_empty() {
-                    return Err(Error::new_spanned(&thread_lits, "threads already declared"));
-                }
-                for x in threads.threads.iter() {
-                    info.threads.push(x.base10_parse()?);
-                    thread_lits.push(x.clone());
-                }
-                while thread_lits.len() < 3 {
-                    thread_lits.push(LitInt::new("1", attr.ident.span()));
-                }
-            } else if let Some(features) = attr.features.as_ref() {
-                match attr_string.as_str() {
-                    "capabilities" => {
-                        for cap in features.features.iter() {
-                            let cap_string = cap.value();
-                            if let Ok(cap) = Capability::from_str(&cap_string) {
-                                info.capabilities.push(cap);
-                            } else {
-                                return Err(Error::new_spanned(cap, "unknown capability, see https://docs.rs/spirv/latest/spirv/enum.Capability.html"));
-                            }
-                        }
-                    }
-                    "extensions" => {
-                        for ext in features.features.iter() {
-                            info.extensions.push(ext.value());
-                        }
-                    }
-                    _ => unreachable!(),
-                }
-            } else {
-                return Err(Error::new_spanned(&attr.ident, "unknown attribute, expected \"target\", \"elementwise\", \"threads\", \"capabilities\", or \"extensions\""));
-            }
-        }
-        if info.threads.is_empty() {
-            return Err(Error::new(
-                Span::call_site(),
-                "threads(..) must be specified, ie #[kernel(threads(256))]",
-            ));
-        }
-        if info.elementwise && info.threads.len() != 1 {
-            return Err(Error::new_spanned(
-                &thread_lits,
-                "can only use 1 dimensional threads in elementwise kernel",
-            ));
-        }
-        let mut builtins = HashSet::<&'static str>::new();
-        let mut outer_args = Punctuated::<TypedArg, Comma>::new();
-        let mut inner_args = Punctuated::<TypedArg, Comma>::new();
-        let mut group_args = Vec::<(Ident, KernelGroupArg)>::new();
-        let mut push_consts = Vec::<(ScalarType, TypedArg)>::new();
-        let mut set_lit = LitInt::new("0", Span::call_site());
-        let mut binding = 0;
-        for arg in kernel.args.iter() {
-            let arg_ident = &arg.ident;
-            let ident_string = arg_ident.to_string();
-            let mut_token = &arg.mut_token;
-            let mutable = mut_token.is_some();
-            if let Some(ty) = arg.ty.as_ref() {
-                if let Some(attr) = arg.attr.as_ref() {
-                    if attr.ident == "builtin" {
-                        if info.elementwise
-                            && !matches!(ident_string.as_str(), "elements" | "element_index")
-                        {
-                            return Err(Error::new_spanned(&arg_ident, format!("builtin `{ident_string}` can not be used in elementwise kernel, use `elements` or `element_index` instead")));
-                        }
-                        let (builtin, builtin_ty) = BUILTINS
-                            .iter()
-                            .find(|x| x.0 == ident_string.as_str())
-                            .ok_or_else(|| {
-                                let mut msg = "unknown builtin, expected ".to_string();
-                                for (b, _) in BUILTINS.iter() {
-                                    msg.push('`');
-                                    msg.push_str(b);
-                                    msg.push('`');
-                                    if b != &BUILTINS.last().unwrap().0 {
-                                        msg.push_str(", ");
-                                    }
-                                }
-                                msg.push('.');
-                                Error::new_spanned(&attr.ident, msg)
-                            })?;
-                        let arg_ty = arg.ty.as_ref().ok_or_else(|| {
-                            Error::new_spanned(&arg_ident, "expected a builtin type")
-                        })?;
-                        let ty_string = arg_ty.to_string();
-                        if &ty_string != builtin_ty {
-                            return Err(Error::new_spanned(&arg_ty, "expected `{builtin_ty}`"));
-                        }
-                        match ident_string.as_str() {
-                            "global_threads" => {
-                                if !builtins.contains("groups") {
-                                    outer_args.push(parse_quote! {
-                                        #[spirv(num_workgroups)]
-                                        groups: UVec3
-                                    });
-                                }
-                                builtins.extend(["global_threads", "groups", "threads"]);
-                            }
-                            "threads" => {
-                                builtins.insert("threads");
-                            }
-                            "elements" => {
-                                inner_args.push(parse_quote! {
-                                    #arg_ident: u32
-                                });
-                            }
-                            "element_index" => {
-                                inner_args.push(parse_quote! {
-                                    #arg_ident: u32
-                                });
-                            }
-                            _ => {
-                                let spirv_attr = match ident_string.as_str() {
-                                    "global_id" => "global_invocation_id",
-                                    "groups" => "num_workgroups",
-                                    "group_id" => "workgroup_id",
-                                    "subgroup_id" => "subgroup_id",
-                                    "thread_id" => "local_invocation_id",
-                                    "thread_index" => "local_invocation_index",
-                                    _ => unreachable!("unexpected spirv_attr {ident_string:?}"),
-                                };
-                                let spirv_attr = Ident::new(spirv_attr, arg.ident.span());
-                                outer_args.push(parse_quote! {
-                                    #[spirv(#spirv_attr)]
-                                    #arg_ident: #arg_ty
-                                });
-                                builtins.insert(builtin);
-                            }
-                        }
-                        inner_args.push(parse_quote! {
-                            #arg_ident: #arg_ty
-                        });
-                    } else if attr.ident == "spec" {
-                        let spec_ty = &arg.ty.as_ref().ok_or_else(|| {
-                            Error::new_spanned(&arg_ident, "expected a spec type")
-                        })?;
-                        let spec_ty_string = spec_ty.to_string();
-                        let scalar_type = ScalarType::try_from(spec_ty_string.as_str())
-                            .map_err(|_| Error::new_spanned(&spec_ty, "expected a scalar"))?;
-                        info.spec_infos.push(SpecInfo {
-                            name: ident_string,
-                            scalar_type,
-                        });
-                        inner_args.push(parse_quote! {
-                            #arg_ident: #spec_ty
-                        });
-                    } else {
-                        return Err(Error::new_spanned(
-                            &attr.ident,
-                            "unknown attribute, expected \"builtin\", \"subgroup\", or \"spec\"",
-                        ));
-                    }
-                } else {
-                    if ident_string.starts_with("__krnl") {
-                        return Err(Error::new_spanned(&arg_ident, "\"__krnl\" is reserved"));
-                    }
-                    let push_ty = arg.ty.as_ref().unwrap();
-                    let push_ty_string = push_ty.to_string();
-                    let scalar_type = ScalarType::try_from(push_ty_string.as_str())
-                        .map_err(|_| Error::new_spanned(&push_ty, "expected a scalar"))?;
-
-                    let typed_arg: TypedArg = parse_quote! {
-                        #arg_ident: #push_ty
-                    };
-                    push_consts.push((scalar_type, typed_arg.clone()));
-                    inner_args.push(typed_arg);
-                }
-            } else if let Some(slice_arg) = arg.slice_arg.as_ref() {
-                let elementwise = slice_arg.elementwise;
-                let elem_ty = &slice_arg.elem_ty;
-                let elem_ty_string = elem_ty.to_string();
-                if elementwise && !info.elementwise {
-                    return Err(Error::new_spanned(elem_ty, format!("can not use `&{}{elem_ty_string}` outside of elementwise kernel, add `elementwise` to `#[kernel(..)]` attributes to enable", if mutable { "mut " } else { "" })));
-                }
-                if let Some(wrapper_ty) = slice_arg.wrapper_ty.as_ref() {
-                    if wrapper_ty == "GlobalMut" {
-                        if info.elementwise {
-                            return Err(Error::new_spanned(
-                                wrapper_ty,
-                                "can not use `GlobalMut<_>` in elementwise kernel",
-                            ));
-                        }
-                        if mutable {
-                            inner_args.push(parse_quote! {
-                                #arg_ident: & #mut_token #wrapper_ty <[#elem_ty]>
-                            })
-                        } else {
-                            return Err(Error::new_spanned(
-                                arg.and.as_ref().unwrap(),
-                                "expected `&mut _`",
-                            ));
-                        }
-                    } else {
-                        return Err(Error::new_spanned(wrapper_ty, "expected `GlobalMut<_>`"));
-                    }
-                } else if elementwise {
-                    inner_args.push(parse_quote! {
-                        #arg_ident: & #mut_token #elem_ty
-                    })
-                } else if mutable {
-                    return Err(Error::new_spanned(mut_token, "`&mut [_]` can not be used as a kernel argument directly, use `krnl_core::mem::GlobalMut<_>` instead"));
-                } else {
-                    inner_args.push(parse_quote! {
-                        #arg_ident: & #mut_token [#elem_ty]
-                    })
-                }
-                {
-                    set_lit.set_span(arg_ident.span());
-                    let binding_lit = LitInt::new(&binding.to_string(), arg_ident.span());
-                    outer_args.push(parse_quote! {
-                        #[spirv(descriptor_set = #set_lit, binding = #binding_lit, storage_buffer)]
-                        #arg_ident: & #mut_token [#elem_ty]
-                    });
-                    binding += 1;
-                }
-                let scalar_type = ScalarType::try_from(elem_ty_string.as_str())
-                    .map_err(|_| Error::new_spanned(&elem_ty, "expected a scalar"))?;
-                info.slice_infos.push(SliceInfo {
-                    name: arg_ident.to_string(),
-                    scalar_type,
-                    mutable,
-                    elementwise,
-                });
-            } else if let Some(group_arg) = arg.group_arg.as_ref() {
-                let attr = arg.attr.as_ref().expect("group_arg.attr.is_some()");
-                let group_ty = &group_arg.ty;
-                if attr.ident == "group" {
-                    if let Some(wrapper_ty) = group_arg.wrapper_ty.as_ref() {
-                        if wrapper_ty != "GroupUninitMut" {
-                            return Err(Error::new_spanned(
-                                group_ty,
-                                "expected `krnl_core::mem::GroupUninitMut<_>`",
-                            ));
-                        }
-                        outer_args.push(parse_quote! {
-                            #[spirv(workgroup)]
-                            #arg_ident: & #mut_token #group_ty
-                        });
-                        inner_args.push(parse_quote! {
-                            #arg_ident: & #mut_token #wrapper_ty<#group_ty>
-                        });
-                    } else {
-                        return Err(Error::new_spanned(
-                            group_ty,
-                            "expected `krnl_core::mem::GroupUninitMut<_>`",
-                        ));
-                    }
-                } else if attr.ident == "subgroup" {
-                    outer_args.push(parse_quote! {
-                        #[spirv(subgroup)]
-                        #arg_ident: #group_ty
-                    });
-                    inner_args.push(parse_quote! {
-                        #arg_ident: #group_ty
-                    });
-                } else {
-                    return Err(Error::new_spanned(
-                        &arg_ident,
-                        "expected `krnl_core::mem::GroupUninitMut<_>`",
-                    ));
-                }
-                group_args.push((arg_ident.clone(), group_arg.clone()));
-            }
-            if let Some(arg_attr) = arg.attr.as_ref() {
-                let attr_string = arg_attr.ident.to_string();
-                match attr_string.as_str() {
-                    "subgroup" => {
-                        if info.elementwise {
-                            return Err(Error::new_spanned(
-                                &arg_ident,
-                                "`#[subgroup]` can not be used in elementwise kernel",
-                            ));
-                        }
-                    }
-                    _ => {}
-                }
-            }
-        }
-        if info.elementwise {
-            builtins.extend([
-                "global_threads",
-                "global_id",
-                "groups",
-                "threads",
-                "thread_id",
-            ]);
-            outer_args.push(parse_quote! {
-                #[spirv(global_invocation_id)]
-                global_id: ::krnl_core::glam::UVec3
-            });
-            outer_args.push(parse_quote! {
-                #[spirv(num_workgroups)]
-                groups: ::krnl_core::glam::UVec3
-            });
-            outer_args.push(parse_quote! {
-                #[spirv(local_invocation_id)]
-                thread_id: ::krnl_core::glam::UVec3
-            });
-            push_consts.push((
-                ScalarType::U32,
-                parse_quote! {
-                    __krnl_elements: u32
-                },
-            ));
-        } else {
-            for slice_info in info.slice_infos.iter() {
-                let ident = format_ident!("__krnl_len_{}", slice_info.name);
-                let ty = format_ident!("{}", slice_info.scalar_type.name());
-                push_consts.push((
-                    ScalarType::U32,
-                    parse_quote! {
-                        #ident: #ty
-                    },
-                ));
-            }
-        }
-        push_consts.sort_by_key(|x| x.0.size());
-        let mut offset = 0;
-        for (scalar_type, typed_arg) in push_consts.iter().rev() {
-            info.push_infos.push(PushInfo {
-                name: typed_arg.ident.to_string(),
-                scalar_type: *scalar_type,
-                offset,
-            });
-            offset += scalar_type.size() as u32;
-        }
-        info.num_push_words = offset / 4 + if offset % 4 != 0 { 1 } else { 0 };
-        let mut push_consts = push_consts
-            .into_iter()
-            .rev()
-            .map(|x| x.1)
-            .collect::<Punctuated<_, Comma>>();
-        for i in 0..offset % 4 {
-            let field = format_ident!("__krnl_pad{}", i);
-            push_consts.push(parse_quote! {
-                #field: u8
-            });
-        }
-        let push_consts_ident = if !push_consts.is_empty() {
-            let ident = format_ident!("__{}PushConsts", kernel.ident);
-            outer_args.push(parse_quote! {
-                #[spirv(push_constant)] push_consts: &#ident
-            });
-            Some(ident)
-        } else {
-            None
-        };
-        Ok(Self {
-            info,
-            has_vulkan_version,
-            thread_lits,
-            builtins,
-            outer_args,
-            inner_args,
-            group_args,
-            push_consts,
-            push_consts_ident,
-        })
-    }
-}
-
-#[allow(unused_variables)]
-fn kernel_impl(attr: TokenStream, item: TokenStream) -> Result<TokenStream> {
-    let span = Span::call_site();
-    static KERNELS: OnceCell<Option<(PathBuf, Version, Mutex<Vec<KernelInfoInner>>)>> =
-        OnceCell::new();
-    let kernels = KERNELS.get_or_try_init(|| {
-        use std::env::var;
-        let path = var("KRNL_KERNELS_PATH").ok();
-        let vulkan_version = var("KRNL_VULKAN_VERSION").ok();
-        if let Some((path, vulkan_version)) = path.zip(vulkan_version) {
-            let path = PathBuf::from(path);
-            let vulkan_version =
-                Version::try_from(vulkan_version.as_str()).into_syn_result(span)?;
-            let kernels = Mutex::default();
-            Result::<_, Error>::Ok(Some((path, vulkan_version, kernels)))
-        } else {
-            Ok(None)
-        }
-    })?;
-    let krnl_kernels = std::env::var("KRNL_KERNELS");
-    if kernels.is_none() && krnl_kernels.is_err() {
-        return Ok(TokenStream::new());
-    }
-    let kernel_attr: KernelAttributes = syn::parse(attr)?;
-    let kernel: Kernel = syn::parse(item)?;
-    let meta = KernelMeta::new(&kernel_attr, &kernel)?;
-    let info = &meta.info;
-    let mut output = TokenStream2::new();
-    let should_build = if let Ok(kernels) = krnl_kernels {
-        kernels.split(',').find(|x| x == &info.name).is_some()
-    } else {
-        false
+macro_rules! todo {
+    () => {
+        std::todo!("[{}:{}]", file!(), line!())
     };
-    if should_build {
-        let builtins = &meta.builtins;
-        let slice_infos = &info.slice_infos;
-        let spec_infos = &info.spec_infos;
-        let kernel_ident = &kernel.ident;
-        let block = &kernel.block;
-        let thread_lits = &meta.thread_lits;
-        let full_thread_lits = thread_lits
-            .iter()
-            .cloned()
-            .chain([LitInt::new("1", span), LitInt::new("1", span)])
-            .take(3)
-            .collect::<Punctuated<_, Comma>>();
-        let mut builtin_stmts = Vec::<Stmt>::new();
-        let outer_args = meta.outer_args;
-        let inner_args = meta.inner_args;
-        let group_args = meta.group_args;
-        let call_args = inner_args
-            .iter()
-            .map(|x| &x.ident)
-            .collect::<Punctuated<_, Comma>>();
-        let push_consts = meta.push_consts;
-        let push_const_idents = push_consts
-            .iter()
-            .map(|x| &x.ident)
-            .collect::<Punctuated<_, Comma>>();
-        if builtins.contains("threads") {
-            builtin_stmts.push(parse_quote! {
-                let threads = ::krnl_core::glam::UVec3::new(#full_thread_lits);
-            });
-        }
-        if builtins.contains("global_threads") {
-            builtin_stmts.push(parse_quote! {
-                let global_threads = groups * threads;
-            });
-        }
-        for (i, spec_info) in spec_infos.iter().enumerate() {
-            use ScalarType::*;
-            let scalar_type = spec_info.scalar_type;
-            let bits = scalar_type.size() * 8;
-            let scalar_name = scalar_type.name();
-            let op_type_def = if scalar_name.contains("f") {
-                format!("%ty = OpTypeFloat {bits}")
-            } else {
-                let sign = if scalar_name.contains("i") { 1 } else { 0 };
-                format!("%ty = OpTypeInt {bits} {sign}")
-            };
-            let op_decorate = format!("OpDecorate %y SpecId {}", i);
-            let ident = format_ident!("{}", spec_info.name);
-            let ty = format_ident!("{}", scalar_name);
-            builtin_stmts.push(parse_quote! {
-                let #ident = {
-                    fn spec() -> #ty {
-                        unsafe {
-                            asm! {
-                                #op_type_def,
-                                "%y = OpSpecConstant %ty 0",
-                                #op_decorate,
-                                "OpReturnValue %y",
-                                options(noreturn),
-                            }
-                        }
-                    }
-                    spec()
-                };
-            });
-        }
-        if let Some(push_consts_ident) = meta.push_consts_ident.as_ref() {
-            builtin_stmts.push(parse_quote! {
-                let &#push_consts_ident {
-                    #push_const_idents
-                } = push_consts;
-            });
-        }
-        for slice_info in slice_infos {
-            let ident = format_ident!("{}", slice_info.name);
-            let mut_token = if slice_info.mutable {
-                Some(Mut::default())
-            } else {
-                None
-            };
-            if slice_info.mutable && !slice_info.elementwise {
-                builtin_stmts.push(parse_quote! {
-                    let ref mut #ident = ::krnl_core::mem::GlobalMut::__new(#ident);
-                });
+}
+
+macro_rules! unreachable {
+    () => {
+        std::unreachable!("[{}:{}]", file!(), line!())
+    };
+}
+
+macro_rules! unwrap_or_compile_error {
+    ($e:expr) => {{
+        match $e {
+            Ok(x) => x,
+            Err(e) => {
+                return e.into_compile_error().into();
             }
         }
-        for (ident, group_arg) in group_args.iter() {
-            if let Some(wrapper_ty) = group_arg.wrapper_ty.as_ref() {
-                builtin_stmts.push(parse_quote! {
-                    let ref mut #ident = #wrapper_ty::__new(#ident);
-                })
-            }
-        }
-        let mut elementwise_stmts = Vec::<Stmt>::new();
-        if meta.info.elementwise {
-            builtin_stmts.push(parse_quote! {
-                let elements = __krnl_elements;
-            });
-            if slice_infos.iter().any(|x| x.mutable) {
-                elementwise_stmts.push(parse_quote! {
-                    use krnl_core::ops::{IndexUnchecked, IndexUncheckedMut};
-                });
-            } else if !slice_infos.is_empty() {
-                elementwise_stmts.push(parse_quote! {
-                    use krnl_core::ops::IndexUnchecked;
-                });
-            }
-            for slice_info in meta.info.slice_infos.iter().filter(|x| x.elementwise) {
-                let ident = format_ident!("{}", slice_info.name);
-                let index_fn = if slice_info.mutable {
-                    format_ident!("index_unchecked_mut")
-                } else {
-                    format_ident!("index_unchecked")
-                };
-                elementwise_stmts.push(parse_quote! {
-                    let #ident = unsafe {
-                        #ident . #index_fn(element_index as usize)
-                    };
-                });
-            }
-        }
-        if let Some(push_consts_ident) = meta.push_consts_ident.as_ref() {
-            quote! {
-                #[allow(non_camel_case_types)]
-                #[repr(C)]
-                pub struct #push_consts_ident {
-                    #push_consts
-                }
-            }
-            .to_tokens(&mut output);
-        }
-        let unsafe_token = &kernel.unsafe_token;
-        let call = if let Some(unsafe_token) = kernel.unsafe_token.as_ref() {
-            quote! {
-                #unsafe_token {
-                    #kernel_ident(#call_args);
-                }
-            }
-        } else {
-            quote! {
-                #kernel_ident(#call_args);
-            }
-        };
-        let generated_body = if meta.info.elementwise {
-            quote! {
-                let mut element_index = global_id.x;
-                while element_index < elements {
-                    #(#elementwise_stmts)*
-                    #call
-                    element_index += global_threads.x;
-                }
-            }
-        } else {
-            call
-        };
-        quote! {
-            #[spirv(compute(threads(#thread_lits)))]
-            pub fn #kernel_ident (
-                #outer_args
-            ) {
-                #(#builtin_stmts)*
-                fn #kernel_ident (
-                    #inner_args
-                ) #block
-                #generated_body
-            }
-        }
-        .to_tokens(&mut output);
-    } else {
-        if let Some((path, vulkan_version, kernels)) = kernels.as_ref() {
-            let mut info = meta.info;
-            if !meta.has_vulkan_version {
-                info.vulkan_version = *vulkan_version;
-            }
-            let mut kernels = kernels.lock();
-            kernels.push(info);
-            let bytes =
-                bincode::serialize::<Vec<KernelInfoInner>>(&kernels).into_syn_result(span)?;
-            fs::write(path, &bytes).into_syn_result(span)?;
-        }
-    }
-    Ok(output.into())
+    }};
 }
 
 #[proc_macro_attribute]
-pub fn kernel(attr: TokenStream, item: TokenStream) -> TokenStream {
-    match kernel_impl(attr, item) {
-        Ok(x) => x,
-        Err(e) => e.into_compile_error().into(),
-    }
-}
-
-#[derive(Parse, Debug)]
-struct ModuleAttributes {
-    #[call(Punctuated::parse_terminated)]
-    attr: Punctuated<ModuleAttribute, Comma>,
-}
-
-impl ModuleAttributes {
-    fn module_path(&self) -> Option<&ModulePath> {
-        self.attr.iter().find_map(|x| x.path.as_ref())
-    }
-}
-
-#[derive(Parse, Debug)]
-struct ModuleAttribute {
-    ident: Ident,
-    #[parse_if(ident == "path")]
-    path: Option<ModulePath>,
-    #[parse_if(ident == "vulkan")]
-    vulkan: Option<Vulkan>,
-    #[parse_if(ident == "dependency")]
-    dependency: Option<Dependency>,
-    #[parse_if(ident == "attr")]
-    attr: Option<ModuleAttr>,
-}
-
-#[derive(Parse, Debug)]
-struct ModulePath {
-    #[allow(unused)]
-    #[paren]
-    paren: Paren,
-    #[inside(paren)]
-    #[call(Punctuated::parse_terminated)]
-    segments: Punctuated<Ident, Colon2>,
-}
-
-impl ModulePath {
-    fn module_name_prefix(&self) -> String {
-        let mut string = String::new();
-        for segment in self.segments.iter() {
-            string.push_str(&format!("{segment}_"));
+pub fn module(attr: TokenStream, item: TokenStream) -> TokenStream {
+    let attr = parse_macro_input!(attr as ModuleAttr);
+    let mut dependencies = String::new();
+    for arg in attr.args {
+        if let Some(deps) = arg.dependencies {
+            dependencies = deps.value.value().trim().to_string();
         }
-        string
     }
-    fn file_path(&self) -> PathBuf {
-        let mut path = PathBuf::new();
-        for segment in self.segments.iter() {
-            path.push(segment.to_string());
-        }
-        path
-    }
-}
-
-#[derive(Parse, Debug)]
-struct Dependency {
-    #[allow(unused)]
-    #[paren]
-    paren: Paren,
-    #[inside(paren)]
-    name: LitStr,
-    #[inside(paren)]
-    #[allow(unused)]
-    comma: Comma,
-    #[inside(paren)]
-    #[call(Punctuated::parse_terminated)]
-    key_values: Punctuated<DependencyKeyValue, Comma>,
-}
-
-impl Dependency {
-    fn to_toml_string(&self) -> Result<String> {
-        let mut s = format!("{} = {{ ", self.name.value());
-        for (i, kv) in self.key_values.iter().enumerate() {
-            s.push_str(&kv.to_toml_string()?);
-            if i != self.key_values.len() - 1 {
-                s.push(',');
-            }
-        }
-        s.push_str(" }");
-        Ok(s)
-    }
-}
-
-#[derive(Parse, Debug)]
-struct DependencyKeyValue {
-    key: Ident,
-    #[allow(unused)]
-    eq: Eq,
-    value: Option<LitStr>,
-    #[parse_if(value.is_none())]
-    value_list: Option<DependencyValueList>,
-}
-
-impl DependencyKeyValue {
-    fn to_toml_string(&self) -> Result<String> {
-        let key_string = self.key.to_string();
-        let mut s = format!("{key_string} = ");
-        match key_string.as_str() {
-            "version" | "git" | "branch" | "tag" | "path" => {
-                let value = self
-                    .value
-                    .as_ref()
-                    .ok_or_else(|| Error::new_spanned(&self.key, "expected a str, found a list"))?;
-                let mut value_string = value.value();
-                if key_string.as_str() == "path" {
-                    value_string = PathBuf::from(value_string)
-                        .canonicalize()
-                        .into_syn_result(value.span())?
-                        .to_string_lossy()
-                        .into_owned();
+    let mut item = syn::parse_macro_input!(item as ModuleItem);
+    let mut build = true;
+    let mut krnl = parse_quote! { krnl };
+    let new_attr = Vec::with_capacity(item.attr.len());
+    for attr in std::mem::replace(&mut item.attr, new_attr) {
+        if attr.path.segments.len() == 1
+            && attr
+                .path
+                .segments
+                .first()
+                .map_or(false, |x| x.ident == "krnl")
+        {
+            let tokens = attr.tokens.clone().into();
+            let args = syn::parse_macro_input!(tokens as ModuleKrnlArgs);
+            for arg in args.args.iter() {
+                if let Some(krnl_crate) = arg.krnl_crate.as_ref() {
+                    krnl = krnl_crate.clone();
+                } else if let Some(krnl_build) = arg.krnl_build.as_ref() {
+                    build = krnl_build.value();
+                } else {
+                    let ident = arg.ident.as_ref().unwrap();
+                    return Error::new_spanned(
+                        ident,
+                        format!("unknown krnl arg `{ident}`, expected `build` or `crate`"),
+                    )
+                    .into_compile_error()
+                    .into();
                 }
-                s.push('"');
-                s.push_str(&value_string);
-                s.push('"');
             }
-            "features" => {
-                let value_list = self
-                    .value_list
-                    .as_ref()
-                    .ok_or_else(|| Error::new_spanned(&self.key, "expected a list, found a str"))?;
-                s.push_str(&value_list.to_toml_string());
-            }
-            _ => {
-                return Err(Error::new_spanned(
-                    &self.key,
-                    format!("unexpected dependency key {key_string}"),
-                ));
+        } else {
+            item.attr.push(attr);
+        }
+    }
+    let cache = if build {
+        let module_name = item.ident.to_string();
+        let module_tokens = item.tokens.to_string();
+        let module_src = format!("(dependencies({dependencies:?})) => ({module_tokens})");
+        let module_src_indices = (0..module_src.len()).into_iter().collect::<Vec<_>>();
+        let mut data = HashMap::new();
+        data.insert("dependencies", dependencies);
+        data.insert("krnl_module_tokens", module_tokens);
+        let data = bincode::serialize(&data).unwrap();
+        let data_len = data.len();
+        let module_msg = format!("module `{module_name}` has been modified, rebuild with `krnlc build`, install krnlc with `cargo install krnlc`");
+        quote! {
+            const krnlc__krnl_module_data: [u8; #data_len] = [#(#data),*];
+            static __module_check: () = {
+                let mod_path = module_path!();
+                let src = #module_src.as_bytes();
+                let mut success = false;
+                if let Some(cached_src) = __module(mod_path) {
+                    let cached_src = cached_src.as_bytes();
+                    if src.len() == cached_src.len() {
+                        success = #(src[#module_src_indices] == cached_src[#module_src_indices])&&*;
+                    }
+                }
+                if !success {
+                    panic!(#module_msg);
+                }
+            };
+            include!(concat!(env!("CARGO_MANIFEST_DIR"), "/.krnl/packages/", env!("CARGO_PKG_NAME"), "/cache"));
+        }
+    } else {
+        quote! {
+            pub(super) const fn __kernel(_: &'static str) -> Option<(u64, &'static [u32], Features)> {
+                None
             }
         }
-        Ok(s)
-    }
-}
-
-#[derive(Parse, Debug)]
-struct DependencyValueList {
-    #[allow(unused)]
-    #[bracket]
-    bracket: Bracket,
-    #[inside(bracket)]
-    #[call(Punctuated::parse_terminated)]
-    values: Punctuated<LitStr, Comma>,
-}
-
-impl DependencyValueList {
-    fn to_toml_string(&self) -> String {
-        let mut s = "[".to_string();
-        for (i, value) in self.values.iter().enumerate() {
-            s.push('"');
-            s.push_str(&value.value());
-            s.push('"');
-            if i != self.values.len() - 1 {
-                s.push(',');
-            }
+    };
+    item.tokens.extend(quote! {
+        #[doc(hidden)]
+        #[automatically_derived]
+        mod module {
+            pub(super) use #krnl as __krnl;
+            use __krnl::device::Features;
+            pub(super) const __BUILD: bool = #build;
+            #cache
         }
-        s.push(']');
-        s
-    }
+    });
+    item.to_token_stream().into()
 }
 
 #[derive(Parse, Debug)]
 struct ModuleAttr {
-    #[allow(unused)]
+    #[call(Punctuated::parse_terminated)]
+    args: Punctuated<ModuleAttrArg, Comma>,
+}
+
+#[derive(Parse, Debug)]
+struct ModuleAttrArg {
+    ident: Ident,
+    #[parse_if(ident == "dependencies")]
+    dependencies: Option<InsideParen<LitStr>>,
+}
+
+#[derive(Parse, Debug)]
+struct InsideParen<T> {
     #[paren]
     paren: Paren,
     #[inside(paren)]
-    tokens: TokenStream2,
+    value: T,
 }
 
 #[derive(Parse, Debug)]
@@ -1105,372 +196,1433 @@ struct ModuleKrnlArg {
     crate_token: Option<syn::token::Crate>,
     #[parse_if(crate_token.is_none())]
     ident: Option<Ident>,
-    eq: Eq,
+    eq: SynEq,
     #[parse_if(crate_token.is_some())]
     krnl_crate: Option<syn::Path>,
     #[parse_if(ident.as_ref().map_or(false, |x| x == "build"))]
     krnl_build: Option<LitBool>,
 }
 
-#[derive(Debug)]
-struct BuildModuleArgs<'a> {
-    module_attr: &'a ModuleAttributes,
-    module_item: &'a ModuleItem,
-    module_name: &'a str,
-    mod_path: &'a Path,
-    module_path: &'a Path,
-    manifest_dir: &'a Path,
-    crate_name: &'a str,
-    source: &'a str,
-}
+#[proc_macro_attribute]
+pub fn kernel(attr: TokenStream, item: TokenStream) -> TokenStream {
+    let mut hasher = SipHasher13::new();
+    hasher.write(attr.to_string().as_bytes());
+    let attr = parse_macro_input!(attr as KernelAttr);
+    let attr_meta = unwrap_or_compile_error!(attr.meta());
+    let kernel = parse_macro_input!(item as Kernel);
+    hasher.write(kernel.ident.to_string().as_bytes());
+    hasher.write(kernel.block.to_token_stream().to_string().as_bytes());
+    let hash = hasher.finish();
+    unwrap_or_compile_error!(kernel.validate(&attr_meta));
+    let unsafe_token = &kernel.unsafe_token;
+    let kernel_ident = &kernel.ident;
+    let push_const_fields = kernel.push_const_fields();
 
-fn build_module(args: BuildModuleArgs) -> Result<()> {
-    use std::process::Command;
-    let BuildModuleArgs {
-        module_attr,
-        module_item,
-        module_name,
-        mod_path,
-        module_path,
-        manifest_dir,
-        crate_name,
-        source,
-    } = args;
-    let span = module_item.ident.span();
-    let krnl_dir = manifest_dir.join("target").join(".krnl");
-    fs::create_dir_all(&krnl_dir).into_syn_result(span)?;
-    let builder_dir = krnl_dir.join("builder");
-    let toolchain_toml = r#"[toolchain]
-channel = "nightly-2022-08-22"
-components = ["rust-src", "rustc-dev", "llvm-tools-preview"]"#;
-    if !builder_dir.exists() {
-        if !builder_dir.exists() {
-            fs::create_dir(&builder_dir).into_syn_result(span)?;
+    let push_consts_ident = kernel.push_consts_ident();
+    let push_consts_struct = if let Some(ident) = push_consts_ident.as_ref() {
+        quote! {
+            #[automatically_derived]
+            #[cfg(target_arch = "spirv")]
+            #[repr(C)]
+            pub struct #ident {
+                #(#push_const_fields),*
+            }
         }
-        let manifest = r#"[package]
-name = "builder"
-version = "0.1.0"
-edition = "2021"
-publish = false
-
-[dependencies]
-krnl-builder = { path = "/home/charles/Documents/rust/krnl/krnl-builder" }
-bincode = "1.3.3"
-"#;
-        fs::write(builder_dir.join("Cargo.toml"), manifest).into_syn_result(span)?;
-        fs::write(builder_dir.join("rust-toolchain.toml"), toolchain_toml).into_syn_result(span)?;
-
-        let src_dir = builder_dir.join("src");
-        if !src_dir.exists() {
-            fs::create_dir(&src_dir).into_syn_result(span)?;
-        }
-        let main = r#"use krnl_builder::{ModuleBuilder, version::Version};
-use std::convert::TryFrom;
-
-fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let args = std::env::args().collect::<Vec<_>>();
-    let crate_path = &args[1];
-    let vulkan_version = Version::try_from(args[2].as_str())
-        .map_err(|x| x.to_string())?;
-    let module_path = &args[3];
-    let source = &args[4];
-    let module = ModuleBuilder::new(crate_path)
-        .vulkan(vulkan_version)
-        .build()?;
-    let bytes = bincode::serialize(&(source, module))?;
-    std::fs::write(module_path, &bytes)?;
-    Ok(())
-}"#;
-        fs::write(src_dir.join("main.rs"), main).into_syn_result(span)?;
-        let status = Command::new("cargo")
-            .args(&["build", "--release"])
-            .current_dir(&builder_dir)
-            .env("RUSTUP_TOOLCHAIN", "")
-            .status()
-            .into_syn_result(span)?;
-        if !status.success() {
-            return Err(Error::new(span, format!("Failed to compile builder!")));
-        }
-    }
-    let module_name_prefix = mod_path.to_string_lossy().replace('/', "-");
-    let device_crate_name = format!("{crate_name}-{module_name_prefix}");
-    let mut tokens = quote! {
-        #![cfg_attr(
-            target_arch = "spirv",
-            no_std,
-            feature(register_attr),
-            register_attr(spirv),
-            deny(warnings),
-        )]
+    } else {
+        TokenStream2::new()
     };
-    let mut vulkan_version = None;
-    let mut has_krnl_core_dep = false;
-    let mut dependencies = String::new();
-    for attr in module_attr.attr.iter() {
-        if let Some(vulkan) = attr.vulkan.as_ref() {
-            vulkan_version.replace(vulkan.version()?);
-        } else if let Some(dep) = attr.dependency.as_ref() {
-            if dep.name.value() == "krnl-core" {
-                has_krnl_core_dep = true;
-            }
-            dependencies.push_str(&dep.to_toml_string()?);
-            dependencies.push('\n');
-        } else if let Some(attr) = attr.attr.as_ref() {
-            let attr = &attr.tokens;
+    let push_idents: Punctuated<_, Comma> = push_const_fields.iter().map(|x| &x.ident).collect();
+    let compute_threads = attr_meta.compute_threads();
+    let host_threads = attr_meta.host_threads();
+    let mut compute_body = TokenStream2::new();
+    let mut for_each_body = TokenStream2::new();
+    compute_body.extend(kernel.declare_specs());
+    if let Some(ident) = push_consts_ident.as_ref() {
+        compute_body.extend(quote! {
+            let &#ident {
+                #push_idents
+            } = push_consts;
+        });
+    }
+    compute_body.extend(unwrap_or_compile_error!(kernel.builtin_tokens(&attr_meta)));
+    compute_body.extend(kernel.compute_tokens(attr_meta.for_each));
+    if attr_meta.for_each {
+        for_each_body.extend(kernel.for_each_tokens());
+    }
+    let compute_args = kernel.compute_args(attr_meta.for_each);
+    let spec_args = kernel.spec_args();
+    let device_args = kernel.device_args();
+    let device_call_args: Punctuated<_, Comma> = spec_args
+        .iter()
+        .map(|x| &x.ident)
+        .chain(device_args.iter().map(|x| &x.ident))
+        .collect();
+    let device_args: Punctuated<_, Comma> = spec_args
+        .iter()
+        .map(|x| {
             quote! {
-                #![#attr]
+                #[allow(non_snake_case)] #x
             }
-            .to_tokens(&mut tokens);
+        })
+        .chain(device_args.iter().map(ToTokens::to_token_stream))
+        .collect();
+    let spec_args: Punctuated<_, Comma> = spec_args
+        .iter()
+        .map(|x| {
+            TypedArg::new(
+                Ident::new(&x.ident.to_string().to_lowercase(), x.ident.span()),
+                x.ty,
+            )
+        })
+        .collect();
+    let spec_idents: Vec<_> = spec_args.iter().map(|x| &x.ident).collect();
+    let kernel_name_tokens = kernel.kernel_name_tokens();
+    let buffer_descs = kernel.buffer_descs();
+    let push_consts_size: u32 = {
+        let mut size = push_const_fields.iter().map(|x| x.ty.size() as u32).sum();
+        if size % 4 != 0 {
+            size += 4 - (size % 4);
         }
-    }
-    let device_crate_dir = krnl_dir.join("modules").join(&crate_name).join(&mod_path);
-    if !device_crate_dir.exists() {
-        fs::create_dir_all(&device_crate_dir).into_syn_result(span)?;
-    }
-    let mut manifest = format!("[package]\nname = {device_crate_name:?}");
-    manifest.push_str(
-        r#"
-version = "0.1.0"
-edition = "2021"
-publish = false
+        size += 2 * buffer_descs.len() as u32 * 4;
+        size
+    };
+    let compute_ident = format_ident!("__krnl_{hash}_{push_consts_size}_{kernel_ident}");
+    let device_block = &kernel.block;
+    let dispatch_args = kernel.dispatch_args();
+    let dispatch_slices = kernel.dispatch_slices();
+    let dimensionality = attr_meta.dimensionality;
+    let dispatch_builder_dim_impls = if dimensionality == 3 {
+        quote! {
+            pub fn global_threads(mut self, global_threads: impl Into<UVec3>) -> Result<Self> {
+                let raw = self.raw.global_threads(global_threads.into())?;
+                Ok(Self {
+                    raw,
+                })
+            }
+            pub fn groups(mut self, groups: impl Into<UVec3>) -> Result<Self> {
+                let raw = self.raw.groups(groups.into())?;
+                Ok(Self {
+                    raw,
+                })
+            }
+        }
+    } else if dimensionality == 2 {
+        quote! {
+            pub fn global_threads(mut self, global_threads: impl Into<UVec2>) -> Result<Self> {
+                let raw = self.raw.global_threads(global_threads.into())?;
+                Ok(Self {
+                    raw,
+                })
+            }
+            pub fn groups(mut self, groups: impl Into<UVec2>) -> Result<Self> {
+                let raw = self.raw.groups(groups.into())?;
+                Ok(Self {
+                    raw,
+                })
+            }
+        }
+    } else {
+        quote! {
+            pub fn global_threads(mut self, global_threads: u32) -> Result<Self> {
+                let raw = self.raw.global_threads(global_threads.into())?;
+                Ok(Self {
+                    raw,
+                })
+            }
+            pub fn groups(mut self, groups: u32) -> Result<Self> {
+                let raw = self.raw.groups(groups.into())?;
+                Ok(Self {
+                    raw,
+                })
+            }
+        }
+    };
+    let device_call = if attr_meta.for_each {
+        quote! {
+            let mut item_index = global_id;
+            while item_index < items {
+                #for_each_body
+                #kernel_ident(#device_call_args);
+                item_index += global_threads;
+            }
+        }
+    } else {
+        quote! {
+            #kernel_ident(#device_call_args);
+        }
+    };
+    let device_tokens = quote! {
+        #push_consts_struct
+        #[automatically_derived]
+        #[cfg(target_arch = "spirv")]
+        #[::krnl_core::spirv_std::spirv(compute(threads(#compute_threads)))]
+        pub fn #compute_ident(#compute_args) {
+            #compute_body
+            fn #kernel_ident(#device_args) #device_block
+            #device_call
+        }
+    };
+    //let device_src = prettyplease::unparse(&parse_quote!(#device_tokens));
+    //eprintln!("{device_src}");
+    let tokens = quote! {
+        #device_tokens
+        #[automatically_derived]
+        #[cfg(not(target_arch = "spirv"))]
+        pub mod #kernel_ident {
+            use super::module::{
+                __BUILD,
+                __krnl::{
+                    anyhow::Result,
+                    scalar::ScalarType,
+                    device::{Device, Features},
+                    buffer::{Slice, SliceMut},
+                    kernel::__private::{
+                        Kernel as RawKernel,
+                        BufferDesc,
+                        builder::{
+                            KernelBuilder as RawKernelBuilder,
+                            DispatchBuilder as RawDispatchBuilder,
+                        },
+                    },
+                    krnl_core::{
+                        half::{f16, bf16},
+                        glam::{UVec2, UVec3},
+                    },
+                    __private::bytemuck::{self, NoUninit},
+                },
+                __kernel,
+            };
+            use std::sync::Arc;
 
-[lib]
-crate-type = ["dylib"]
+            const KERNEL: Result<(&'static [u32], Features), &'static str> = {
+                if __BUILD {
+                    let kernel = if let Some((hash, spirv, features)) = __kernel(module_path!()) {
+                        if hash == #hash {
+                            Some((spirv, features))
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    };
+                    if let Some(kernel) = kernel {
+                        Ok(kernel)
+                    } else {
+                        Err(concat!("Kernel `", module_path!(), "`, module has been modified!"))
+                    }
+                } else {
+                    Err(concat!("Kernel `", module_path!(), "` not built, module has `#[krnl(build=false)]`!"))
+                }
+            };
 
-[dependencies]
-"#,
-    );
-    let vulkan_version = vulkan_version
-        .ok_or_else(|| Error::new(span, "expected a default vulkan version, ie `vulkan(1, 1)`"))?;
-    if !has_krnl_core_dep {
-        let krnl_core_path = PathBuf::from("krnl-core")
-            .canonicalize()
-            .into_syn_result(span)?
-            .to_string_lossy()
-            .into_owned();
-        manifest.push_str(&format!(
-            "krnl-core = {{ path = {krnl_core_path:?}, features = [\"spirv-panic\"] }}\n"
-        ));
-    }
-    manifest.push_str(&dependencies);
-    module_item.tokens.to_tokens(&mut tokens);
-    let crate_source = tokens.to_string();
-    fs::write(device_crate_dir.join("Cargo.toml"), manifest).into_syn_result(span)?;
-    let src_dir = device_crate_dir.join("src");
-    if !src_dir.exists() {
-        fs::create_dir(&src_dir).into_syn_result(span)?;
-    }
-    fs::write(src_dir.join("lib.rs"), &crate_source).into_syn_result(span)?;
-    let _ = Command::new("cargo")
-        .arg("fmt")
-        .current_dir(&device_crate_dir)
-        .status();
-    fs::create_dir_all(&module_path.parent().unwrap()).into_syn_result(span)?;
-    let status = Command::new("cargo")
-        .args(&[
-            "run",
-            "--release",
-            "--quiet",
-            "--",
-            &*device_crate_dir.to_string_lossy(),
-            &vulkan_version.to_string(),
-            &*module_path.to_string_lossy(),
-            source,
-        ])
-        .current_dir(&builder_dir)
-        .env("RUSTUP_TOOLCHAIN", "")
-        .envs(option_env!("OUT_DIR").map(|x| ("OUT_DIR", x)))
-        .status()
-        .into_syn_result(span)?;
-    if !status.success() {
-        return Err(Error::new(
-            span,
-            format!("Failed to compile module {module_name:?}!"),
-        ));
-    }
-    Ok(())
-}
+            pub mod builder {
+                use super::*;
 
-#[cfg(krnl_build)]
-fn get_mod_path(
-    name: &str,
-    std_span: StdSpan,
-    _source: &str,
-    manifest_dir: &Path,
-    crate_name: &str,
-) -> Result<PathBuf> {
-    let span = std_span.into();
-    let mod_path = std_span
-        .source_file()
-        .path()
-        .canonicalize()
-        .into_syn_result(span)?
-        .strip_prefix(manifest_dir)
-        .into_syn_result(span)?
-        .with_extension("")
-        .join(name);
-    Ok(mod_path)
-}
+                pub struct KernelBuilder {
+                    pub(super) raw: RawKernelBuilder,
+                }
 
-#[cfg(not(krnl_build))]
-fn get_mod_path(
-    name: &str,
-    std_span: StdSpan,
-    source: &str,
-    manifest_dir: &Path,
-    _crate_name: &str,
-) -> Result<PathBuf> {
-    static MOD_PATHS: OnceCell<HashMap<String, PathBuf>> = OnceCell::new();
-    let span = std_span.into();
-    let mod_paths = MOD_PATHS.get_or_try_init(|| {
-        let mut mod_paths = HashMap::new();
-        let modules_dir = manifest_dir.join(".krnl/modules/");
-        if modules_dir.exists() {
-            for entry in walkdir::WalkDir::new(&modules_dir) {
-                let entry = entry.into_syn_result(span)?;
-                let path = entry.path();
-                if path.is_file() {
-                    let bytes = fs::read(path).unwrap();
-                    let (source, module) = bincode::deserialize::<(String, ModuleInner)>(&bytes)
-                        .into_syn_result(span)?;
-                    let mod_path = path
-                        .strip_prefix(&modules_dir)
-                        .into_syn_result(span)?
-                        .into();
-                    mod_paths.insert(source, mod_path);
+                impl KernelBuilder {
+                    pub fn build(self, device: Device) -> Result<Kernel> {
+                        Ok(Kernel {
+                            raw: self.raw.build(device)?
+                        })
+                    }
+                }
+
+                pub struct DispatchBuilder<'a> {
+                    pub(super) raw: RawDispatchBuilder<'a>,
+                }
+
+                impl DispatchBuilder<'_> {
+                    #dispatch_builder_dim_impls
+                    pub #unsafe_token fn dispatch(self) -> Result<()> {
+                        unsafe {
+                            self.raw.dispatch()
+                        }
+                    }
+                }
+            }
+            use builder::{KernelBuilder, DispatchBuilder};
+
+            #[repr(C)]
+            #[derive(Clone, Copy)]
+            pub struct PushConsts {
+                #(#push_const_fields),*
+            }
+
+            unsafe impl NoUninit for PushConsts {}
+
+            pub struct Kernel {
+                raw: RawKernel,
+            }
+
+            impl Kernel {
+                pub fn builder(#spec_args) -> KernelBuilder {
+                    let (kernel_name, specs) = (
+                        #kernel_name_tokens,
+                        &[#(#spec_idents.into()),*],
+                    );
+                    const BUFFER_DESCS: &[BufferDesc] = &[#buffer_descs];
+                    let (spirv, features) = KERNEL.unwrap();
+                    let raw = RawKernel::builder(kernel_name, spirv)
+                        .features(features)
+                        .threads(UVec3::new(#host_threads))
+                        .specs(specs)
+                        .buffer_descs(BUFFER_DESCS)
+                        .push_consts_size(#push_consts_size);
+                    KernelBuilder {
+                        raw,
+                    }
+                }
+                pub fn dispatch_builder<'a>(&self, #dispatch_args)  -> Result<DispatchBuilder<'a>> {
+                    let slices = &mut [#(#dispatch_slices.into(),)*];
+                    let push_consts = PushConsts {
+                        #push_idents
+                    };
+                    let push_consts = bytemuck::bytes_of(&push_consts);
+                    let raw = self.raw.dispatch_builder(slices, push_consts)?;
+                    Ok(DispatchBuilder {
+                        raw,
+                    })
                 }
             }
         }
-        Result::<_, Error>::Ok(mod_paths)
-    })?;
-    if let Some(mod_path) = mod_paths.get(source) {
-        Ok(mod_path.clone())
-    } else {
-        let msg =  format!("module `{name}` not built, build with `RUSTFLAGS=\"--cfg krnl_build\" cargo +nightly check`");
-        Err(Error::new(span, msg))
+    };
+    tokens.into()
+}
+
+#[derive(Parse, Debug)]
+struct KernelAttr {
+    #[call(Punctuated::parse_terminated)]
+    args: Punctuated<KernelAttrArg, Comma>,
+}
+
+impl KernelAttr {
+    fn meta(&self) -> Result<KernelAttrMeta> {
+        let mut meta = KernelAttrMeta {
+            threads: [1; 3],
+            ..KernelAttrMeta::default()
+        };
+        let mut has_threads = false;
+        for arg in self.args.iter() {
+            if let Some(threads) = arg.threads.as_ref() {
+                let threads = &threads.value.inner;
+                if has_threads {
+                    return Err(Error::new_spanned(
+                        &arg.ident,
+                        "`threads` already specified",
+                    ));
+                }
+                has_threads = true;
+                if threads.len() > 3 {
+                    return Err(Error::new_spanned(
+                        &arg.ident,
+                        "expected 1, 2, or 3 dimensional `threads`",
+                    ));
+                } else {
+                    meta.dimensionality = threads.len() as u32;
+                };
+                for (i, value) in threads.iter().enumerate() {
+                    if let Some(spec) = value.spec.as_ref() {
+                        meta.thread_specs[i].replace(spec.clone());
+                    } else {
+                        let constant = value.constant.as_ref().unwrap();
+                        let dim: u32 = constant.base10_parse()?;
+                        if dim == 0 {
+                            return Err(Error::new_spanned(&constant, "thread dim cannot be 0"));
+                        }
+                        meta.threads[i] = dim;
+                    }
+                }
+            } else if arg.ident == "for_each" {
+                meta.for_each = true;
+            } else {
+                return Err(Error::new_spanned(&arg.ident, "unknown arg"));
+            }
+        }
+        if !has_threads {
+            return Err(Error::new(Span2::call_site(), "expected `threads`"));
+        }
+        if meta.for_each && meta.dimensionality != 1 {
+            return Err(Error::new(
+                Span2::call_site(),
+                "expected 1 dimensional `threads` for `for_each` kernel",
+            ));
+        }
+        Ok(meta)
     }
 }
 
-fn module_impl(attr: TokenStream, item: TokenStream) -> Result<TokenStream> {
-    use std::env::var;
-    let module_attr: ModuleAttributes = syn::parse(attr.clone())?;
-    let mut module_item: ModuleItem = syn::parse(item.clone())?;
-    let mut krnl: syn::Path = parse_quote! {
-        ::krnl
-    };
-    let mut build = true;
-    let mut new_attr = Vec::with_capacity(module_item.attr.len());
-    for attr in module_item.attr {
-        if attr.path.segments.len() == 1
-            && attr
-                .path
-                .segments
-                .first()
-                .map_or(false, |x| x.ident == "krnl")
+#[derive(Default, Debug)]
+struct KernelAttrMeta {
+    for_each: bool,
+    dimensionality: u32,
+    threads: [u32; 3],
+    thread_specs: [Option<Ident>; 3],
+}
+
+impl KernelAttrMeta {
+    fn compute_threads(&self) -> Punctuated<LitInt, Comma> {
+        if self.thread_specs.iter().any(|x| x.is_some()) {
+            std::iter::from_fn(|| Some(LitInt::new("1", Span2::call_site())))
+                .take(self.dimensionality as usize)
+                .collect()
+        } else {
+            self.threads
+                .iter()
+                .map(|x| LitInt::new(&x.to_string(), Span2::call_site()))
+                .take(self.dimensionality as usize)
+                .collect()
+        }
+    }
+    fn threads_tokens(&self, spec_ids: &HashMap<String, u32>) -> Result<TokenStream2> {
+        if !self.thread_specs.iter().any(|x| x.is_some()) {
+            let threads = self.compute_threads();
+            let tokens = if self.dimensionality == 1 {
+                quote! {
+                    let threads = #threads;
+                }
+            } else if self.dimensionality == 2 {
+                quote! {
+                    let threads = ::krnl_core::glam::UVec2::new(#threads);
+                }
+            } else if self.dimensionality == 3 {
+                quote! {
+                    let threads = ::krnl_core::glam::UVec3::new(#threads);
+                }
+            } else {
+                unreachable!();
+            };
+            return Ok(tokens);
+        }
+        let mut asm_strings = Vec::new();
+        asm_strings.push("%ty_u32 = OpTypeInt 32 0".to_string());
+        let mut thread_values = Punctuated::<Expr, Comma>::new();
+        for (i, (thread, spec)) in self
+            .threads
+            .iter()
+            .zip(self.thread_specs.iter())
+            .enumerate()
         {
-            let args: ModuleKrnlArgs = syn::parse(attr.tokens.clone().into())?;
-            for arg in args.args.iter() {
-                if let Some(krnl_crate) = arg.krnl_crate.as_ref() {
-                    krnl = krnl_crate.clone();
-                } else if let Some(krnl_build) = arg.krnl_build.as_ref() {
-                    build = krnl_build.value;
+            if let Some(spec) = spec.as_ref() {
+                if let Some(id) = spec_ids.get(&spec.to_string()).copied() {
+                    asm_strings.push(format!("%t{i} = OpSpecConstant %ty_u32 {thread}"));
+                    asm_strings.push(format!("OpDecorate SpecId %t{i} {id}"));
+                    thread_values.push(parse_quote!(#spec));
                 } else {
-                    let ident = arg.ident.as_ref().unwrap();
                     return Err(Error::new_spanned(
-                        ident,
-                        format!("unknown krnl arg `{ident}`, expected `build` or `crate`"),
+                        &spec,
+                        "expected spec const identifier or literal",
+                    ));
+                }
+            } else {
+                asm_strings.push(format!("%t{i} = OpConstant %ty_u32 {thread}"));
+                thread_values.push(parse_quote!(#thread));
+            }
+        }
+        let threads_tokens = if self.dimensionality == 1 {
+            quote! {
+                let threads = #thread_values;
+            }
+        } else if self.dimensionality == 2 {
+            quote! {
+                let threads = ::krnl_core::glam::UVec2::new(#thread_values);
+            }
+        } else if self.dimensionality == 3 {
+            quote! {
+                let threads = ::krnl_core::glam::UVec3::new(#thread_values);
+            }
+        } else {
+            unreachable!();
+        };
+        Ok(quote! {
+            {
+                ::core::arch::asm! {
+                    #(#asm_strings),*
+                    "%uvec = OpVector %ty_u32 3",
+                    "%workgroup_size = OpSpecConstantComposite %t0 %t1 %t2",
+                    "OpDecorate WorkgroupSize %workgroup_size",
+                    options(noreturn),
+                };
+            }
+            #threads_tokens
+        })
+    }
+    fn host_threads(&self) -> Punctuated<Expr, Comma> {
+        let mut host_threads = Punctuated::new();
+        for (thread, spec) in self.threads.iter().zip(self.thread_specs.iter()) {
+            if let Some(spec) = spec.as_ref() {
+                let ident = format_ident!("{}", spec.to_string().to_lowercase());
+                host_threads.push(parse_quote! {
+                    #ident
+                });
+            } else {
+                host_threads.push(parse_quote! {
+                    #thread
+                });
+            }
+        }
+        host_threads
+    }
+}
+
+#[derive(Parse, Debug)]
+struct KernelAttrArg {
+    ident: Ident,
+    #[parse_if(ident == "threads")]
+    threads: Option<InsideParen<Threads>>,
+}
+
+#[derive(Parse, Debug)]
+struct Threads {
+    #[call(Punctuated::parse_separated_nonempty)]
+    inner: Punctuated<ThreadValue, Comma>,
+}
+
+#[derive(Parse, Debug)]
+struct ThreadValue {
+    spec: Option<Ident>,
+    #[parse_if(spec.is_none())]
+    constant: Option<LitInt>,
+}
+
+#[derive(Parse, Debug)]
+struct Kernel {
+    #[call(Attribute::parse_outer)]
+    attrs: Vec<Attribute>,
+    #[allow(unused)]
+    pub_token: Pub,
+    unsafe_token: Option<Unsafe>,
+    #[allow(unused)]
+    fn_token: Fn,
+    ident: Ident,
+    #[peek(Lt)]
+    generics: Option<KernelGenerics>,
+    #[paren]
+    paren: Paren,
+    #[inside(paren)]
+    #[call(Punctuated::parse_terminated)]
+    args: Punctuated<KernelArg, Comma>,
+    block: Block,
+}
+
+impl Kernel {
+    fn compute_buffer_suffix(mut_token: Option<Mut>) -> &'static str {
+        if mut_token.is_some() {
+            "rw"
+        } else {
+            "r"
+        }
+    }
+    fn validate(&self, meta: &KernelAttrMeta) -> Result<()> {
+        if let Some(generics) = self.generics.as_ref() {
+            generics.validate()?;
+        }
+        for arg in self.args.iter() {
+            arg.validate(meta)?;
+        }
+        Ok(())
+    }
+    fn kernel_name_tokens(&self) -> TokenStream2 {
+        if let Some(generics) = self.generics.as_ref() {
+            let mut fmt_string = format!("{}<", self.ident);
+            for (i, spec) in generics.specs.iter().enumerate() {
+                use std::fmt::Write;
+                let ident = &spec.ident;
+
+                if i > 0 {
+                    fmt_string.push_str(", ");
+                }
+                write!(&mut fmt_string, "{ident}={{}}");
+            }
+            let args: Punctuated<Ident, Comma> = generics
+                .specs
+                .iter()
+                .map(|spec| Ident::new(&spec.ident.to_string().to_lowercase(), spec.ident.span()))
+                .collect();
+            fmt_string.push('>');
+            quote! {
+                format!(#fmt_string, #args)
+            }
+        } else {
+            quote! {
+                module_path!()
+            }
+        }
+    }
+    fn spec_ids(&self) -> HashMap<String, u32> {
+        self.generics
+            .as_ref()
+            .map(KernelGenerics::spec_ids)
+            .unwrap_or_default()
+    }
+    fn spec_args(&self) -> Vec<TypedArg<ScalarType>> {
+        self.generics
+            .as_ref()
+            .map(KernelGenerics::spec_args)
+            .unwrap_or_default()
+    }
+    fn declare_specs(&self) -> TokenStream2 {
+        self.generics
+            .as_ref()
+            .map(KernelGenerics::declare_specs)
+            .unwrap_or_default()
+    }
+    fn push_consts_ident(&self) -> Option<Ident> {
+        if self.args.iter().any(|x| x.push.is_some()) {
+            Some(format_ident!("__krnl_{}PushConsts", self.ident.to_string()))
+        } else {
+            None
+        }
+    }
+    fn push_const_fields(&self) -> Vec<TypedArg<ScalarType>> {
+        let mut push_consts: Vec<_> = self
+            .args
+            .iter()
+            .filter_map(|arg| {
+                arg.push
+                    .as_ref()
+                    .map(|push| TypedArg::new(arg.ident.clone(), *push))
+            })
+            .collect();
+        push_consts.sort_by_key(|x| -(x.ty.size() as i32));
+        push_consts
+    }
+    fn compute_args(&self, for_each: bool) -> Punctuated<FnArg, Comma> {
+        fn buffer_arg(idx: u32, ident: &Ident, mut_token: Option<Mut>, ty: &ScalarType) -> FnArg {
+            let binding = LitInt::new(&format!("{idx}"), ident.span());
+            let ident = format_ident!("{ident}_{}", Kernel::compute_buffer_suffix(mut_token));
+            parse_quote! {
+                #[spirv(storage_buffer, descriptor_set = 0, binding = #binding)]
+                #ident: &#mut_token [#ty]
+            }
+        }
+        let mut compute_args = Punctuated::<FnArg, Comma>::new();
+        let builtins = self.builtins(for_each);
+        for builtin in builtins.iter() {
+            match builtin.as_str() {
+                "global_id" => {
+                    compute_args.push(parse_quote! {
+                        #[spirv(global_invocation_id)]
+                        global_id: ::krnl_core::glam::UVec3
+                    });
+                }
+                "group_id" => {
+                    compute_args.push(parse_quote! {
+                        #[spirv(workgroup_id)]
+                        group_id: ::krnl_core::glam::UVec3
+                    });
+                }
+                "groups" => {
+                    compute_args.push(parse_quote! {
+                        #[spirv(num_workgroups)]
+                        groups: ::krnl_core::glam::UVec3
+                    });
+                }
+                "subgroup_index" => {
+                    compute_args.push(parse_quote! {
+                        #[spirv(subgroup_id)]
+                        subgroup_index: u32
+                    });
+                }
+                "subgroups" => {
+                    compute_args.push(parse_quote! {
+                        #[spirv(num_subgroups)]
+                        subgroups: u32
+                    });
+                }
+                "subgroup_threads" => {
+                    compute_args.push(parse_quote! {
+                        #[spirv(subgroup_size)]
+                        subgroup_threads: u32
+                    });
+                }
+                "subgroup_thread_index" => {
+                    compute_args.push(parse_quote! {
+                        #[spirv(subgroup_invocation_id)]
+                        subgroup_threads: u32
+                    });
+                }
+                "thread_id" => {
+                    compute_args.push(parse_quote! {
+                        #[spirv(local_invocation_id)]
+                        thread_id: ::krnl_core::glam::UVec3
+                    });
+                }
+                "thread_index" => {
+                    compute_args.push(parse_quote! {
+                        #[spirv(local_invocation_index)]
+                        thread_index: u32
+                    });
+                }
+                _ => (),
+            }
+        }
+        let mut buffer_idx = 0;
+        for arg in self.args.iter() {
+            if let Some(global) = arg.global.as_ref() {
+                compute_args.push(buffer_arg(
+                    buffer_idx,
+                    &arg.ident,
+                    global.mut_token,
+                    &global.slice.elem,
+                ));
+                buffer_idx += 1;
+            } else if let Some(item) = arg.item.as_ref() {
+                compute_args.push(buffer_arg(buffer_idx, &arg.ident, item.mut_token, &item.ty));
+                buffer_idx += 1;
+            } else if let Some(group) = arg.group.as_ref() {
+                let ident = &arg.ident;
+                let array = &group.array;
+                compute_args.push(parse_quote! {
+                    #[spirv(workgroup)]
+                    #ident: &mut #array
+                });
+            } else if let Some(subgroup) = arg.subgroup.as_ref() {
+                todo!();
+            }
+        }
+        if let Some(ident) = self.push_consts_ident() {
+            compute_args.push(parse_quote! {
+                #[spirv(push_constant)]
+                push_consts: &#ident
+            })
+        }
+        compute_args
+    }
+    fn builtins(&self, for_each: bool) -> HashSet<String> {
+        let mut builtins = HashSet::new();
+        if for_each {
+            builtins.extend([
+                "global_threads".to_string(),
+                "global_id".to_string(),
+                "groups".to_string(),
+                "threads".to_string(),
+            ]);
+        }
+        for arg in self.args.iter().filter(|x| x.builtin.is_some()) {
+            let builtin = arg.ident.to_string();
+            match builtin.as_str() {
+                "global_threads" => {
+                    builtins.insert("groups".to_string());
+                }
+                "global_index" => {
+                    builtins.extend([
+                        "group_id".to_string(),
+                        "group_index".to_string(),
+                        "groups".to_string(),
+                        "threads".to_string(),
+                        "thread_index".to_string(),
+                    ]);
+                }
+                "group_index" => {
+                    builtins.insert("group_id".to_string());
+                }
+                _ => (),
+            }
+            builtins.insert(builtin);
+        }
+        builtins
+    }
+    fn builtin_tokens(&self, meta: &KernelAttrMeta) -> Result<TokenStream2> {
+        let dimensionality = meta.dimensionality;
+        let builtins = self.builtins(meta.for_each);
+        let mut output = TokenStream2::new();
+        if builtins.contains("threads") {
+            output.extend(meta.threads_tokens(&self.spec_ids())?);
+        }
+        let vector_builtins = [
+            "global_id",
+            "groups",
+            "global_threads",
+            "group_id",
+            "thread_id",
+        ];
+        for builtin in vector_builtins.iter().filter(|x| builtins.contains(**x)) {
+            if *builtin == "global_threads" {
+                output.extend(quote! {
+                    let global_threads = groups * threads;
+                });
+            } else if dimensionality == 1 {
+                let ident = format_ident!("{builtin}");
+                output.extend(quote! {
+                    let #ident = #ident.x;
+                })
+            } else if dimensionality == 2 {
+                let ident = format_ident!("{builtin}");
+                output.extend(quote! {
+                    let #ident = #ident.truncate();
+                })
+            }
+        }
+        let scalar_builtins = ["group_index", "global_index"];
+        for builtin in scalar_builtins.iter().filter(|x| builtins.contains(**x)) {
+            if *builtin == "group_index" {
+                if dimensionality == 1 {
+                    output.extend(quote! {
+                        let group_index = group_id;
+                    });
+                } else if dimensionality == 2 {
+                    output.extend(quote! {
+                        let group_index = group_id.x + group_id.y * threads.x;
+                    });
+                } else if dimensionality == 3 {
+                    output.extend(quote! {
+                        let group_index = group_id.x + group_id.y * threads.x + group_id.z * threads.x * threads.y;
+                    });
+                }
+            } else if *builtin == "global_index" {
+                if dimensionality == 1 {
+                    output.extend(quote! {
+                        let global_index = group_index * threads + thread_index;
+                    });
+                } else if dimensionality == 2 {
+                    output.extend(quote! {
+                        let global_index = group_index * threads.x * threads.y + thread_index;
+                    });
+                } else if dimensionality == 3 {
+                    output.extend(quote! {
+                        let global_index = group_index * threads.x * threads.y * threads.z + thread_index;
+                    });
+                }
+            }
+        }
+        Ok(output)
+    }
+    fn compute_tokens(&self, for_each: bool) -> TokenStream2 {
+        let spec_ids = self.spec_ids();
+        let mut tokens = TokenStream2::new();
+        let mut has_items = false;
+        for arg in self.args.iter() {
+            let ident = &arg.ident;
+            if let Some(global) = arg.global.as_ref() {
+                let compute_ident = format_ident!(
+                    "{ident}_{}",
+                    Kernel::compute_buffer_suffix(global.mut_token)
+                );
+                if global.mut_token.is_some() {
+                    tokens.extend(quote! {
+                        let ref mut #ident = ::krnl_core::mem::UnsafeMut::from_mut(#compute_ident);
+                    });
+                } else {
+                    tokens.extend(quote! {
+                        let ref #ident = #compute_ident;
+                    });
+                }
+            } else if let Some(group) = arg.group.as_ref() {
+                tokens.extend(quote! {
+                    let ref mut #ident = ::krnl_core::mem::UninitUnsafeMut::from_mut(#ident);
+                });
+            } else if let Some(subgroup) = arg.subgroup.as_ref() {
+                tokens.extend(quote! {
+                    *#ident = Default::default();
+                });
+            } else if let Some(item) = arg.item.as_ref() {
+                let compute_ident =
+                    format_ident!("{ident}_{}", Kernel::compute_buffer_suffix(item.mut_token));
+                tokens.extend(quote! {
+                    let #ident = #compute_ident;
+                });
+                if !has_items {
+                    tokens.extend(quote! {
+                        let items = #ident.len() as u32;
+                    });
+                    has_items = true;
+                }
+            }
+        }
+        if for_each && !has_items {
+            tokens.extend(quote! {
+                let items = 0u32;
+            });
+        }
+        tokens
+    }
+    fn for_each_tokens(&self) -> TokenStream2 {
+        let mut tokens = TokenStream2::new();
+        for arg in self.args.iter() {
+            if let Some(item) = arg.item.as_ref() {
+                let ident = &arg.ident;
+                if item.mut_token.is_some() {
+                    tokens.extend(quote! {
+                        let #ident = unsafe {
+                            ::krnl_core::spirv_std::arch::IndexUnchecked::index_unchecked_mut(#ident, item_index as usize)
+                        };
+                    });
+                } else {
+                    tokens.extend(quote! {
+                        let #ident = unsafe {
+                            ::krnl_core::spirv_std::arch::IndexUnchecked::index_unchecked(#ident, item_index as usize)
+                        };
+                    });
+                }
+            }
+        }
+        tokens
+    }
+    fn device_args(&self) -> Punctuated<TypedArg<Type>, Comma> {
+        self.args.iter().map(KernelArg::device_arg).collect()
+    }
+    fn dispatch_args(&self) -> Punctuated<TypedArg<Type>, Comma> {
+        self.args
+            .iter()
+            .filter_map(KernelArg::dispatch_arg)
+            .collect()
+    }
+    fn buffer_descs(&self) -> Punctuated<TokenStream2, Comma> {
+        self.args
+            .iter()
+            .filter_map(KernelArg::buffer_desc)
+            .collect()
+    }
+    fn dispatch_slices(&self) -> Vec<Ident> {
+        self.args
+            .iter()
+            .filter_map(KernelArg::dispatch_slice)
+            .collect()
+    }
+}
+
+#[derive(Parse, Debug)]
+struct KernelGenerics {
+    lt: Lt,
+    #[call(Punctuated::parse_separated_nonempty)]
+    specs: Punctuated<KernelSpec, Comma>,
+    gt: Gt,
+}
+
+impl KernelGenerics {
+    fn validate(&self) -> Result<()> {
+        for spec in self.specs.iter() {
+            if spec.spec.value != "spec" {
+                return Err(Error::new_spanned(&spec.spec.value, "expected spec"));
+            }
+            if spec.ident.to_string().starts_with("__krnl_") {
+                return Err(Error::new_spanned(&spec.ident, "`__krnl_` is reserved"));
+            }
+        }
+        Ok(())
+    }
+    fn spec_ids(&self) -> HashMap<String, u32> {
+        self.specs
+            .iter()
+            .enumerate()
+            .map(|(i, x)| (x.ident.to_string(), i as u32))
+            .collect()
+    }
+    fn spec_args(&self) -> Vec<TypedArg<ScalarType>> {
+        self.specs
+            .iter()
+            .map(|x| {
+                let ident = Ident::new(&x.ident.to_string(), x.ident.span());
+                TypedArg::new(ident, x.ty)
+            })
+            .collect()
+    }
+    fn declare_specs(&self) -> TokenStream2 {
+        let mut tokens = TokenStream2::new();
+        for (i, spec) in self.specs.iter().enumerate() {
+            spec.declare(&mut tokens, i as u32);
+        }
+        tokens
+    }
+}
+
+#[derive(Parse, Debug)]
+struct KernelSpec {
+    #[allow(unused)]
+    pound: Pound,
+    spec: InsideBracket<Ident>,
+    #[allow(unused)]
+    const_token: Const,
+    ident: Ident,
+    #[allow(unused)]
+    colon: Colon,
+    ty: ScalarType,
+}
+
+impl KernelSpec {
+    fn declare(&self, tokens: &mut TokenStream2, spec_id: u32) {
+        let bits = self.ty.size() * 8;
+        let signed = if self.ty.name.starts_with('i') { 1 } else { 0 };
+        let float = matches!(self.ty.name, "f32" | "f64");
+        let ty_string = if float {
+            format!("%ty = OpTypeFloat {bits}")
+        } else {
+            format!("%ty = OpTypeInt {bits} {signed}")
+        };
+        let values = if bits == 64 { "0 0" } else { "0" };
+        let spec_string = format!("%spec = OpSpecConstant %ty {values}");
+        let spec_id_string = format!("OpDecorate %spec SpecId {spec_id}");
+        let ident = &self.ident;
+        tokens.extend(quote! {
+            #[allow(non_snake_case)]
+            let #ident = (|| unsafe {
+                ::core::arch::asm! {
+                    #ty_string,
+                    #spec_string,
+                    #spec_id_string,
+                    "OpReturnValue %spec",
+                    options(noreturn),
+                }
+            })();
+        });
+    }
+}
+
+#[derive(Parse, Debug)]
+struct InsideBracket<T> {
+    #[allow(unused)]
+    #[bracket]
+    bracket: Bracket,
+    #[inside(bracket)]
+    value: T,
+}
+
+#[derive(Parse, Debug)]
+struct KernelArg {
+    #[allow(unused)]
+    pound: Pound,
+    attr: InsideBracket<Ident>,
+    ident: Ident,
+    #[allow(unused)]
+    colon: Colon,
+    #[parse_if(attr.value == "builtin")]
+    builtin: Option<Ident>,
+    #[parse_if(attr.value == "global")]
+    global: Option<KernelGlobal>,
+    #[parse_if(attr.value == "group")]
+    group: Option<KernelGroup>,
+    #[parse_if(attr.value == "subgroup")]
+    subgroup: Option<KernelSubgroup>,
+    #[parse_if(attr.value == "item")]
+    item: Option<KernelItem>,
+    #[parse_if(attr.value == "push")]
+    push: Option<ScalarType>,
+}
+
+impl KernelArg {
+    fn validate(&self, meta: &KernelAttrMeta) -> Result<()> {
+        if self.ident.to_string().starts_with("__krnl_") {
+            return Err(Error::new_spanned(&self.ident, "`__krnl_` is reserved"));
+        }
+        let attrs = ["builtin", "global", "group", "subgroup", "item", "push"];
+        if !attrs.iter().copied().any(|x| self.attr.value == *x) {
+            return Err(Error::new_spanned(&self.attr.value, "unknown attribute"));
+        }
+        if let Some(builtin_ty) = self.builtin.as_ref() {
+            let for_each_builtins = &["item_index", "items"];
+            let builtins_u32 = &[
+                "global_index",
+                "group_index",
+                "subgroup_index",
+                "thread_index",
+            ];
+            let builtins_vector = &[
+                "global_id",
+                "global_threads",
+                "group_id",
+                "groups",
+                "subgroup_id",
+                "subgroups",
+                "thread_id",
+                "threads",
+            ];
+            let mut builtins = for_each_builtins
+                .into_iter()
+                .chain(builtins_u32)
+                .chain(builtins_vector)
+                .copied();
+            if let Some(builtin) = builtins.find(|x| self.ident == *x) {
+                let is_for_each = for_each_builtins.into_iter().any(|x| builtin == *x);
+                if is_for_each {
+                    return Err(Error::new_spanned(
+                        &self.ident,
+                        "requires `for_each` kernel",
+                    ));
+                } else if meta.for_each {
+                    if !is_for_each {
+                        return Err(Error::new_spanned(
+                            &self.ident,
+                            "not allowed in `for_each` kernel",
+                        ));
+                    } else {
+                        if builtin_ty != "u32" {
+                            return Err(Error::new_spanned(builtin_ty, "expected u32"));
+                        }
+                    }
+                } else if builtins_u32.into_iter().any(|x| builtin == *x) {
+                    if builtin_ty != "u32" {
+                        return Err(Error::new_spanned(builtin_ty, "expected u32"));
+                    }
+                } else if builtins_vector.into_iter().any(|x| builtin == *x) {
+                    let dimensionality = meta.dimensionality;
+                    if dimensionality == 1 && builtin_ty != "u32" {
+                        return Err(Error::new_spanned(builtin_ty, "expected u32"));
+                    } else if dimensionality == 2 && builtin_ty != "UVec2" {
+                        return Err(Error::new_spanned(builtin_ty, "expected UVec2"));
+                    } else if dimensionality == 3 && builtin_ty != "UVec3" {
+                        return Err(Error::new_spanned(builtin_ty, "expected UVec3"));
+                    }
+                } else {
+                    unreachable!();
+                }
+            } else {
+                return Err(Error::new_spanned(&self.ident, "unknown builtin"));
+            }
+        } else if let Some(global) = self.global.as_ref() {
+            if let Some(unsafe_mut) = global.unsafe_mut.as_ref() {
+                if meta.for_each {
+                    return Err(Error::new(
+                        unsafe_mut.span,
+                        "not allowed in `for_each` kernel",
                     ));
                 }
             }
+        } else if let Some(group) = self.group.as_ref() {
+            if meta.for_each {
+                return Err(Error::new(
+                    group.uninit_unsafe_mut.span,
+                    "not allowed in `for_each` kernel",
+                ));
+            }
+        } else if let Some(item) = self.item.as_ref() {
+            if !meta.for_each {
+                return Err(Error::new_spanned(
+                    &self.attr.value,
+                    "requires `for_each` kernel",
+                ));
+            }
+        }
+        Ok(())
+    }
+    fn device_arg(&self) -> TypedArg<Type> {
+        let ty = if let Some(builtin) = self.builtin.as_ref() {
+            parse_quote!(#builtin)
+        } else if let Some(global) = self.global.as_ref() {
+            parse_quote!(#global)
+        } else if let Some(group) = self.group.as_ref() {
+            parse_quote!(#group)
+        } else if let Some(subgroup) = self.subgroup.as_ref() {
+            parse_quote!(#subgroup)
+        } else if let Some(item) = self.item.as_ref() {
+            parse_quote!(#item)
+        } else if let Some(push) = self.push.as_ref() {
+            parse_quote!(#push)
         } else {
-            new_attr.push(attr)
+            unreachable!()
+        };
+        TypedArg::new(self.ident.clone(), ty)
+    }
+    fn dispatch_arg(&self) -> Option<TypedArg<Type>> {
+        let ty = if let Some(global) = self.global.as_ref() {
+            global.dispatch_type()
+        } else if let Some(item) = self.item.as_ref() {
+            item.dispatch_type()
+        } else if let Some(push) = self.push.as_ref() {
+            parse_quote!(#push)
+        } else {
+            return None;
+        };
+        Some(TypedArg::new(self.ident.clone(), ty))
+    }
+    fn buffer_desc(&self) -> Option<TokenStream2> {
+        if let Some(global) = self.global.as_ref() {
+            let name = self.ident.to_string();
+            let scalar_type = &global.slice.elem;
+            let scalar_type = Ident::new(&scalar_type.name.to_uppercase(), scalar_type.span);
+            let mutable = global.mut_token.is_some();
+            Some(quote! {
+                BufferDesc::new(#name, ScalarType::#scalar_type)
+                    .with_mutable(#mutable)
+            })
+        } else if let Some(item) = self.item.as_ref() {
+            let name = self.ident.to_string();
+            let scalar_type = &item.ty;
+            let scalar_type = Ident::new(&scalar_type.name.to_uppercase(), scalar_type.span);
+            let mutable = item.mut_token.is_some();
+            Some(quote! {
+                BufferDesc::new(#name, ScalarType::#scalar_type)
+                    .with_mutable(#mutable)
+                    .with_item(true)
+            })
+        } else {
+            None
         }
     }
-    module_item.attr = new_attr;
-    let module_name = module_item.ident.to_string();
-    let module_bytes_result = if build {
-        (|| {
-            let source = {
-                let attr = TokenStream2::from(attr);
-                let ident = &module_item.ident;
-                let tokens = &module_item.tokens;
-                quote! {
-                    #[module(#attr)]
-                    mod #ident { #tokens }
-                }
-                .to_string()
-            };
-
-            let manifest_dir = PathBuf::from(var("CARGO_MANIFEST_DIR").unwrap());
-            let crate_name = var("CARGO_CRATE_NAME").unwrap();
-            let mod_path = get_mod_path(
-                &module_name,
-                StdSpan::call_site(),
-                &source,
-                &manifest_dir,
-                &crate_name,
-            )?;
-            let module_path = manifest_dir
-                .join(".krnl/modules")
-                .join(&mod_path)
-                .with_extension("bincode");
-            if cfg!(krnl_build) && var("CARGO_PRIMARY_PACKAGE").is_ok() {
-                build_module(BuildModuleArgs {
-                    module_attr: &module_attr,
-                    module_item: &module_item,
-                    module_name: &module_name,
-                    mod_path: &mod_path,
-                    module_path: &module_path,
-                    manifest_dir: &manifest_dir,
-                    crate_name: &crate_name,
-                    source: &source,
-                })?;
-            }
-            let span = Span::call_site();
-            let bytes = fs::read(&module_path).into_syn_result(span)?;
-            let (saved_source, module) =
-                bincode::deserialize::<(String, ModuleInner)>(&bytes).into_syn_result(span)?;
-            assert_eq!(saved_source, source);
-            Some(bincode::serialize(&module).into_syn_result(span)).transpose()
-        })()
-    } else {
-        Ok(None)
-    };
-    let module_fn_body = match module_bytes_result {
-        Ok(Some(module_bytes)) => quote! {
-            use #krnl::{bincode, kernel::Module, __private::once_cell};
-            use once_cell::sync::Lazy;
-            use ::std::sync::Arc;
-            static MODULE: Lazy<Module> =  Lazy::new(|| {
-                bincode::deserialize([#(#module_bytes),*].as_slice()).unwrap()
-            });
-            &*MODULE
-        },
-        Ok(None) => {
-            quote! {
-                panic!("module `{}` not built due to attribute `krnl(build = false)`", #module_name)
-            }
-        }
-        Err(e) => e.into_compile_error(),
-    };
-    quote! {
-        pub fn module() -> &'static #krnl::kernel::Module {
-            #module_fn_body
+    fn dispatch_slice(&self) -> Option<Ident> {
+        if self.global.is_some() || self.item.is_some() {
+            Some(self.ident.clone())
+        } else {
+            None
         }
     }
-    .to_tokens(&mut module_item.tokens);
-    /*dbg!(module_item
-    .to_token_stream()
-    .to_string()
-    .lines()
-    .collect::<Vec<_>>());*/
-    Ok(module_item.to_token_stream().into())
 }
 
-#[proc_macro_attribute]
-pub fn module(attr: TokenStream, item: TokenStream) -> TokenStream {
-    match module_impl(attr, item) {
-        Ok(x) => x,
-        Err(e) => e.into_compile_error().into(),
+#[derive(Parse, Debug)]
+struct KernelSlice<E> {
+    #[bracket]
+    bracket: Bracket,
+    #[inside(bracket)]
+    elem: E,
+}
+
+impl<E: ToTokens> ToTokens for KernelSlice<E> {
+    fn to_tokens(&self, tokens: &mut TokenStream2) {
+        self.bracket
+            .surround(tokens, |tokens| self.elem.to_tokens(tokens));
+    }
+}
+
+#[derive(Parse, Debug)]
+struct KernelGlobal {
+    #[allow(unused)]
+    and_token: And,
+    mut_token: Option<Mut>,
+    #[parse_if(mut_token.is_some())]
+    unsafe_mut: Option<KernelUnsafeMut>,
+    #[parse_if(unsafe_mut.is_some())]
+    lt: Option<Lt>,
+    slice: KernelSlice<ScalarType>,
+    #[parse_if(lt.is_some())]
+    gt: Option<Gt>,
+}
+
+impl KernelGlobal {
+    fn dispatch_type(&self) -> Type {
+        let elem = &self.slice.elem;
+        if self.mut_token.is_some() {
+            parse_quote! {
+                SliceMut<'a, #elem>
+            }
+        } else {
+            parse_quote! {
+                Slice<'a, #elem>
+            }
+        }
+    }
+}
+
+impl ToTokens for KernelGlobal {
+    fn to_tokens(&self, tokens: &mut TokenStream2) {
+        self.and_token.to_tokens(tokens);
+        if let Some((mut_token, unsafe_mut)) = self.mut_token.as_ref().zip(self.unsafe_mut.as_ref())
+        {
+            mut_token.to_tokens(tokens);
+            unsafe_mut.to_tokens(tokens);
+        }
+        if let Some(lt) = self.lt.as_ref() {
+            lt.to_tokens(tokens);
+        }
+        self.slice.to_tokens(tokens);
+        if let Some(gt) = self.gt.as_ref() {
+            gt.to_tokens(tokens);
+        }
+    }
+}
+
+#[derive(Parse, Debug)]
+struct KernelArray<E> {
+    #[bracket]
+    bracket: Bracket,
+    #[inside(bracket)]
+    elem: E,
+    #[inside(bracket)]
+    semi: Semi,
+    len: Expr,
+}
+
+impl<E: ToTokens> ToTokens for KernelArray<E> {
+    fn to_tokens(&self, tokens: &mut TokenStream2) {
+        self.bracket.surround(tokens, |tokens| {
+            self.elem.to_tokens(tokens);
+            self.semi.to_tokens(tokens);
+            self.len.to_tokens(tokens);
+        });
+    }
+}
+
+#[derive(Parse, Debug)]
+struct KernelGroup {
+    #[allow(unused)]
+    and: And,
+    #[allow(unused)]
+    mut_token: Mut,
+    uninit_unsafe_mut: KernelUninitUnsafeMut,
+    lt: Lt,
+    array: KernelArray<ScalarType>,
+    gt: Gt,
+}
+
+impl ToTokens for KernelGroup {
+    fn to_tokens(&self, tokens: &mut TokenStream2) {
+        self.and.to_tokens(tokens);
+        self.mut_token.to_tokens(tokens);
+        self.uninit_unsafe_mut.to_tokens(tokens);
+        self.lt.to_tokens(tokens);
+        self.array.to_tokens(tokens);
+        self.gt.to_tokens(tokens);
+    }
+}
+
+#[derive(Parse, Debug)]
+struct KernelSubgroup {
+    #[allow(unused)]
+    and: And,
+    #[allow(unused)]
+    mut_token: Mut,
+    array: KernelArray<ScalarType>,
+}
+
+impl ToTokens for KernelSubgroup {
+    fn to_tokens(&self, tokens: &mut TokenStream2) {
+        self.and.to_tokens(tokens);
+        self.mut_token.to_tokens(tokens);
+        self.array.to_tokens(tokens);
+    }
+}
+
+#[derive(Parse, Debug)]
+struct KernelItem {
+    #[allow(unused)]
+    and: And,
+    #[allow(unused)]
+    mut_token: Option<Mut>,
+    ty: ScalarType,
+}
+
+impl KernelItem {
+    fn dispatch_type(&self) -> Type {
+        let elem = &self.ty;
+        if self.mut_token.is_some() {
+            parse_quote! {
+                SliceMut<'a, #elem>
+            }
+        } else {
+            parse_quote! {
+                Slice<'a, #elem>
+            }
+        }
+    }
+}
+
+impl ToTokens for KernelItem {
+    fn to_tokens(&self, tokens: &mut TokenStream2) {
+        self.and.to_tokens(tokens);
+        if let Some(mut_token) = self.mut_token.as_ref() {
+            mut_token.to_tokens(tokens);
+        }
+        self.ty.to_tokens(tokens);
+    }
+}
+
+#[derive(Parse, Debug)]
+struct TypedArg<T> {
+    ident: Ident,
+    colon: Colon,
+    ty: T,
+}
+
+impl<T> TypedArg<T> {
+    fn new(ident: Ident, ty: T) -> Self {
+        Self {
+            ident,
+            colon: Colon::default(),
+            ty,
+        }
+    }
+}
+
+impl<T: ToTokens> ToTokens for TypedArg<T> {
+    fn to_tokens(&self, tokens: &mut TokenStream2) {
+        self.ident.to_tokens(tokens);
+        self.colon.to_tokens(tokens);
+        self.ty.to_tokens(tokens);
+    }
+}
+
+#[derive(Debug)]
+struct KernelUnsafeMut {
+    span: Span2,
+}
+
+impl Parse for KernelUnsafeMut {
+    fn parse(input: ParseStream<'_>) -> Result<Self> {
+        let ident: Ident = input.parse()?;
+        if ident == "UnsafeMut" {
+            Ok(Self { span: ident.span() })
+        } else {
+            Err(Error::new_spanned(&ident, "expected `UnsafeMut`"))
+        }
+    }
+}
+
+impl ToTokens for KernelUnsafeMut {
+    fn to_tokens(&self, tokens: &mut TokenStream2) {
+        Ident::new("UnsafeMut", self.span).to_tokens(tokens);
+    }
+}
+
+#[derive(Debug)]
+struct KernelUninitUnsafeMut {
+    span: Span2,
+}
+
+impl Parse for KernelUninitUnsafeMut {
+    fn parse(input: ParseStream<'_>) -> Result<Self> {
+        let ident: Ident = input.parse()?;
+        if ident == "UninitUnsafeMut" {
+            Ok(Self { span: ident.span() })
+        } else {
+            Err(Error::new_spanned(&ident, "expected `UninitUnsafeMut`"))
+        }
+    }
+}
+
+impl ToTokens for KernelUninitUnsafeMut {
+    fn to_tokens(&self, tokens: &mut TokenStream2) {
+        Ident::new("UninitUnsafeMut", self.span).to_tokens(tokens);
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ScalarType {
+    name: &'static str,
+    span: Span2,
+}
+
+impl ScalarType {
+    fn from_ident(ident: &Ident) -> Result<Self> {
+        let span = ident.span();
+        let scalars = [
+            "u8", "i8", "u16", "i16", "f16", "bf16", "u32", "i32", "f32", "u64", "i64", "f64",
+        ];
+        if let Some(name) = scalars.iter().find(|x| ident == **x) {
+            Ok(Self { name, span })
+        } else {
+            Err(Error::new(span, "expected scalar"))
+        }
+    }
+    fn size(&self) -> usize {
+        match self.name {
+            "u8" | "i8" => 1,
+            "u16" | "i16" | "f16" | "bf16" => 2,
+            "u32" | "i32" | "f32" => 4,
+            "u64" | "i64" | "f64" => 8,
+            _ => unreachable!(),
+        }
+    }
+}
+
+impl Parse for ScalarType {
+    fn parse(input: ParseStream<'_>) -> Result<Self> {
+        Self::from_ident(&input.parse()?)
+    }
+}
+
+impl ToTokens for ScalarType {
+    fn to_tokens(&self, tokens: &mut TokenStream2) {
+        Ident::new(&self.name, self.span).to_tokens(tokens);
     }
 }

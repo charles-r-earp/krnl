@@ -1,69 +1,147 @@
+```rust
+
+#[module]
+mod foo {
+    #[kernel(foreach, threads(TS))]
+    pub fn cast_u32_f32<#[spec] const TS: u32>(
+        #[item] x: &u32,
+        #[item] y: &mut f32,
+    ) {
+        *y = *x as _;
+    }
+
+    #[kernel(threads(256))]
+    pub fn saxpy(#[builtin] global_index: usize, #[global] x: &[f32], #[push] alpha: f32, #[global] y: &mut UnsafeMut<[f32]>) {
+        if global_index < x.len() && global_index < y.len() {
+            unsafe {
+                *y.unsafe_mut()[global_index] += alpha * x[global_index];
+            }
+        }
+    }
+
+    #[kernel(group_threads(1)]
+    pub fn foo<#[spec] const N: u32>(
+        /* attrs */
+        #[global] x: &[f32],
+        #[global] x: &mut UnsafeMut<[f32]>,
+        #[group] x: &mut UnsafeMut<[u32; 10]>,
+        #[subgroup] x: &mut [i32; 10],
+        #[thread] x: &mut [u32; n],
+        #[push] alpha: f32,
+        #[builtin] global_threads: UVec2,
+        /* global types */
+        #[global] x: &[u32],
+        #[global] y: &mut UnsafeMut<[i32]>,
+        /* builtins */
+        // Vector impl From<u32 or [u32; 2] or [u32; 3]> based on Dimensionality
+        // set by threads(..)
+        global_threads: Vector,
+        global_index: usize,
+        global_id: Vector,
+        groups: Vector,
+        group_index: index,
+        group_id: Vecor,
+        subgroups: Vector,
+        subgroup_index: usize,
+        subgroup_id: Vector,
+        threads: Vector,
+        thread_index: usize,
+        thread_id: Vector,
+        /* for_each */
+        items: u32,
+        item_id: Vector,
+        item_index: usize,
+        #[item] x: &u32,
+        #[item] y: &mut f32,
+    ) {
+        w.load();
+        w.store();
+    }
+}
+
+```
 
 
 ```rust
+
+#[module]
+pub mod foo {
+    // etc
+
+    /* generated */
+    pub mod module {
+        pub fn proto(name: &str) -> Result<KernelProto> {
+            todo!()
+        }
+    }
+}
+
+```
+
+# krnlc
+
+Compiler for krnl
+
+Creates cache at $CARGO_MANIFEST_DIR .krnl/cache and tag .krnl/CASHDIRTAG
+
+module macro
+```rust
+#[module]
+pub mod kernels {
+
+    /* generated */
+    mod module {
+        _ = {
+            let bytes = module(module_path!());
+            let success =
+                bytes.len() == len
+                && bytes[0] == other[0]
+                && bytes[0] == other[1]
+                ..;
+            if !success {
+                panic!("module modified!");
+            }
+        };
+
+        include!(concat!(env!("CARGO_MANIFEST_DIR"), "/.krnl/cache"));
+        /* cache */
+        const fn __module(path: &'static str) -> Option<&'static [u8]> {
+            todo!()
+        }
+        pub(super) const fn __kernel(path: &'static str) -> Option<&'static [u8]> {
+            todo!()
+        }
+    }
+}
+
+/* options */
 #[module(
-    vulkan(1, 1),
-    dependency("krnl-core", version = "0.0.1"),
+    dependencies(r#"
+        foo = { version = "0.1", git = "https:/github.com/myuser/mycrate", }
+    "#)
 )]
-mod axpy {
-    use krnl_core::scalar::Scalar;
-
-    pub fn axpy<T: Scalar>(x: &T, alpha: T, y: &mut T) {
-        *y += alpha * *x;
-    }
-
-    #[kernel(elementwise, threads(256))] pub fn axpy_f32(x: &f32, alpha: f32, y: &mut f32) {
-        axpy(x, alpha, y);
-    }
-}
-
-fn axpy<T: Scalar>(x: &Slice<T>, alpha: T, y: &mut SliceMut<T>) -> Result<()> {
-    if y.device() == Device::host() {
-        x.as_host_slice()?;
-            .iter()
-            .zip(y.as_host_slice_mut()?)
-            .for_each(|(x, alpha, y)| axpy::axpy(x, alpha, y));
-    } else {
-        let scalar_type = T::scalar_type();
-        axpy::module()?
-            .kernel(format!("axpy_{}", scalar_type.name()))?
-            .compile_builder()
-            .compile(x.device())?
-            .dispatch_builder()
-            .slice("x", x)
-            .push("alpha", alpha)
-            .slice_mut("y", y)
-            .build()?
-            .dispatch()?;
-    }
-    Ok(())
-}
+#[krnl(crate=krnl)]
+#[krnl(no_build)]
 ```
 
-TODO: 
-Device buffers will have capacity (multiple of 256 bytes). Alloc functions like zeros() will allocate with full length, fill, then truncate to requrested length.
-
-For now, don't support splitting of slices. 
-
-Remove krnl_core::slice. Use reflection to replace the ArrayLength calls with a push constant. &[T] and &mut [T] can now be used directly.  
-
- Potentially support creating a module from spirv directly, but this might be out of scope for now.  
- 
- 
- # .krnls
- - package
-    - .krnls
-        -CASHTAG
-        -modules.bincode // <-- Vec<ModuleTableValue>
-        -foo1000.bincode // {module_name}{hash}.bincode , Module
-
-```rust    
-struct ModuleTableValue {
-    name: String,
-    path: PathBuf,
-    source: String,
-}
+/* krnl dir */
 ```
+- .krnl
+    - CASHDIR.TAG
+    - packages
+        - <package>
+            - .gitignore // ignore modules
+            - cache
+            - modules
+                - <module>
+                    - Cargo.toml
+                    - config.toml
+                    - src
+                        - lib.rs
+            - target // target dir for check / expand 
 
-Build: (name, path, source) -> module 
-Compile: (name, source) -> path -> module 
+## encode data in entry_point
+__krnl_ <hash>_ <threads> _ <access> _ <kernel_name>
+
+- threads are c<constant> or s<spec id>
+- access is r (readonly) or w (writeonly) or a (readwrite) for each buffer
