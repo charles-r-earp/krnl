@@ -2,8 +2,8 @@
 use std::{process::Command, collections::{HashSet, HashMap, BTreeMap}, path::{Path, PathBuf}, fs, borrow::Cow, ffi::OsStr, str::FromStr};
 use clap_cargo::{Features, Manifest, Workspace};
 use anyhow::{Result, format_err, bail};
-use proc_macro2::TokenStream as TokenStream2;
-use syn::{visit::Visit, ItemConst, Lit, Expr, ItemMod, File};
+use proc_macro2::{TokenStream as TokenStream2, Span as Span2};
+use syn::{visit::Visit, ItemConst, Lit, LitInt, Expr, ItemMod, File};
 use cargo_metadata::{Metadata, MetadataCommand, Package};
 use spirv_builder::{SpirvBuilder, MetadataPrintout, SpirvMetadata, ModuleResult};
 use quote::{quote, format_ident};
@@ -399,6 +399,9 @@ extern crate krnl_core; "#);
 }
 
 fn cache(package_dir: &Path, package_name: &str, module_datas: &[ModuleData], kernels: &[BTreeMap<String, PathBuf>]) -> Result<()> {
+    fn create_lit_int<T: std::fmt::Display>(x: T) -> LitInt {
+        LitInt::new(&x.to_string(), Span2::call_site())
+    }
     let mut module_arms = Vec::with_capacity(module_datas.len());
     let mut kernel_arms = Vec::with_capacity(kernels.iter().map(|x| x.len()).sum());
     for (module_data, kernels) in module_datas.iter().zip(kernels) {
@@ -406,7 +409,7 @@ fn cache(package_dir: &Path, package_name: &str, module_datas: &[ModuleData], ke
         let dependencies = module_data.data.get("dependencies").unwrap();
         let module_tokens = module_data.data.get("krnl_module_tokens").unwrap();
         let module_src = format!("(dependencies({dependencies:?})) => ({module_tokens})");
-        let module_path_indices = (0 .. module_path.len()).into_iter().collect::<Vec<_>>();
+        let module_path_indices = (0 .. module_path.len()).into_iter().map(create_lit_int).collect::<Vec<_>>();
         module_arms.push(quote! {
             {
                 let module_path = #module_path.as_bytes();
@@ -421,8 +424,9 @@ fn cache(package_dir: &Path, package_name: &str, module_datas: &[ModuleData], ke
         for (entry_point, spirv_path) in kernels.iter() {
             let spirv_bytes = fs::read(spirv_path)?;
             let (kernel, kernel_hash, spirv_words, capabilities) = process_kernel(module_path, entry_point, &spirv_bytes)?;
+            let spirv_words = spirv_words.into_iter().map(create_lit_int).collect::<Vec<_>>();
             let kernel_path = format!("{module_path}::{kernel}");
-            let kernel_path_indices = (0 .. kernel_path.len()).into_iter().collect::<Vec<_>>();
+            let kernel_path_indices = (0 .. kernel_path.len()).into_iter().map(create_lit_int).collect::<Vec<_>>();
             let mut features = TokenStream2::new();
             {
                 use Capability::*;
@@ -472,7 +476,50 @@ fn cache(package_dir: &Path, package_name: &str, module_datas: &[ModuleData], ke
             #(#kernel_arms)*
             None
         }
-    }.to_string();
+    };
+    fn tokens_to_string(tokens: TokenStream2) -> String {
+        use std::fmt::Write;
+        use proc_macro2::TokenTree as TokenTree2;
+        let mut string = String::new();
+        let mut iter = tokens.into_iter().peekable();
+        while let Some(token) = iter.next() {
+            use TokenTree2::*;
+            match token {
+                Group(group) => {
+                    use proc_macro2::Delimiter;
+                    let (pfx, sfx) = match group.delimiter() {
+                        Delimiter::Parenthesis => (Some('('), Some(')')),
+                        Delimiter::Brace => (Some('{'), Some('}')),
+                        Delimiter::Bracket => (Some('['), Some(']')),
+                        Delimiter::None => (None, None),
+                    };
+                    if let Some(pfx) = pfx {
+                        string.push(pfx);
+                    }
+                    string.push_str(&tokens_to_string(group.stream()));
+                    if let Some(sfx) = sfx {
+                        string.push(sfx);
+                    }
+                }
+                Ident(ident) => {
+                    string.push_str(&ident.to_string());
+                    if let Some(next) = iter.peek() {
+                        if let TokenTree2::Ident(_) = next {
+                            string.push(' ');
+                        }
+                    }
+                }
+                Punct(punct) => {
+                    string.push(punct.as_char());
+                }
+                Literal(literal) => {
+                    string.push_str(&literal.to_string());
+                }
+            }
+        }
+        string
+    }
+    let cache = tokens_to_string(cache);
     fs::write(package_dir.join("cache"), cache.as_bytes())?;
     Ok(())
 }
