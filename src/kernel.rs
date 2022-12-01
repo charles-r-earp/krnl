@@ -14,16 +14,22 @@ pub use krnl_macros::module;
 
 #[doc(hidden)]
 pub mod __private {
-    use crate::{
-        anyhow::{Result, format_err, bail},
-        scalar::{Scalar, ScalarType, ScalarElem},
-        device::{Device, DeviceInner, Features},
-        buffer::{Slice, SliceMut, ScalarSlice, ScalarSliceMut, RawSlice},
-        krnl_core::glam::{UVec2, UVec3},
-    };
     #[cfg(feature = "device")]
-    use crate::device::{DeviceBufferInner, KernelCache, Compute};
-    use std::{marker::PhantomData, collections::HashMap, borrow::Cow, sync::Arc, fmt::{self, Debug}};
+    use crate::device::{Compute, DeviceBufferInner, KernelCache};
+    use crate::{
+        anyhow::{bail, format_err, Result},
+        buffer::{RawSlice, ScalarSlice, ScalarSliceMut, Slice, SliceMut},
+        device::{Device, DeviceInner, Features},
+        krnl_core::glam::{UVec2, UVec3},
+        scalar::{Scalar, ScalarElem, ScalarType},
+    };
+    use std::{
+        borrow::Cow,
+        collections::HashMap,
+        fmt::{self, Debug},
+        marker::PhantomData,
+        sync::Arc,
+    };
 
     pub mod builder {
         use super::*;
@@ -55,25 +61,30 @@ pub mod __private {
                 self
             }
             pub fn specs(mut self, specs: &[ScalarElem]) -> Self {
-                self.spec_consts = specs.iter().flat_map(|x| {
-                    use ScalarElem::*;
-                    match x.to_scalar_bits() {
-                        U8(x) => [u32::from_ne_bytes([x, 0, 0, 0]), 0].into_iter().take(1),
-                        U16(x) => {
-                            let [x1, x2] = x.to_ne_bytes();
-                            [u32::from_ne_bytes([x1, x2, 0, 0]), 0].into_iter().take(1)
+                self.spec_consts = specs
+                    .iter()
+                    .flat_map(|x| {
+                        use ScalarElem::*;
+                        match x.to_scalar_bits() {
+                            U8(x) => [u32::from_ne_bytes([x, 0, 0, 0]), 0].into_iter().take(1),
+                            U16(x) => {
+                                let [x1, x2] = x.to_ne_bytes();
+                                [u32::from_ne_bytes([x1, x2, 0, 0]), 0].into_iter().take(1)
+                            }
+                            U32(x) => [x, 0].into_iter().take(1),
+                            U64(x) => {
+                                let x = x.to_ne_bytes();
+                                [
+                                    u32::from_ne_bytes([x[0], x[1], x[2], x[3]]),
+                                    u32::from_ne_bytes([x[4], x[5], x[6], x[7]]),
+                                ]
+                                .into_iter()
+                                .take(2)
+                            }
+                            _ => unreachable!(),
                         }
-                        U32(x) => [x, 0].into_iter().take(1),
-                        U64(x) => {
-                            let x = x.to_ne_bytes();
-                            [
-                                u32::from_ne_bytes([x[0], x[1], x[2], x[3]]),
-                                u32::from_ne_bytes([x[4], x[5], x[6], x[7]]),
-                            ].into_iter().take(2)
-                        }
-                        _ => unreachable!(),
-                    }
-                }).collect();
+                    })
+                    .collect();
                 self
             }
             pub fn buffer_descs(mut self, buffer_descs: &'static [BufferDesc]) -> Self {
@@ -95,7 +106,7 @@ pub mod __private {
                     DeviceInner::Device(vulkan_device) => {
                         let features = &self.features;
                         let device_features = vulkan_device.features();
-                        if !device.features().contains(&self.features) {
+                        if !device_features.contains(&self.features) {
                             bail!("Kernel `{kernel_name}` requires {features:?}, device has {device_features:?}!");
                         }
                         let desc = KernelDesc {
@@ -104,13 +115,13 @@ pub mod __private {
                             threads: self.threads,
                             push_consts_size: self.push_consts_size,
                         };
-                        let cache = vulkan_device.kernel_cache(self.spirv, self.spec_consts, desc)?;
-                        Ok(Kernel {
-                            device,
-                            cache,
-                        })
+                        let cache =
+                            vulkan_device.kernel_cache(self.spirv, self.spec_consts, desc)?;
+                        Ok(Kernel { device, cache })
                     }
-                    DeviceInner::Host => Err(format_err!("Kernel `{kernel_name}` cannot be built for the host!")),
+                    DeviceInner::Host => Err(format_err!(
+                        "Kernel `{kernel_name}` cannot be built for the host!"
+                    )),
                 }
             }
         }
@@ -198,18 +209,30 @@ pub mod __private {
 
         impl<'a> DispatchBuilder<'a> {
             #[cfg(feature = "device")]
-            pub(super) fn new(device: Device, cache: Arc<KernelCache>, slices: &mut [DispatchSlice<'a>], push_consts: &[u8]) -> Result<Self> {
+            pub(super) fn new(
+                device: Device,
+                cache: Arc<KernelCache>,
+                slices: &mut [DispatchSlice<'a>],
+                push_consts: &[u8],
+            ) -> Result<Self> {
                 let desc = cache.desc();
                 let kernel_name = &desc.name;
                 if device.is_host() {
                     bail!("Kernel `{kernel_name}` expected Device(_), found Host!");
                 }
-                let mut push_consts: Vec<u32> = bytemuck::cast_slice(push_consts).to_vec();
-                let slice_push_start = push_consts.len().checked_sub(slices.len() * 2).unwrap();
-                let slice_push_consts: &mut [[u32; 2]] = bytemuck::cast_slice_mut(&mut push_consts[slice_push_start..]);
+                let push_consts_u8 = push_consts;
+                let mut push_consts: Vec<u32> = Vec::with_capacity(desc.push_consts_size as usize);
+                push_consts.extend(push_consts_u8.chunks(4).map(|x| {
+                    u32::from_ne_bytes([
+                        x.get(0).copied().unwrap_or_default(),
+                        x.get(1).copied().unwrap_or_default(),
+                        x.get(2).copied().unwrap_or_default(),
+                        x.get(3).copied().unwrap_or_default(),
+                    ])
+                }));
                 let mut items: Option<usize> = None;
                 let mut buffers = Vec::with_capacity(slices.len());
-                for ((buffer_desc, slice), [offset, len]) in desc.buffer_descs.iter().zip(slices).zip(slice_push_consts) {
+                for (buffer_desc, slice) in desc.buffer_descs.iter().zip(slices) {
                     let name = buffer_desc.name;
                     let slice = slice.as_raw_slice();
                     if buffer_desc.item {
@@ -231,8 +254,7 @@ pub mod __private {
                     } else {
                         bail!("Kernel `{kernel_name}` `{name}` is empty!");
                     }
-                    *offset = device_slice.offset() as u32;
-                    *len = device_slice.len() as u32;
+                    push_consts.extend([slice.offset() as u32, slice.len() as u32]);
                 }
                 let mut builder = Self {
                     device,
@@ -248,7 +270,8 @@ pub mod __private {
                 Ok(builder)
             }
             pub fn global_threads(mut self, global_threads: DispatchDim) -> Result<Self> {
-                #[cfg(feature = "device")] {
+                #[cfg(feature = "device")]
+                {
                     let desc = self.cache.desc();
                     let threads = desc.threads;
                     let kernel_name = &desc.name;
@@ -256,7 +279,11 @@ pub mod __private {
                         bail!("Kernel `{kernel_name}` global_threads cannot be 0, found {global_threads:?}!");
                     }
                     let mut groups = [0; 3];
-                    for (g, (gt, t)) in groups.as_mut().iter_mut().zip(global_threads.to_array().iter().zip(threads.as_ref())) {
+                    for (g, (gt, t)) in groups
+                        .as_mut()
+                        .iter_mut()
+                        .zip(global_threads.to_array().iter().zip(threads.as_ref()))
+                    {
                         *g = gt / t;
                         if gt % t != 0 {
                             *g += 1;
@@ -265,12 +292,14 @@ pub mod __private {
                     self.groups.replace(groups);
                     Ok(self)
                 }
-                #[cfg(not(feature = "device"))] {
+                #[cfg(not(feature = "device"))]
+                {
                     unreachable!()
                 }
             }
             pub fn groups(mut self, groups: DispatchDim) -> Result<Self> {
-                #[cfg(feature = "device")] {
+                #[cfg(feature = "device")]
+                {
                     let kernel_name = &self.cache.desc().name;
                     if groups.to_array().iter().any(|x| *x == 0) {
                         bail!("Kernel `{kernel_name}` groups cannot be 0, found {groups:?}!");
@@ -278,12 +307,14 @@ pub mod __private {
                     self.groups.replace(groups.to_array());
                     Ok(self)
                 }
-                #[cfg(not(feature = "device"))] {
+                #[cfg(not(feature = "device"))]
+                {
                     unreachable!()
                 }
             }
             pub unsafe fn dispatch(self) -> Result<()> {
-                #[cfg(feature = "device")] {
+                #[cfg(feature = "device")]
+                {
                     let groups = if let Some(groups) = self.groups {
                         groups
                     } else {
@@ -298,13 +329,14 @@ pub mod __private {
                     };
                     self.device.as_device().unwrap().compute(compute)
                 }
-                #[cfg(not(feature = "device"))] {
+                #[cfg(not(feature = "device"))]
+                {
                     unreachable!()
                 }
             }
         }
     }
-    use builder::{KernelBuilder, DispatchBuilder, DispatchSlice};
+    use builder::{DispatchBuilder, DispatchSlice, KernelBuilder};
 
     #[derive(Debug)]
     pub(crate) struct KernelDesc {
@@ -369,11 +401,17 @@ pub mod __private {
         pub fn builder(name: impl Into<Cow<'static, str>>, spirv: &'static [u32]) -> KernelBuilder {
             KernelBuilder::new(name.into(), spirv)
         }
-        pub fn dispatch_builder<'a>(&self, slices: &mut [DispatchSlice<'a>], push_consts: &[u8]) -> Result<DispatchBuilder<'a>> {
-            #[cfg(feature = "device")] {
+        pub fn dispatch_builder<'a>(
+            &self,
+            slices: &mut [DispatchSlice<'a>],
+            push_consts: &[u8],
+        ) -> Result<DispatchBuilder<'a>> {
+            #[cfg(feature = "device")]
+            {
                 DispatchBuilder::new(self.device.clone(), self.cache.clone(), slices, push_consts)
             }
-            #[cfg(not(feature = "device"))] {
+            #[cfg(not(feature = "device"))]
+            {
                 unreachable!()
             }
         }

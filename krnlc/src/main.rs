@@ -68,7 +68,6 @@ fn build(workspace: Workspace, features: Features, manifest: Manifest) -> Result
         fs::create_dir(&packages_dir)?;
     }
     for package in selected {
-        let deps = package.dependencies.iter().map(|x| x.name.as_str());
         let manifest_path = package.manifest_path.as_str();
         let package_dir = packages_dir.join(&package.name);
         if !package_dir.exists() {
@@ -76,7 +75,7 @@ fn build(workspace: Workspace, features: Features, manifest: Manifest) -> Result
         }
         let target_dir = package_dir.join("target");
         cache(&package_dir, &package.name, &[], &[])?;
-        cargo_check(&features, &target_dir, manifest_path, deps)?;
+        //cargo_check(&package.name, &features, &target_dir, manifest_path)?;
         let module_datas = cargo_expand(&package.name, &features, &target_dir, manifest_path)?;
         fs::write(
             package_dir.join(".gitignore"),
@@ -157,15 +156,18 @@ fn add_features_to_command(command: &mut Command, features: &Features) -> Result
     }
     Ok(())
 }
-
-fn cargo_check<'a>(features: &Features, target_dir: &Path, manifest_path: &str, deps: impl Iterator<Item=&'a str>) -> Result<()> {
+/*
+fn cargo_check<'a>(crate_name: &str, features: &Features, target_dir: &Path, manifest_path: &str) -> Result<()> {
     let mut command = Command::new("cargo");
     command.args(["+nightly", "check", "--manifest-path", manifest_path]);
     add_features_to_command(&mut command, features)?;
-    command.args(&["--target-dir", target_dir.to_string_lossy().as_ref()]);
-    for dep in deps {
-        command.args(&["-p", dep]);
-    }
+    command.args(&[
+        "--target-dir",
+        target_dir.to_string_lossy().as_ref(),
+        "--workspace",
+        "--exclude",
+        crate_name,
+    ]);
     let status = command.status()?;
     if status.success() {
         Ok(())
@@ -173,7 +175,7 @@ fn cargo_check<'a>(features: &Features, target_dir: &Path, manifest_path: &str, 
         Err(format_err!("cargo check failed!"))
     }
 }
-
+*/
 fn cargo_expand(crate_name: &str, features: &Features, target_dir: &Path, manifest_path: &str) -> Result<Vec<ModuleData>> {
     let mut command = Command::new("cargo");
     command.args(["+nightly", "rustc", "--manifest-path", manifest_path]);
@@ -344,8 +346,6 @@ libm = {{ git = "https://github.com/rust-lang/libm", tag = "0.2.5" }}
     if !cargo_dir.exists() {
         fs::create_dir(&cargo_dir)?;
     }
-    //let config = format!("[build]\ntarget-dir = {target_dir:?}");
-    //fs::write(cargo_dir.join("config.toml"), config.as_bytes())?;
     let toolchain = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/rust-toolchain.toml"));
     fs::write(
         crate_dir.join("rust-toolchain.toml"),
@@ -383,6 +383,7 @@ extern crate krnl_core; "#);
         .multimodule(true)
         .spirv_metadata(SpirvMetadata::NameVariables)
         .print_metadata(MetadataPrintout::None)
+        .preserve_bindings(true)
         .deny_warnings(true);
     for cap in capabilites {
         builder = builder.capability(cap);
@@ -432,7 +433,7 @@ fn cache(package_dir: &Path, package_name: &str, module_datas: &[ModuleData], ke
                     ("shader_float16", Float16),
                     ("shader_float64", Float64),
                 ] {
-                    let ident = format_ident!("set_{feature}");
+                    let ident = format_ident!("with_{feature}");
                     if capabilities.contains(&cap) {
                         features.extend(quote! {
                             .#ident(true)
@@ -444,7 +445,7 @@ fn cache(package_dir: &Path, package_name: &str, module_datas: &[ModuleData], ke
                 {
                     let kernel_path = #kernel_path.as_bytes();
                     let kernel_spirv = &[#(#spirv_words),*];
-                    let features = ::krnl::device::Features::new()
+                    let features = Features::new()
                         #features;
                     if path.len() == kernel_path.len() {
                         let success = #(path[#kernel_path_indices] == kernel_path[#kernel_path_indices])&&*;
@@ -465,7 +466,7 @@ fn cache(package_dir: &Path, package_name: &str, module_datas: &[ModuleData], ke
             #(#module_arms)*
             None
         }
-        pub(super) const fn __kernel(path: &'static str) -> Option<(u64, &'static [u32], ::krnl::device::Features)> {
+        pub(super) const fn __kernel(path: &'static str) -> Option<(u64, &'static [u32], Features)> {
             #[allow(unused_variables)]
             let path = path.as_bytes();
             #(#kernel_arms)*
@@ -557,8 +558,8 @@ fn process_kernel(module_path: &str, entry_point: &str, spirv_bytes: &[u8]) -> R
         if op == Op::Variable {
             if let [Operand::StorageClass(StorageClass::PushConstant), ..] = inst.operands.as_slice() {
                 if push_consts_id.is_none() {
-                    push_consts_id.replace(inst.result_id.unwrap());
-                    push_consts_ptr.replace(inst.result_type.unwrap());
+                    push_consts_id = inst.result_id;
+                    push_consts_ptr = inst.result_type;
                 } else {
                     bail!("Kernel `{kernel_name}` expected at most 1 push constant variable!");
                 }
@@ -572,32 +573,39 @@ fn process_kernel(module_path: &str, entry_point: &str, spirv_bytes: &[u8]) -> R
     let type_u32 = builder.type_int(32, 0);
     let type_i32 = builder.type_int(32, 1);
     let type_ptr_u32 = builder.type_pointer(None, StorageClass::PushConstant, type_u32);
-    let (push_consts_id, n_push_consts) = if let Some((push_consts_id, push_consts_ptr)) = push_consts_id.zip(push_consts_ptr) {
-        let module = builder.module_ref();
-        let push_consts_struct = module.types_global_values.iter()
+    let (push_consts_id, push_consts_struct, dyn_member_start) = if let Some((push_consts_id, push_consts_ptr)) = push_consts_id.zip(push_consts_ptr) {
+        let push_consts_struct = builder.module_ref()
+            .types_global_values
+            .iter()
             .find(|x| x.result_id == Some(push_consts_ptr))
             .unwrap()
             .operands[1]
             .unwrap_id_ref();
-        let n_push_consts = module.types_global_values.iter()
+        let push_consts_struct_inst = builder.module_mut()
+            .types_global_values
+            .iter_mut()
             .find(|x| x.result_id == Some(push_consts_struct))
-            .unwrap()
+            .unwrap();
+        let dyn_member_start = push_consts_struct_inst.operands.len() as u32;
+        push_consts_struct_inst
             .operands
-            .len();
-        (push_consts_id, n_push_consts)
+            .extend(std::iter::repeat(Operand::IdRef(type_u32)).take(bindings.len() * 2));
+        (push_consts_id, push_consts_struct, dyn_member_start)
     } else { // push consts have been optimized away
-        let n_push_consts = push_consts_size as usize / 4;
-        let push_consts_struct = builder.type_struct(std::iter::repeat(type_u32).take(n_push_consts));
+        let push_consts_struct = builder.id();
+        builder.type_struct_id(Some(push_consts_struct), std::iter::repeat(type_u32).take(bindings.len() * 2));
         builder.decorate(push_consts_struct, Decoration::Block, []);
-        for member in 0 .. n_push_consts as u32 {
-            builder.member_decorate(push_consts_struct, member, Decoration::Offset, [Operand::LiteralInt32(member * 4)]);
-        }
         let push_consts_ptr = builder.type_pointer(None, StorageClass::PushConstant, push_consts_struct);
         let push_consts_id = builder.variable(push_consts_ptr, None, StorageClass::PushConstant, None);
         builder.module_mut().entry_points[0].operands.push(Operand::IdRef(push_consts_id));
-        (push_consts_id, n_push_consts)
+        let dyn_member_start = 0;
+        (push_consts_id, push_consts_struct, dyn_member_start)
     };
-    let dyn_start = n_push_consts.checked_sub(bindings.len() * 2).unwrap() as u32;
+    let dyn_offset_start = push_consts_size.checked_sub(2 * bindings.len() as u32 * 4).unwrap();
+    for i in 0 .. bindings.len() as u32 * 2 {
+        let member = dyn_member_start + i;
+        builder.member_decorate(push_consts_struct, member, Decoration::Offset, [Operand::LiteralInt32(dyn_offset_start + i * 4)]);
+    }
     // dynamic offset and len
     {
         let mut b = 0;
@@ -649,7 +657,7 @@ fn process_kernel(module_path: &str, entry_point: &str, spirv_bytes: &[u8]) -> R
                         binding,
                         index,
                     } => {
-                        let member = builder.constant_u32(type_i32, 2 * binding + dyn_start);
+                        let member = builder.constant_u32(type_i32, 2 * binding + dyn_member_start);
                         let offset_ptr = builder.insert_access_chain(InsertPoint::FromBegin(i), type_ptr_u32, None, push_consts_id, [member])?;
                         i += 1;
                         let offset = builder.insert_load(InsertPoint::FromBegin(i), type_u32, None, offset_ptr, None, [])?;
@@ -664,7 +672,7 @@ fn process_kernel(module_path: &str, entry_point: &str, spirv_bytes: &[u8]) -> R
                         binding,
                     } => {
                         let inst = builder.module_mut().functions[entry_fn_index].blocks[b].instructions.remove(i);
-                        let member = builder.constant_u32(type_i32, 2 * binding + 1 + dyn_start);
+                        let member = builder.constant_u32(type_i32, 2 * binding + 1 + dyn_member_start);
                         let len_ptr = builder.insert_access_chain(InsertPoint::FromBegin(i), type_ptr_u32, None, push_consts_id, [member])?;
                         i += 1;
                         builder.insert_load(InsertPoint::FromBegin(i), type_u32, inst.result_id, len_ptr, None, [])?;
@@ -709,6 +717,10 @@ fn process_kernel(module_path: &str, entry_point: &str, spirv_bytes: &[u8]) -> R
             false
         }
     });
+    /*{
+        use rspirv::binary::Disassemble;
+        eprintln!("{}", module.disassemble());
+    }*/
     let spirv_words = module.assemble();
     let validator = spirv_tools::val::create(None);
     validator.validate(&spirv_words, None)?;

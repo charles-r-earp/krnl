@@ -32,7 +32,7 @@ bytemuck = { version = "1.11.0", default-features = false }
 bincode = "1.3.3"
 dashmap = { version = "5.3.4", optional = true }
 rspirv = "0.11.0"
-#spirv-tools = "0.9.0"
+dry = "0.1.1"
 
 [target."cfg(any(target_os = \"ios\", target_os = \"macos\"))".dependencies]
 ash-molten = { version = "0.12.0", features = ["pre-built"], optional = true }
@@ -42,5 +42,10 @@ ash = { version = "0.33.3", optional = true }
 # TODO change device to vulkan?
 device = ["dep:vulkano", "dep:ash-molten", "dep:ash", "dep:crossbeam-channel", "dep:futures-lite", "dep:dashmap"]
 
+[[test]]
+name = "integration_tests"
+path = "tests/integration_tests.rs"
+harness = false
+
 [dev-dependencies]
-shaderc = "0.8.0"
+libtest-mimic = "0.6.0"

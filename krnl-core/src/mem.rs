@@ -21,12 +21,12 @@ pub struct UnsafeMut<'a, T: ?Sized> {
 
 impl<'a, T: ?Sized> UnsafeMut<'a, T> {
     pub fn from_mut(inner: &'a mut T) -> Self {
-        Self {
-            inner,
-        }
+        Self { inner }
     }
     pub fn len(&self) -> usize
-        where T: ArrayLength {
+    where
+        T: ArrayLength,
+    {
         self.inner.length()
     }
     pub unsafe fn unsafe_ref(&self) -> &T {
@@ -49,13 +49,13 @@ impl<'a, T: ?Sized> UninitUnsafeMut<'a, T> {
         }
     }
     pub fn len(&self) -> usize
-        where T: ArrayLength {
+    where
+        T: ArrayLength,
+    {
         self.inner.len()
     }
     pub unsafe fn uninit_unsafe_mut(&mut self) -> &mut T {
-        unsafe {
-            self.inner.unsafe_mut()
-        }
+        unsafe { self.inner.unsafe_mut() }
     }
     pub unsafe fn assume_init(&mut self) -> &mut UnsafeMut<'a, T> {
         &mut self.inner

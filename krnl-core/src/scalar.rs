@@ -2,8 +2,10 @@
 use bytemuck::Pod;
 #[cfg(not(target_arch = "spirv"))]
 use derive_more::Display;
+use dry::macro_for;
 use half::{bf16, f16};
 use num_traits::{AsPrimitive, FromPrimitive, NumAssign, NumCast};
+use paste::paste;
 #[cfg(not(target_arch = "spirv"))]
 use serde::{Deserialize, Serialize};
 #[cfg(not(target_arch = "spirv"))]
@@ -364,6 +366,64 @@ impl From<f64> for ScalarElem {
     }
 }
 
+trait AsScalar<T>: Scalar {
+    fn as_scalar(self) -> T;
+}
+
+macro_for!($X in [u8, i8, u16, i16, u32, i32, f32, u64, i64, f64] {
+    macro_for!($Y in [u8, i8, u16, i16, u32, i32, f32, u64, i64, f64] {
+        impl AsScalar<$Y> for $X {
+            fn as_scalar(self) -> $Y {
+                self as _
+            }
+        }
+    });
+});
+
+macro_for!($X in [u8, i8, u16, i16, u32, i32, f32, u64, i64, f64] {
+    macro_for!($Y in [f16, bf16] {
+        impl AsScalar<$Y> for $X {
+            fn as_scalar(self) -> $Y {
+                self.as_()
+            }
+        }
+    });
+});
+
+macro_for!($X in [f16, bf16] {
+    macro_for!($Y in [u8, i8, u16, i16, u32, i32, f32, u64, i64, f64]  {
+        impl AsScalar<$Y> for $X {
+            fn as_scalar(self) -> $Y {
+                self.as_()
+            }
+        }
+    });
+});
+
+macro_for!($X in [f16, bf16] {
+    macro_for!($Y in [f16, bf16]  {
+        impl AsScalar<$Y> for $X {
+            fn as_scalar(self) -> $Y {
+                $Y::from_f32(self.to_f32())
+            }
+        }
+    });
+});
+/*
+trait TryAs<T> {
+    fn try_as(self) -> Option<T>;
+}
+
+impl<Y: Scalar, X: AsScalar<Y>> TryAs<Y> for X {
+    fn try_as(self) -> Option<Y> {
+        if X::scalar_type() == Y::scalar_type() {
+            Some(self.as_scalar())
+        } else {
+            None
+        }
+    }
+}*/
+
 #[cfg(target_arch = "spirv")]
 /// Base trait for numerical types.
 pub trait Scalar:
@@ -373,7 +433,7 @@ pub trait Scalar:
     fn scalar_type() -> ScalarType;
     fn cast<T: Scalar>(self) -> T;
 }
-
+/*
 macro_rules! cast {
     ($self:ident $(:$x:ty)? => $T:ident as $($y:ty),*) => {
         $(
@@ -382,7 +442,7 @@ macro_rules! cast {
             }
         )*
     };
-}
+}*/
 
 #[cfg(not(target_arch = "spirv"))]
 /// Base trait for numerical types.
@@ -409,6 +469,25 @@ pub trait Scalar:
     fn cast<T: Scalar>(self) -> T;
 }
 
+macro_for!($X in [u8, i8, u16, i16, f16, bf16, u32, i32, f32, u64, i64, f64] {
+    paste! {
+        impl Scalar for $X {
+            fn scalar_type() -> ScalarType {
+                ScalarType::[<$X:upper>]
+            }
+            fn cast<T: Scalar>(self) -> T {
+                macro_for!($Y in [u8, i8, u16, i16, f16, bf16, u32, i32, f32, u64, i64, f64] {
+                    if T::scalar_type() == $Y::scalar_type() {
+                        let y: $Y = self.as_scalar();
+                        return NumCast::from(y).unwrap();
+                    }
+                });
+                unreachable!()
+            }
+        }
+    }
+});
+/*
 impl Scalar for u8 {
     fn scalar_type() -> ScalarType {
         ScalarType::U8
@@ -791,4 +870,4 @@ impl Scalar for f64 {
         }
         unreachable!()
     }
-}
+}*/

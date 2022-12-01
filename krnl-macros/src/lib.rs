@@ -1,51 +1,47 @@
 #![allow(warnings)]
+use derive_syn_parse::Parse;
+use proc_macro::TokenStream;
+use proc_macro2::{Span as Span2, TokenStream as TokenStream2};
+use quote::{format_ident, quote, ToTokens};
+use siphasher::sip::SipHasher13;
 use std::{
-    collections::{HashSet, HashMap},
+    collections::{HashMap, HashSet},
     hash::Hasher,
     str::FromStr,
 };
-use proc_macro::TokenStream;
-use proc_macro2::{TokenStream as TokenStream2, Span as Span2};
-use quote::{quote, ToTokens, format_ident};
 use syn::{
     parse::{Parse, ParseStream},
-    parse_quote,
+    parse_macro_input, parse_quote,
     punctuated::Punctuated,
     token::{
-        And, Brace, Bracket, Colon, Colon2, Comma, Eq as SynEq, Fn, Gt, Lt, Mod, Mut, Paren, Pound,
-        Pub, Unsafe, Semi, Const,
+        And, Brace, Bracket, Colon, Colon2, Comma, Const, Eq as SynEq, Fn, Gt, Lt, Mod, Mut, Paren,
+        Pound, Pub, Semi, Unsafe,
     },
-    Attribute, Block, Error, FnArg, Ident, ItemMod, ItemFn, LitBool, Lit, LitInt, LitStr, Stmt, Type, Expr,
-    Visibility,
-    parse_macro_input,
-    Result,
+    Attribute, Block, Error, Expr, FnArg, Ident, ItemFn, ItemMod, Lit, LitBool, LitInt, LitStr,
+    Result, Stmt, Type, Visibility,
 };
-use derive_syn_parse::Parse;
-use siphasher::sip::SipHasher13;
 
 macro_rules! todo {
-    () => (
+    () => {
         std::todo!("[{}:{}]", file!(), line!())
-    );
+    };
 }
 
 macro_rules! unreachable {
-    () => (
+    () => {
         std::unreachable!("[{}:{}]", file!(), line!())
-    );
+    };
 }
 
 macro_rules! unwrap_or_compile_error {
-    ($e:expr) => (
-        {
-            match $e {
-                Ok(x) => x,
-                Err(e) => {
-                    return e.into_compile_error().into();
-                }
+    ($e:expr) => {{
+        match $e {
+            Ok(x) => x,
+            Err(e) => {
+                return e.into_compile_error().into();
             }
         }
-    );
+    }};
 }
 
 #[proc_macro_attribute]
@@ -54,7 +50,7 @@ pub fn module(attr: TokenStream, item: TokenStream) -> TokenStream {
     let mut dependencies = String::new();
     for arg in attr.args {
         if let Some(deps) = arg.dependencies {
-            dependencies.push_str(&deps.value.value());
+            dependencies = deps.value.value().trim().to_string();
         }
     }
     let mut item = syn::parse_macro_input!(item as ModuleItem);
@@ -81,7 +77,9 @@ pub fn module(attr: TokenStream, item: TokenStream) -> TokenStream {
                     return Error::new_spanned(
                         ident,
                         format!("unknown krnl arg `{ident}`, expected `build` or `crate`"),
-                    ).into_compile_error().into();
+                    )
+                    .into_compile_error()
+                    .into();
                 }
             }
         } else {
@@ -92,7 +90,7 @@ pub fn module(attr: TokenStream, item: TokenStream) -> TokenStream {
         let module_name = item.ident.to_string();
         let module_tokens = item.tokens.to_string();
         let module_src = format!("(dependencies({dependencies:?})) => ({module_tokens})");
-        let module_src_indices = (0 .. module_src.len()).into_iter().collect::<Vec<_>>();
+        let module_src_indices = (0..module_src.len()).into_iter().collect::<Vec<_>>();
         let mut data = HashMap::new();
         data.insert("dependencies", dependencies);
         data.insert("krnl_module_tokens", module_tokens);
@@ -119,7 +117,7 @@ pub fn module(attr: TokenStream, item: TokenStream) -> TokenStream {
         }
     } else {
         quote! {
-            pub(super) const fn __kernel(_: &'static str) -> Option<&'static [u32]> {
+            pub(super) const fn __kernel(_: &'static str) -> Option<(u64, &'static [u32], Features)> {
                 None
             }
         }
@@ -129,13 +127,13 @@ pub fn module(attr: TokenStream, item: TokenStream) -> TokenStream {
         #[automatically_derived]
         mod module {
             pub(super) use #krnl as __krnl;
+            use __krnl::device::Features;
             pub(super) const __BUILD: bool = #build;
             #cache
         }
     });
     item.to_token_stream().into()
 }
-
 
 #[derive(Parse, Debug)]
 struct ModuleAttr {
@@ -219,25 +217,33 @@ pub fn kernel(attr: TokenStream, item: TokenStream) -> TokenStream {
     let unsafe_token = &kernel.unsafe_token;
     let kernel_ident = &kernel.ident;
     let push_const_fields = kernel.push_const_fields();
-    let push_consts_size: u32 = push_const_fields.iter().map(|x| x.ty.size() as u32).sum();
-    let compute_ident = format_ident!("__krnl_{hash}_{push_consts_size}_{kernel_ident}");
-    let push_consts_struct = if let Some(ident) = kernel.push_consts_ident() {
+
+    let push_consts_ident = kernel.push_consts_ident();
+    let push_consts_struct = if let Some(ident) = push_consts_ident.as_ref() {
         quote! {
             #[automatically_derived]
             #[cfg(target_arch = "spirv")]
             #[repr(C)]
             pub struct #ident {
-                #push_const_fields
+                #(#push_const_fields),*
             }
         }
     } else {
         TokenStream2::new()
     };
+    let push_idents: Punctuated<_, Comma> = push_const_fields.iter().map(|x| &x.ident).collect();
     let compute_threads = attr_meta.compute_threads();
     let host_threads = attr_meta.host_threads();
     let mut compute_body = TokenStream2::new();
     let mut for_each_body = TokenStream2::new();
     compute_body.extend(kernel.declare_specs());
+    if let Some(ident) = push_consts_ident.as_ref() {
+        compute_body.extend(quote! {
+            let &#ident {
+                #push_idents
+            } = push_consts;
+        });
+    }
     compute_body.extend(unwrap_or_compile_error!(kernel.builtin_tokens(&attr_meta)));
     compute_body.extend(kernel.compute_tokens(attr_meta.for_each));
     if attr_meta.for_each {
@@ -246,32 +252,43 @@ pub fn kernel(attr: TokenStream, item: TokenStream) -> TokenStream {
     let compute_args = kernel.compute_args(attr_meta.for_each);
     let spec_args = kernel.spec_args();
     let device_args = kernel.device_args();
-    let device_call_args: Punctuated<_, Comma> =
-        spec_args.iter().map(|x| &x.ident)
-        .chain(device_args.iter().map(|x| &x.ident)).collect();
-    let device_args: Punctuated<_, Comma> = spec_args.iter().map(|x| quote! {
-        #[allow(non_snake_case)] #x
-    }).chain(device_args.iter().map(ToTokens::to_token_stream)).collect();
-    let spec_args: Punctuated<_, Comma> = spec_args.iter()
-        .map(|x| TypedArg::new(Ident::new(&x.ident.to_string().to_lowercase(), x.ident.span()), x.ty))
+    let device_call_args: Punctuated<_, Comma> = spec_args
+        .iter()
+        .map(|x| &x.ident)
+        .chain(device_args.iter().map(|x| &x.ident))
+        .collect();
+    let device_args: Punctuated<_, Comma> = spec_args
+        .iter()
+        .map(|x| {
+            quote! {
+                #[allow(non_snake_case)] #x
+            }
+        })
+        .chain(device_args.iter().map(ToTokens::to_token_stream))
+        .collect();
+    let spec_args: Punctuated<_, Comma> = spec_args
+        .iter()
+        .map(|x| {
+            TypedArg::new(
+                Ident::new(&x.ident.to_string().to_lowercase(), x.ident.span()),
+                x.ty,
+            )
+        })
         .collect();
     let spec_idents: Vec<_> = spec_args.iter().map(|x| &x.ident).collect();
     let kernel_name_tokens = kernel.kernel_name_tokens();
     let buffer_descs = kernel.buffer_descs();
+    let push_consts_size: u32 = {
+        let mut size = push_const_fields.iter().map(|x| x.ty.size() as u32).sum();
+        if size % 4 != 0 {
+            size += 4 - (size % 4);
+        }
+        size += 2 * buffer_descs.len() as u32 * 4;
+        size
+    };
+    let compute_ident = format_ident!("__krnl_{hash}_{push_consts_size}_{kernel_ident}");
     let device_block = &kernel.block;
     let dispatch_args = kernel.dispatch_args();
-    let dispatch_push_consts: Punctuated<_, Comma> = push_const_fields.iter().map(|x| {
-        let ident = &x.ident;
-        if ident.to_string().starts_with("__krnl_") {
-            quote! {
-                #ident: 0
-            }
-        } else {
-            quote! {
-                #ident
-            }
-        }
-    }).collect();
     let dispatch_slices = kernel.dispatch_slices();
     let dimensionality = attr_meta.dimensionality;
     let dispatch_builder_dim_impls = if dimensionality == 3 {
@@ -322,7 +339,7 @@ pub fn kernel(attr: TokenStream, item: TokenStream) -> TokenStream {
     };
     let device_call = if attr_meta.for_each {
         quote! {
-            let mut item_index = 0;
+            let mut item_index = global_id;
             while item_index < items {
                 #for_each_body
                 #kernel_ident(#device_call_args);
@@ -367,7 +384,10 @@ pub fn kernel(attr: TokenStream, item: TokenStream) -> TokenStream {
                             DispatchBuilder as RawDispatchBuilder,
                         },
                     },
-                    krnl_core::glam::{UVec2, UVec3},
+                    krnl_core::{
+                        half::{f16, bf16},
+                        glam::{UVec2, UVec3},
+                    },
                     __private::bytemuck::{self, NoUninit},
                 },
                 __kernel,
@@ -428,7 +448,7 @@ pub fn kernel(attr: TokenStream, item: TokenStream) -> TokenStream {
             #[repr(C)]
             #[derive(Clone, Copy)]
             pub struct PushConsts {
-                #push_const_fields
+                #(#push_const_fields),*
             }
 
             unsafe impl NoUninit for PushConsts {}
@@ -458,7 +478,7 @@ pub fn kernel(attr: TokenStream, item: TokenStream) -> TokenStream {
                 pub fn dispatch_builder<'a>(&self, #dispatch_args)  -> Result<DispatchBuilder<'a>> {
                     let slices = &mut [#(#dispatch_slices.into(),)*];
                     let push_consts = PushConsts {
-                        #dispatch_push_consts
+                        #push_idents
                     };
                     let push_consts = bytemuck::bytes_of(&push_consts);
                     let raw = self.raw.dispatch_builder(slices, push_consts)?;
@@ -482,18 +502,24 @@ impl KernelAttr {
     fn meta(&self) -> Result<KernelAttrMeta> {
         let mut meta = KernelAttrMeta {
             threads: [1; 3],
-            .. KernelAttrMeta::default()
+            ..KernelAttrMeta::default()
         };
         let mut has_threads = false;
         for arg in self.args.iter() {
             if let Some(threads) = arg.threads.as_ref() {
                 let threads = &threads.value.inner;
                 if has_threads {
-                    return Err(Error::new_spanned(&arg.ident, "`threads` already specified"));
+                    return Err(Error::new_spanned(
+                        &arg.ident,
+                        "`threads` already specified",
+                    ));
                 }
                 has_threads = true;
                 if threads.len() > 3 {
-                    return Err(Error::new_spanned(&arg.ident, "expected 1, 2, or 3 dimensional `threads`"));
+                    return Err(Error::new_spanned(
+                        &arg.ident,
+                        "expected 1, 2, or 3 dimensional `threads`",
+                    ));
                 } else {
                     meta.dimensionality = threads.len() as u32;
                 };
@@ -519,7 +545,10 @@ impl KernelAttr {
             return Err(Error::new(Span2::call_site(), "expected `threads`"));
         }
         if meta.for_each && meta.dimensionality != 1 {
-            return Err(Error::new(Span2::call_site(), "expected 1 dimensional `threads` for `for_each` kernel"));
+            return Err(Error::new(
+                Span2::call_site(),
+                "expected 1 dimensional `threads` for `for_each` kernel",
+            ));
         }
         Ok(meta)
     }
@@ -536,11 +565,15 @@ struct KernelAttrMeta {
 impl KernelAttrMeta {
     fn compute_threads(&self) -> Punctuated<LitInt, Comma> {
         if self.thread_specs.iter().any(|x| x.is_some()) {
-            std::iter::from_fn(|| Some(LitInt::new("1", Span2::call_site()))).take(self.dimensionality as usize).collect()
+            std::iter::from_fn(|| Some(LitInt::new("1", Span2::call_site())))
+                .take(self.dimensionality as usize)
+                .collect()
         } else {
-            self.threads.iter().map(|x| {
-                LitInt::new(&x.to_string(), Span2::call_site())
-            }).take(self.dimensionality as usize).collect()
+            self.threads
+                .iter()
+                .map(|x| LitInt::new(&x.to_string(), Span2::call_site()))
+                .take(self.dimensionality as usize)
+                .collect()
         }
     }
     fn threads_tokens(&self, spec_ids: &HashMap<String, u32>) -> Result<TokenStream2> {
@@ -566,14 +599,22 @@ impl KernelAttrMeta {
         let mut asm_strings = Vec::new();
         asm_strings.push("%ty_u32 = OpTypeInt 32 0".to_string());
         let mut thread_values = Punctuated::<Expr, Comma>::new();
-        for (i, (thread, spec)) in self.threads.iter().zip(self.thread_specs.iter()).enumerate() {
+        for (i, (thread, spec)) in self
+            .threads
+            .iter()
+            .zip(self.thread_specs.iter())
+            .enumerate()
+        {
             if let Some(spec) = spec.as_ref() {
                 if let Some(id) = spec_ids.get(&spec.to_string()).copied() {
                     asm_strings.push(format!("%t{i} = OpSpecConstant %ty_u32 {thread}"));
                     asm_strings.push(format!("OpDecorate SpecId %t{i} {id}"));
                     thread_values.push(parse_quote!(#spec));
                 } else {
-                    return Err(Error::new_spanned(&spec, "expected spec const identifier or literal"));
+                    return Err(Error::new_spanned(
+                        &spec,
+                        "expected spec const identifier or literal",
+                    ));
                 }
             } else {
                 asm_strings.push(format!("%t{i} = OpConstant %ty_u32 {thread}"));
@@ -695,9 +736,11 @@ impl Kernel {
                 }
                 write!(&mut fmt_string, "{ident}={{}}");
             }
-            let args: Punctuated<Ident, Comma> = generics.specs.iter().map(|spec| {
-                Ident::new(&spec.ident.to_string().to_lowercase(), spec.ident.span())
-            }).collect();
+            let args: Punctuated<Ident, Comma> = generics
+                .specs
+                .iter()
+                .map(|spec| Ident::new(&spec.ident.to_string().to_lowercase(), spec.ident.span()))
+                .collect();
             fmt_string.push('>');
             quote! {
                 format!(#fmt_string, #args)
@@ -709,13 +752,22 @@ impl Kernel {
         }
     }
     fn spec_ids(&self) -> HashMap<String, u32> {
-        self.generics.as_ref().map(KernelGenerics::spec_ids).unwrap_or_default()
+        self.generics
+            .as_ref()
+            .map(KernelGenerics::spec_ids)
+            .unwrap_or_default()
     }
     fn spec_args(&self) -> Vec<TypedArg<ScalarType>> {
-        self.generics.as_ref().map(KernelGenerics::spec_args).unwrap_or_default()
+        self.generics
+            .as_ref()
+            .map(KernelGenerics::spec_args)
+            .unwrap_or_default()
     }
     fn declare_specs(&self) -> TokenStream2 {
-        self.generics.as_ref().map(KernelGenerics::declare_specs).unwrap_or_default()
+        self.generics
+            .as_ref()
+            .map(KernelGenerics::declare_specs)
+            .unwrap_or_default()
     }
     fn push_consts_ident(&self) -> Option<Ident> {
         if self.args.iter().any(|x| x.push.is_some()) {
@@ -724,39 +776,18 @@ impl Kernel {
             None
         }
     }
-    fn push_const_fields(&self) -> Punctuated<TypedArg<ScalarType>, Comma> {
-        let mut push_consts: Vec<_> = self.args.iter().filter_map(|arg| {
-            arg.push.as_ref().map(|push| TypedArg::new(arg.ident.clone(), *push))
-        }).collect();
+    fn push_const_fields(&self) -> Vec<TypedArg<ScalarType>> {
+        let mut push_consts: Vec<_> = self
+            .args
+            .iter()
+            .filter_map(|arg| {
+                arg.push
+                    .as_ref()
+                    .map(|push| TypedArg::new(arg.ident.clone(), *push))
+            })
+            .collect();
         push_consts.sort_by_key(|x| -(x.ty.size() as i32));
-        let push_const_size: u32 = push_consts.iter().map(|x| x.ty.size() as u32).sum();
-        if push_const_size % 4 != 0 {
-            let byte = ScalarType {
-                name: "u8",
-                span: Span2::call_site(),
-            };
-            for i in 0 .. 4 - push_const_size % 4 {
-                push_consts.push(TypedArg::new(
-                    format_ident!("__krnl_pad_{i}"),
-                    byte,
-                ));
-            }
-        }
-        let word = ScalarType {
-            name: "u32",
-            span: Span2::call_site(),
-        };
-        for arg in self.args.iter().filter(|x| x.global.is_some() || x.item.is_some()) {
-            push_consts.push(TypedArg::new(
-                format_ident!("__krnl_offset_{}", arg.ident),
-                word,
-            ));
-            push_consts.push(TypedArg::new(
-                format_ident!("__krnl_len_{}", arg.ident),
-                word,
-            ));
-        }
-        push_consts.into_iter().collect()
+        push_consts
     }
     fn compute_args(&self, for_each: bool) -> Punctuated<FnArg, Comma> {
         fn buffer_arg(idx: u32, ident: &Ident, mut_token: Option<Mut>, ty: &ScalarType) -> FnArg {
@@ -831,7 +862,12 @@ impl Kernel {
         let mut buffer_idx = 0;
         for arg in self.args.iter() {
             if let Some(global) = arg.global.as_ref() {
-                compute_args.push(buffer_arg(buffer_idx, &arg.ident, global.mut_token, &global.slice.elem));
+                compute_args.push(buffer_arg(
+                    buffer_idx,
+                    &arg.ident,
+                    global.mut_token,
+                    &global.slice.elem,
+                ));
                 buffer_idx += 1;
             } else if let Some(item) = arg.item.as_ref() {
                 compute_args.push(buffer_arg(buffer_idx, &arg.ident, item.mut_token, &item.ty));
@@ -850,7 +886,7 @@ impl Kernel {
         if let Some(ident) = self.push_consts_ident() {
             compute_args.push(parse_quote! {
                 #[spirv(push_constant)]
-                push_consts: #ident
+                push_consts: &#ident
             })
         }
         compute_args
@@ -858,7 +894,12 @@ impl Kernel {
     fn builtins(&self, for_each: bool) -> HashSet<String> {
         let mut builtins = HashSet::new();
         if for_each {
-            builtins.extend(["global_threads".to_string(), "global_id".to_string(), "groups".to_string(), "threads".to_string()]);
+            builtins.extend([
+                "global_threads".to_string(),
+                "global_id".to_string(),
+                "groups".to_string(),
+                "threads".to_string(),
+            ]);
         }
         for arg in self.args.iter().filter(|x| x.builtin.is_some()) {
             let builtin = arg.ident.to_string();
@@ -867,7 +908,13 @@ impl Kernel {
                     builtins.insert("groups".to_string());
                 }
                 "global_index" => {
-                    builtins.extend(["group_id".to_string(), "groups".to_string(), "thread_index".to_string()]);
+                    builtins.extend([
+                        "group_id".to_string(),
+                        "group_index".to_string(),
+                        "groups".to_string(),
+                        "threads".to_string(),
+                        "thread_index".to_string(),
+                    ]);
                 }
                 "group_index" => {
                     builtins.insert("group_id".to_string());
@@ -885,7 +932,13 @@ impl Kernel {
         if builtins.contains("threads") {
             output.extend(meta.threads_tokens(&self.spec_ids())?);
         }
-        let vector_builtins = ["global_id", "groups", "global_threads", "group_id", "thread_id"];
+        let vector_builtins = [
+            "global_id",
+            "groups",
+            "global_threads",
+            "group_id",
+            "thread_id",
+        ];
         for builtin in vector_builtins.iter().filter(|x| builtins.contains(**x)) {
             if *builtin == "global_threads" {
                 output.extend(quote! {
@@ -944,7 +997,10 @@ impl Kernel {
         for arg in self.args.iter() {
             let ident = &arg.ident;
             if let Some(global) = arg.global.as_ref() {
-                let compute_ident = format_ident!("{ident}_{}", Kernel::compute_buffer_suffix(global.mut_token));
+                let compute_ident = format_ident!(
+                    "{ident}_{}",
+                    Kernel::compute_buffer_suffix(global.mut_token)
+                );
                 if global.mut_token.is_some() {
                     tokens.extend(quote! {
                         let ref mut #ident = ::krnl_core::mem::UnsafeMut::from_mut(#compute_ident);
@@ -963,7 +1019,8 @@ impl Kernel {
                     *#ident = Default::default();
                 });
             } else if let Some(item) = arg.item.as_ref() {
-                let compute_ident = format_ident!("{ident}_{}", Kernel::compute_buffer_suffix(item.mut_token));
+                let compute_ident =
+                    format_ident!("{ident}_{}", Kernel::compute_buffer_suffix(item.mut_token));
                 tokens.extend(quote! {
                     let #ident = #compute_ident;
                 });
@@ -1008,13 +1065,22 @@ impl Kernel {
         self.args.iter().map(KernelArg::device_arg).collect()
     }
     fn dispatch_args(&self) -> Punctuated<TypedArg<Type>, Comma> {
-        self.args.iter().filter_map(KernelArg::dispatch_arg).collect()
+        self.args
+            .iter()
+            .filter_map(KernelArg::dispatch_arg)
+            .collect()
     }
     fn buffer_descs(&self) -> Punctuated<TokenStream2, Comma> {
-        self.args.iter().filter_map(KernelArg::buffer_desc).collect()
+        self.args
+            .iter()
+            .filter_map(KernelArg::buffer_desc)
+            .collect()
     }
     fn dispatch_slices(&self) -> Vec<Ident> {
-        self.args.iter().filter_map(KernelArg::dispatch_slice).collect()
+        self.args
+            .iter()
+            .filter_map(KernelArg::dispatch_slice)
+            .collect()
     }
 }
 
@@ -1039,13 +1105,20 @@ impl KernelGenerics {
         Ok(())
     }
     fn spec_ids(&self) -> HashMap<String, u32> {
-        self.specs.iter().enumerate().map(|(i, x)| (x.ident.to_string(), i as u32)).collect()
+        self.specs
+            .iter()
+            .enumerate()
+            .map(|(i, x)| (x.ident.to_string(), i as u32))
+            .collect()
     }
     fn spec_args(&self) -> Vec<TypedArg<ScalarType>> {
-        self.specs.iter().map(|x| {
-            let ident = Ident::new(&x.ident.to_string(), x.ident.span());
-            TypedArg::new(ident, x.ty)
-        }).collect()
+        self.specs
+            .iter()
+            .map(|x| {
+                let ident = Ident::new(&x.ident.to_string(), x.ident.span());
+                TypedArg::new(ident, x.ty)
+            })
+            .collect()
     }
     fn declare_specs(&self) -> TokenStream2 {
         let mut tokens = TokenStream2::new();
@@ -1079,11 +1152,7 @@ impl KernelSpec {
         } else {
             format!("%ty = OpTypeInt {bits} {signed}")
         };
-        let values = if bits == 64 {
-            "0 0"
-        } else {
-            "0"
-        };
+        let values = if bits == 64 { "0 0" } else { "0" };
         let spec_string = format!("%spec = OpSpecConstant %ty {values}");
         let spec_id_string = format!("OpDecorate %spec SpecId {spec_id}");
         let ident = &self.ident;
@@ -1138,22 +1207,12 @@ impl KernelArg {
         if self.ident.to_string().starts_with("__krnl_") {
             return Err(Error::new_spanned(&self.ident, "`__krnl_` is reserved"));
         }
-        let attrs = [
-            "builtin",
-            "global",
-            "group",
-            "subgroup",
-            "item",
-            "push"
-        ];
+        let attrs = ["builtin", "global", "group", "subgroup", "item", "push"];
         if !attrs.iter().copied().any(|x| self.attr.value == *x) {
             return Err(Error::new_spanned(&self.attr.value, "unknown attribute"));
         }
         if let Some(builtin_ty) = self.builtin.as_ref() {
-            let for_each_builtins = &[
-                "item_index",
-                "items",
-            ];
+            let for_each_builtins = &["item_index", "items"];
             let builtins_u32 = &[
                 "global_index",
                 "group_index",
@@ -1170,14 +1229,24 @@ impl KernelArg {
                 "thread_id",
                 "threads",
             ];
-            let mut builtins = for_each_builtins.into_iter().chain(builtins_u32).chain(builtins_vector).copied();
+            let mut builtins = for_each_builtins
+                .into_iter()
+                .chain(builtins_u32)
+                .chain(builtins_vector)
+                .copied();
             if let Some(builtin) = builtins.find(|x| self.ident == *x) {
                 let is_for_each = for_each_builtins.into_iter().any(|x| builtin == *x);
                 if is_for_each {
-                    return Err(Error::new_spanned(&self.ident, "requires `for_each` kernel"));
+                    return Err(Error::new_spanned(
+                        &self.ident,
+                        "requires `for_each` kernel",
+                    ));
                 } else if meta.for_each {
                     if !is_for_each {
-                        return Err(Error::new_spanned(&self.ident, "not allowed in `for_each` kernel"));
+                        return Err(Error::new_spanned(
+                            &self.ident,
+                            "not allowed in `for_each` kernel",
+                        ));
                     } else {
                         if builtin_ty != "u32" {
                             return Err(Error::new_spanned(builtin_ty, "expected u32"));
@@ -1205,16 +1274,25 @@ impl KernelArg {
         } else if let Some(global) = self.global.as_ref() {
             if let Some(unsafe_mut) = global.unsafe_mut.as_ref() {
                 if meta.for_each {
-                    return Err(Error::new(unsafe_mut.span, "not allowed in `for_each` kernel"));
+                    return Err(Error::new(
+                        unsafe_mut.span,
+                        "not allowed in `for_each` kernel",
+                    ));
                 }
             }
         } else if let Some(group) = self.group.as_ref() {
             if meta.for_each {
-                return Err(Error::new(group.uninit_unsafe_mut.span, "not allowed in `for_each` kernel"));
+                return Err(Error::new(
+                    group.uninit_unsafe_mut.span,
+                    "not allowed in `for_each` kernel",
+                ));
             }
         } else if let Some(item) = self.item.as_ref() {
             if !meta.for_each {
-                return Err(Error::new_spanned(&self.attr.value, "requires `for_each` kernel"));
+                return Err(Error::new_spanned(
+                    &self.attr.value,
+                    "requires `for_each` kernel",
+                ));
             }
         }
         Ok(())
@@ -1292,7 +1370,8 @@ struct KernelSlice<E> {
 
 impl<E: ToTokens> ToTokens for KernelSlice<E> {
     fn to_tokens(&self, tokens: &mut TokenStream2) {
-        self.bracket.surround(tokens, |tokens| self.elem.to_tokens(tokens));
+        self.bracket
+            .surround(tokens, |tokens| self.elem.to_tokens(tokens));
     }
 }
 
@@ -1328,7 +1407,8 @@ impl KernelGlobal {
 impl ToTokens for KernelGlobal {
     fn to_tokens(&self, tokens: &mut TokenStream2) {
         self.and_token.to_tokens(tokens);
-        if let Some((mut_token, unsafe_mut)) = self.mut_token.as_ref().zip(self.unsafe_mut.as_ref()) {
+        if let Some((mut_token, unsafe_mut)) = self.mut_token.as_ref().zip(self.unsafe_mut.as_ref())
+        {
             mut_token.to_tokens(tokens);
             unsafe_mut.to_tokens(tokens);
         }
@@ -1441,7 +1521,7 @@ impl ToTokens for KernelItem {
 struct TypedArg<T> {
     ident: Ident,
     colon: Colon,
-    ty: T
+    ty: T,
 }
 
 impl<T> TypedArg<T> {
@@ -1471,9 +1551,7 @@ impl Parse for KernelUnsafeMut {
     fn parse(input: ParseStream<'_>) -> Result<Self> {
         let ident: Ident = input.parse()?;
         if ident == "UnsafeMut" {
-            Ok(Self {
-                span: ident.span(),
-            })
+            Ok(Self { span: ident.span() })
         } else {
             Err(Error::new_spanned(&ident, "expected `UnsafeMut`"))
         }
@@ -1495,15 +1573,12 @@ impl Parse for KernelUninitUnsafeMut {
     fn parse(input: ParseStream<'_>) -> Result<Self> {
         let ident: Ident = input.parse()?;
         if ident == "UninitUnsafeMut" {
-            Ok(Self {
-                span: ident.span(),
-            })
+            Ok(Self { span: ident.span() })
         } else {
             Err(Error::new_spanned(&ident, "expected `UninitUnsafeMut`"))
         }
     }
 }
-
 
 impl ToTokens for KernelUninitUnsafeMut {
     fn to_tokens(&self, tokens: &mut TokenStream2) {
@@ -1521,24 +1596,10 @@ impl ScalarType {
     fn from_ident(ident: &Ident) -> Result<Self> {
         let span = ident.span();
         let scalars = [
-            "u8",
-            "i8",
-            "u16",
-            "i16",
-            "f16",
-            "bf16",
-            "u32",
-            "i32",
-            "f32",
-            "u64",
-            "i64",
-            "f64",
+            "u8", "i8", "u16", "i16", "f16", "bf16", "u32", "i32", "f32", "u64", "i64", "f64",
         ];
         if let Some(name) = scalars.iter().find(|x| ident == **x) {
-            Ok(Self {
-                name,
-                span,
-            })
+            Ok(Self { name, span })
         } else {
             Err(Error::new(span, "expected scalar"))
         }

@@ -10,7 +10,7 @@ use std::{
 pub(crate) mod engine;
 #[cfg(feature = "device")]
 pub(crate) use engine::{
-    Engine, Compute, DeviceBuffer, DeviceBufferInner, HostBuffer, KernelCache,
+    Compute, DeviceBuffer, DeviceBufferInner, Engine, HostBuffer, KernelCache,
 };
 
 pub mod error {
@@ -84,25 +84,114 @@ pub(crate) mod future {
 }
 use future::SyncFuture;
 
-/*
-mod options {
+pub mod builder {
     use super::*;
+    use anyhow::bail;
+    use dry::macro_wrap;
+    use std::{env::var, str::FromStr};
 
-    pub(super) struct DeviceOptions {
-        pub(super) optimal_capabilities: Vec<Capability>,
+    fn get_env_device_indices() -> Result<Vec<usize>> {
+        let mut output = Vec::new();
+        if let Ok(indices) = var("KRNL_DEVICE") {
+            let indices = indices.trim().split(',');
+            let (lower, upper) = indices.size_hint();
+            output.reserve(upper.unwrap_or(lower));
+            for index in indices {
+                output.push(usize::from_str(index.trim())?);
+            }
+        }
+        Ok(output)
     }
 
-    impl Default for DeviceOptions {
-        fn default() -> Self {
-            use spirv::Capability::*;
-            Self {
-                optimal_capabilities: vec![VulkanMemoryModel],
+    fn get_env_device_features() -> Result<Option<Features>> {
+        if let Ok(features) = var("KRNL_DEVICE_FEATURES") {
+            let features = features.trim();
+            let mut output = Features::default();
+            if !features.is_empty() {
+                let features = features.split(',');
+                for feature in features {
+                    let feature = feature.trim();
+                    macro_wrap!(match feature {
+                        macro_for!($FEATURE in [shader_int8, shader_int16, shader_int64, shader_float16, shader_float64] {
+                            stringify!($FEATURE) => {
+                                output.$FEATURE = true;
+                            }
+                        })
+                        _ => {
+                            bail!("KRNL_DEVICE_FEATURES unexpected feature `{feature}`");
+                        }
+                    });
+                }
             }
+            Ok(Some(output))
+        } else {
+            Ok(None)
+        }
+    }
+
+    pub struct DeviceBuilder {
+        indices: Vec<usize>,
+        features: Option<Features>,
+        max_vulkan_version: Option<(u32, u32)>,
+    }
+
+    impl DeviceBuilder {
+        pub(super) fn new() -> Self {
+            Self {
+                indices: Vec::new(),
+                features: None,
+                max_vulkan_version: None,
+            }
+        }
+        pub fn index(mut self, index: usize) -> Self {
+            self.indices.push(index);
+            self
+        }
+        pub fn indices(mut self, indices: impl IntoIterator<Item = usize>) -> Self {
+            self.indices.extend(indices);
+            self
+        }
+        pub fn features(mut self, features: Features) -> Self {
+            self.features.replace(features);
+            self
+        }
+        pub fn max_vulkan_version(mut self, max_vulkan_version: (u32, u32)) -> Self {
+            self.max_vulkan_version.replace(max_vulkan_version);
+            self
+        }
+        pub fn build(self) -> Result<Device> {
+            #[cfg(feature = "device")]
+            {
+                use std::str::FromStr;
+                let mut indices = self.indices;
+                if indices.is_empty() {
+                    indices = get_env_device_indices()?;
+                }
+                let index = indices.first().copied().unwrap_or_default();
+                let mut features = self.features;
+                if features.is_none() {
+                    features = get_env_device_features()?;
+                }
+                Ok(Device {
+                    inner: DeviceInner::Device(VulkanDevice::new(
+                        index,
+                        features,
+                        self.max_vulkan_version,
+                    )?),
+                })
+            }
+            #[cfg(not(feature = "device"))]
+            {
+                Err(DeviceUnavailable::new().into())
+            }
+        }
+        pub fn build_iter(self) -> Result<impl Iterator<Item = Device>> {
+            todo!();
+            Ok([].into_iter())
         }
     }
 }
-use options::DeviceOptions;
-*/
+use builder::DeviceBuilder;
 
 #[cfg(feature = "device")]
 #[derive(Clone, derive_more::Deref)]
@@ -115,9 +204,13 @@ pub(crate) use VulkanDevice as DeviceBase;
 
 #[cfg(feature = "device")]
 impl VulkanDevice {
-    fn new(index: usize) -> Result<Self> {
+    fn new(
+        index: usize,
+        features: Option<Features>,
+        max_api_version: Option<(u32, u32)>,
+    ) -> Result<Self> {
         Ok(Self {
-            engine: Arc::new(Engine::new(index)?)
+            engine: Arc::new(Engine::new(index, features, max_api_version)?),
         })
     }
 }
@@ -181,38 +274,16 @@ impl Device {
             inner: DeviceInner::Host,
         }
     }
-    pub fn new(index: usize) -> Result<Self, anyhow::Error> {
-        #[cfg(test)]
-        {
-            #[cfg(test)] {
-                use once_cell::sync::OnceCell;
-                static DEVICE: OnceCell<Device> = OnceCell::new();
-                if index == 0 {
-                    return DEVICE
-                        .get_or_try_init(|| Device::new_impl(index))
-                        .map(|x| x.clone());
-                }
-            }
-        }
-        Self::new_impl(index)
+    pub fn builder() -> DeviceBuilder {
+        DeviceBuilder::new()
     }
-    #[cfg_attr(not(feature = "device"), allow(unused_variables))]
-    fn new_impl(index: usize) -> Result<Self, anyhow::Error> {
-        #[cfg(feature = "device")]
-        {
-            return Ok(Self {
-                inner: DeviceInner::Device(VulkanDevice::new(index)?),
-            });
-        }
-        #[cfg(not(feature = "device"))]
-        {
-            Err(DeviceUnavailable::new().into())
-        }
+    pub fn new(index: usize) -> Result<Self> {
+        Self::builder().index(index).build()
     }
     pub(crate) fn kind(&self) -> DeviceKind {
         self.inner.kind()
     }
-    pub(crate) fn is_host(&self) -> bool {
+    pub fn is_host(&self) -> bool {
         self.inner.is_host()
     }
     pub(crate) fn is_device(&self) -> bool {
@@ -229,10 +300,12 @@ impl Device {
         SyncFuture::new(self)
     }
     pub fn features(&self) -> Option<&Features> {
-        #[cfg(feature = "device")] {
+        #[cfg(feature = "device")]
+        {
             self.inner.device().map(|x| x.features())
         }
-        #[cfg(not(feature = "device"))] {
+        #[cfg(not(feature = "device"))]
+        {
             None
         }
     }
@@ -272,44 +345,44 @@ impl Features {
     pub fn shader_int8(&self) -> bool {
         self.shader_int8
     }
-    pub fn set_shader_int8(&mut self, shader_int8: bool) -> &mut Self {
+    pub const fn with_shader_int8(mut self, shader_int8: bool) -> Self {
         self.shader_int8 = shader_int8;
         self
     }
     pub fn shader_int16(&self) -> bool {
         self.shader_int16
     }
-    pub fn set_shader_int16(&mut self, shader_int16: bool) -> &mut Self {
+    pub const fn with_shader_int16(mut self, shader_int16: bool) -> Self {
         self.shader_int16 = shader_int16;
         self
     }
     pub fn shader_int64(&self) -> bool {
         self.shader_int64
     }
-    pub fn set_shader_int64(&mut self, shader_int64: bool) -> &mut Self {
+    pub const fn with_shader_int64(mut self, shader_int64: bool) -> Self {
         self.shader_int64 = shader_int64;
         self
     }
     pub fn shader_float16(&self) -> bool {
         self.shader_float16
     }
-    pub fn set_shader_float16(&mut self, shader_float16: bool) -> &mut Self {
+    pub const fn with_shader_float16(mut self, shader_float16: bool) -> Self {
         self.shader_float16 = shader_float16;
         self
     }
     pub fn shader_float64(&self) -> bool {
         self.shader_float64
     }
-    pub fn set_shader_float64(&mut self, shader_float64: bool) -> &mut Self {
+    pub const fn with_shader_float64(mut self, shader_float64: bool) -> Self {
         self.shader_float64 = shader_float64;
         self
     }
     pub fn contains(&self, other: &Features) -> bool {
         (self.shader_int8 || !other.shader_int8)
-        && (self.shader_int16 || !other.shader_int16)
-        && (self.shader_int64 || !other.shader_int64)
-        && (self.shader_float16 || !other.shader_float16)
-        && (self.shader_float64 || !other.shader_float64)
+            && (self.shader_int16 || !other.shader_int16)
+            && (self.shader_int64 || !other.shader_int64)
+            && (self.shader_float16 || !other.shader_float16)
+            && (self.shader_float64 || !other.shader_float64)
     }
     pub fn union(mut self, other: &Features) -> Self {
         self.shader_int8 |= other.shader_int8;
@@ -320,8 +393,6 @@ impl Features {
         self
     }
 }
-
-
 
 #[cfg(test)]
 mod tests {

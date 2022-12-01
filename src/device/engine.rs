@@ -1,24 +1,23 @@
 #![allow(unused)]
-use crate::{
-    device::Features,
-    kernel::__private::KernelDesc,
-    scalar::Scalar,
-};
-use anyhow::{format_err, Result};
+use crate::{device::Features, kernel::__private::KernelDesc, scalar::Scalar};
+use anyhow::{bail, format_err, Result};
 use crossbeam_channel::{bounded, Receiver, Sender};
 use dashmap::DashMap;
 use once_cell::sync::OnceCell;
 use parking_lot::{Mutex, RwLock};
 use spirv::Capability;
 use std::{
+    borrow::Cow,
+    cell::RefCell,
     collections::{HashMap, VecDeque},
+    fmt::{self, Debug},
     future::Future,
+    hash::{Hash, Hasher},
     iter::{once, Peekable},
     mem::ManuallyDrop,
     ops::Deref,
     pin::Pin,
     ptr::NonNull,
-    cell::RefCell,
     str::FromStr,
     sync::{
         atomic::{AtomicBool, Ordering},
@@ -26,9 +25,6 @@ use std::{
     },
     task::{Context, Poll},
     time::{Duration, Instant},
-    hash::{Hash, Hasher},
-    fmt::{self, Debug},
-    borrow::Cow,
 };
 use vulkano::{
     buffer::{
@@ -66,7 +62,8 @@ use vulkano::{
     },
     device::{
         physical::{MemoryType, PhysicalDevice, PhysicalDeviceType, QueueFamily},
-        Device, DeviceCreateInfo, DeviceExtensions, DeviceOwned, Features as VulkanoFeatures, Queue, QueueCreateInfo,
+        Device, DeviceCreateInfo, DeviceExtensions, DeviceOwned, Features as VulkanoFeatures,
+        Queue, QueueCreateInfo,
     },
     instance::{
         Instance, InstanceCreateInfo, InstanceCreationError, InstanceExtensions,
@@ -83,7 +80,8 @@ use vulkano::{
     shader::{
         spirv::{Capability as VulkanoCapability, ExecutionModel},
         DescriptorRequirements, EntryPointInfo, ShaderExecution, ShaderInterface, ShaderModule,
-        ShaderStages, SpecializationConstants, SpecializationMapEntry, SpecializationConstantRequirements,
+        ShaderStages, SpecializationConstantRequirements, SpecializationConstants,
+        SpecializationMapEntry,
     },
     sync::{
         AccessFlags, BufferMemoryBarrier, DependencyInfo, Fence, FenceCreateInfo, PipelineStages,
@@ -115,13 +113,14 @@ mod molten {
 #[cfg(any(target_os = "ios", target_os = "macos"))]
 use molten::AshMoltenLoader;
 
-fn instance() -> Result<Arc<Instance>> {
+fn create_instance(max_api_version: Option<InstanceVersion>) -> Result<Arc<Instance>> {
     let engine_name = Some("krnl".to_string());
     let engine_version = InstanceVersion::from_str(env!("CARGO_PKG_VERSION"))?;
     #[allow(unused_mut)]
     let mut instance = Instance::new(InstanceCreateInfo {
         engine_name: engine_name.clone(),
         engine_version,
+        max_api_version,
         enumerate_portability: true,
         ..InstanceCreateInfo::default()
     });
@@ -132,6 +131,7 @@ fn instance() -> Result<Arc<Instance>> {
             let info = InstanceCreateInfo {
                 engine_name,
                 engine_version,
+                max_api_version,
                 function_pointers: Some(FunctionPointers::new(Box::new(AshMoltenLoader))),
                 enumerate_portability: true,
                 ..InstanceCreateInfo::default()
@@ -395,17 +395,22 @@ fn get_compute_family<'a>(
 }
 
 pub(crate) struct Engine {
-    runner: Arc<Runner>,
-    device: Arc<Device>,
     features: Features,
     buffer_allocator: BufferAllocator,
     kernel_cache_map: KernelCacheMap,
-
+    device: Arc<Device>,
+    runner: Arc<Runner>,
 }
 
 impl Engine {
-    pub(super) fn new(index: usize) -> Result<Self, anyhow::Error> {
-        let instance = instance()?;
+    pub(super) fn new(
+        index: usize,
+        features: Option<Features>,
+        max_api_version: Option<(u32, u32)>,
+    ) -> Result<Self, anyhow::Error> {
+        let max_api_version =
+            max_api_version.map(|(major, minor)| InstanceVersion::major_minor(major, minor));
+        let instance = create_instance(max_api_version)?;
         let physical_device = PhysicalDevice::from_index(&instance, index).ok_or_else(|| {
             format_err!(
                 "Cannot create device at index {}, only {} devices!",
@@ -413,16 +418,38 @@ impl Engine {
                 PhysicalDevice::enumerate(&instance).len(),
             )
         })?;
-        let compute_family = get_compute_family(&physical_device)?;
-        let device_extensions = DeviceExtensions::none();
-        let optimal_device_features = VulkanoFeatures {
+        let vulkan_version = physical_device.api_version();
+        if vulkan_version < InstanceVersion::major_minor(1, 1) {
+            bail!("Device({index}) supports vulkan {vulkan_version:?}, >= 1.1 required!");
+        }
+        let supported_device_features = physical_device.supported_features();
+        let mut optimal_device_features = VulkanoFeatures {
             shader_int8: true,
             shader_int16: true,
             shader_int64: true,
             shader_float64: true,
             vulkan_memory_model: true,
-            .. VulkanoFeatures::none()
+            ..VulkanoFeatures::none()
         };
+        if let Some(features) = features.as_ref() {
+            let supported_features = Features {
+                shader_int8: supported_device_features.shader_int8,
+                shader_int16: supported_device_features.shader_int16,
+                shader_int64: supported_device_features.shader_int64,
+                shader_float16: supported_device_features.shader_float16,
+                shader_float64: supported_device_features.shader_float64,
+            };
+            if !supported_features.contains(features) {
+                bail!(
+                    "Device({index}) has {supported_features:?}, requested features {features:?}!"
+                );
+            }
+            optimal_device_features.shader_int8 &= features.shader_int8;
+            optimal_device_features.shader_int16 &= features.shader_int16;
+            optimal_device_features.shader_int64 &= features.shader_int64;
+            optimal_device_features.shader_float16 &= features.shader_float16;
+            optimal_device_features.shader_float64 &= features.shader_float64;
+        }
         let device_features = physical_device
             .supported_features()
             .intersection(&optimal_device_features);
@@ -433,6 +460,8 @@ impl Engine {
             shader_float16: device_features.shader_float16,
             shader_float64: device_features.shader_float64,
         };
+        let compute_family = get_compute_family(&physical_device)?;
+        let device_extensions = DeviceExtensions::none();
         let mut queue_create_info = QueueCreateInfo::family(compute_family);
         queue_create_info.queues = vec![1f32];
         let device_create_info = DeviceCreateInfo {
@@ -503,7 +532,6 @@ impl Engine {
     }
     // # Safety
     // Uninitialized.
-    #[forbid(unsafe_op_in_unsafe_fn)]
     pub(crate) unsafe fn alloc(&self, len: usize) -> Result<Option<Arc<DeviceBuffer>>> {
         if len == 0 {
             Ok(None)
@@ -527,7 +555,9 @@ impl Engine {
                 Arc::get_mut(&mut src).unwrap().write_slice(bytes)?;
                 let upload = Upload {
                     src,
-                    dst: buffer.inner.slice_offset_len(offset as u32, bytes.len() as u32),
+                    dst: buffer
+                        .inner
+                        .slice_offset_len(offset as u32, bytes.len() as u32),
                 };
                 self.send_op(Op::Upload(upload))?;
                 offset += bytes.len();
@@ -884,7 +914,7 @@ const CHUNK_SIZE_MULTIPLE: usize = 256_000_000;
 
 #[derive(Debug)]
 struct Chunk<M> {
-    memory: ManuallyDrop<M>,
+    memory: M,
     len: usize,
     blocks: Mutex<Vec<Block>>,
 }
@@ -908,7 +938,7 @@ impl<M> Chunk<M> {
                 Ok(device_memory) => {
                     let memory = M::from_device_memory(device_memory)?;
                     return Ok(Arc::new(Self {
-                        memory: ManuallyDrop::new(memory),
+                        memory,
                         len,
                         blocks: Mutex::default(),
                     }));
@@ -1059,8 +1089,7 @@ impl Debug for KernelCacheKey {
 
 impl PartialEq for KernelCacheKey {
     fn eq(&self, other: &Self) -> bool {
-        self.spirv.as_ptr() == other.spirv.as_ptr()
-        && self.spec_consts == other.spec_consts
+        self.spirv.as_ptr() == other.spirv.as_ptr() && self.spec_consts == other.spec_consts
     }
 }
 
@@ -1068,7 +1097,9 @@ impl Eq for KernelCacheKey {}
 
 impl Hash for KernelCacheKey {
     fn hash<H>(&self, state: &mut H)
-        where H: Hasher {
+    where
+        H: Hasher,
+    {
         state.write_usize(self.spirv.as_ptr() as usize);
         for spec in self.spec_consts.iter() {
             spec.hash(state);
@@ -1095,10 +1126,7 @@ impl KernelCacheMap {
         spec_consts: Vec<u32>,
         desc: KernelDesc,
     ) -> Result<Arc<KernelCache>> {
-        let key = KernelCacheKey {
-            spirv,
-            spec_consts,
-        };
+        let key = KernelCacheKey { spirv, spec_consts };
         use dashmap::mapref::entry::Entry;
         match self.kernels.entry(key) {
             Entry::Occupied(occupied) => {
@@ -1107,7 +1135,12 @@ impl KernelCacheMap {
             }
             Entry::Vacant(vacant) => {
                 let key = vacant.key();
-                let cache = Arc::new(KernelCache::new(self.device.clone(), &key.spirv, &key.spec_consts, desc)?);
+                let cache = Arc::new(KernelCache::new(
+                    self.device.clone(),
+                    &key.spirv,
+                    &key.spec_consts,
+                    desc,
+                )?);
                 vacant.insert(cache.clone());
                 Ok(cache)
             }
@@ -1122,16 +1155,20 @@ pub(crate) struct KernelCache {
 }
 
 fn specialize(spirv: &[u32], mut spec_consts: &[u32]) -> Result<Vec<u32>> {
-    use rspirv::{dr::{Instruction, Operand}, binary::Assemble, spirv::{Op, Decoration}};
+    use rspirv::{
+        binary::Assemble,
+        dr::{Instruction, Operand},
+        spirv::{Decoration, Op},
+    };
     let mut module = rspirv::dr::load_words(spirv).map_err(|e| format_err!("{e}"))?;
     let mut spec_ids = HashMap::<u32, Vec<u32>>::new();
     for inst in module.annotations.iter() {
         let op = inst.class.opcode;
         if op == Op::Decorate {
-            if let [Operand::IdRef(id), Operand::Decoration(Decoration::SpecId), Operand::LiteralInt32(spec_id)] = inst.operands.as_slice() {
-                spec_ids.entry(*spec_id)
-                    .or_default()
-                    .push(*id);
+            if let [Operand::IdRef(id), Operand::Decoration(Decoration::SpecId), Operand::LiteralInt32(spec_id)] =
+                inst.operands.as_slice()
+            {
+                spec_ids.entry(*spec_id).or_default().push(*id);
             }
         }
     }
@@ -1151,7 +1188,9 @@ fn specialize(spirv: &[u32], mut spec_consts: &[u32]) -> Result<Vec<u32>> {
             if let Some(inst) = spec_ops.get_mut(id) {
                 if let [Operand::LiteralInt32(a)] = inst.operands.as_mut_slice() {
                     *a = spec_consts.get(0).copied().unwrap_or_default();
-                } else if let [Operand::LiteralInt32(a), Operand::LiteralInt32(b)] = inst.operands.as_mut_slice() {
+                } else if let [Operand::LiteralInt32(a), Operand::LiteralInt32(b)] =
+                    inst.operands.as_mut_slice()
+                {
                     *a = spec_consts.get(0).copied().unwrap_or_default();
                     *b = spec_consts.get(1).copied().unwrap_or_default();
                     len = 2;
@@ -1180,15 +1219,14 @@ impl KernelCache {
             compute: true,
             ..ShaderStages::none()
         };
-        let descriptor_requirements = desc.buffer_descs().iter().enumerate()
+        let descriptor_requirements = desc
+            .buffer_descs()
+            .iter()
+            .enumerate()
             .map(|(i, desc)| {
                 let set = 0u32;
                 let binding = i as u32;
-                let storage_write = if desc.mutable() {
-                    Some(binding)
-                } else {
-                    None
-                };
+                let storage_write = if desc.mutable() { Some(binding) } else { None };
                 let descriptor_requirements = DescriptorRequirements {
                     descriptor_types: vec![DescriptorType::StorageBuffer],
                     descriptor_count: 1,
@@ -1233,7 +1271,7 @@ impl KernelCache {
                 )],
             )?
         };
-        let bindings = (0 .. desc.buffer_descs().len())
+        let bindings = (0..desc.buffer_descs().len())
             .map(|(binding)| {
                 let descriptor_set_layout_binding = DescriptorSetLayoutBinding {
                     descriptor_count: 1,
@@ -1526,13 +1564,7 @@ impl Encode for Compute {
             let size = self.cache.desc.push_consts_size();
             let push_consts: &[u32] = self.push_consts.as_slice();
             unsafe {
-                cb_builder.push_constants(
-                    pipeline_layout,
-                    stages,
-                    offset,
-                    size,
-                    push_consts,
-                );
+                cb_builder.push_constants(pipeline_layout, stages, offset, size, push_consts);
             }
         }
         unsafe {
@@ -1817,9 +1849,9 @@ fn write_runner_result(
 
 struct Runner {
     done: Arc<AtomicBool>,
-    op_sender: Sender<Op>,
+    op_sender: ManuallyDrop<Sender<Op>>,
     result: Arc<RwLock<Result<(), Arc<anyhow::Error>>>>,
-    device: Arc<Device>,
+    device: ManuallyDrop<Arc<Device>>,
 }
 
 impl Runner {
@@ -1846,10 +1878,10 @@ impl Runner {
                     &result2,
                     encode(
                         &done2,
-                        &mut ready_frames,
-                        &op_reciever,
-                        &encode_receiver,
-                        &submit_sender,
+                        ready_frames,
+                        op_reciever,
+                        encode_receiver,
+                        submit_sender,
                     ),
                 );
             })?;
@@ -1857,19 +1889,19 @@ impl Runner {
         std::thread::Builder::new()
             .name(format!("krnl-device{}-submit", index))
             .spawn(move || {
-                write_runner_result(&result2, submit(&submit_receiver, &poll_sender));
+                write_runner_result(&result2, submit(submit_receiver, poll_sender));
             })?;
         let result2 = result.clone();
         std::thread::Builder::new()
             .name(format!("krnl-device{}-poll", index))
             .spawn(move || {
-                write_runner_result(&result2, poll(&poll_receiver, &encode_sender));
+                write_runner_result(&result2, poll(poll_receiver, encode_sender));
             })?;
         Ok(Arc::new(Self {
             done,
-            op_sender,
+            op_sender: ManuallyDrop::new(op_sender),
             result,
-            device: queue.device().clone(),
+            device: ManuallyDrop::new(queue.device().clone()),
         }))
     }
 }
@@ -1877,25 +1909,40 @@ impl Runner {
 impl Drop for Runner {
     fn drop(&mut self) {
         self.done.store(true, Ordering::SeqCst);
+        unsafe {
+            ManuallyDrop::drop(&mut self.op_sender);
+        }
+        let mut device = unsafe { ManuallyDrop::take(&mut self.device) };
+        loop {
+            match Arc::try_unwrap(device) {
+                Ok(device) => {
+                    break;
+                }
+                Err(e) => {
+                    device = e;
+                    std::thread::sleep(std::time::Duration::from_millis(100));
+                }
+            }
+        }
     }
 }
 
 fn encode(
     done: &AtomicBool,
-    ready_frames: &mut VecDeque<Frame>,
-    op_reciever: &Receiver<Op>,
-    encode_receiver: &Receiver<Frame>,
-    submit_sender: &Sender<Frame>,
+    mut ready_frames: VecDeque<Frame>,
+    op_reciever: Receiver<Op>,
+    encode_receiver: Receiver<Frame>,
+    submit_sender: Sender<Frame>,
 ) -> Result<()> {
     let mut queued_op: Option<Op> = None;
-    while !done.load(Ordering::Relaxed) {
+    'outer: while !done.load(Ordering::Relaxed) {
         if queued_op.is_none() {
             loop {
                 if let Ok(op) = op_reciever.recv() {
                     queued_op.replace(op);
                     break;
                 } else {
-                    return Ok(());
+                    break 'outer;
                 }
             }
         }
@@ -1903,7 +1950,7 @@ fn encode(
             if let Ok(frame) = encode_receiver.recv() {
                 ready_frames.push_back(frame);
             } else {
-                return Ok(());
+                break 'outer;
             }
         }
         let mut encoder = Encoder::new(ready_frames.pop_front().unwrap())?;
@@ -1924,12 +1971,12 @@ fn encode(
             }
             ready_frames.extend(encode_receiver.try_iter());
             if done.load(Ordering::Relaxed) {
-                return Ok(());
+                break 'outer;
             }
             if ready_frames.len() >= 2 || (ready_frames.len() >= 1 && encoder.is_full()) {
                 let frame = encoder.finish()?;
                 if submit_sender.send(frame).is_err() {
-                    return Ok(());
+                    break 'outer;
                 }
                 break;
             }
@@ -1938,7 +1985,7 @@ fn encode(
     Ok(())
 }
 
-fn submit(submit_receiver: &Receiver<Frame>, poll_sender: &Sender<Frame>) -> Result<()> {
+fn submit(submit_receiver: Receiver<Frame>, poll_sender: Sender<Frame>) -> Result<()> {
     let mut wait_semaphore: Option<Arc<Semaphore>> = None;
     while let Ok(mut frame) = submit_receiver.recv() {
         frame.submit(wait_semaphore.take().as_deref())?;
@@ -1950,11 +1997,11 @@ fn submit(submit_receiver: &Receiver<Frame>, poll_sender: &Sender<Frame>) -> Res
     Ok(())
 }
 
-fn poll(poll_receiver: &Receiver<Frame>, encode_sender: &Sender<Frame>) -> Result<()> {
+fn poll(poll_receiver: Receiver<Frame>, encode_sender: Sender<Frame>) -> Result<()> {
     while let Ok(mut frame) = poll_receiver.recv() {
         frame.poll()?;
         if encode_sender.send(frame).is_err() {
-            return Ok(());
+            break;
         }
     }
     Ok(())
