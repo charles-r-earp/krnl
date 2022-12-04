@@ -59,7 +59,8 @@ impl CudaBackend {
         #[allow(unused)]
         let x_device = DeviceBuffer::from_slice(x)?;
         self.cuda.sync()?;
-        #[cfg(debug_assertions)] {
+        #[cfg(debug_assertions)]
+        {
             let x_device = x_device.as_host_vec()?;
             assert_eq!(x, x_device.as_slice());
         }
@@ -104,7 +105,8 @@ impl Download {
     pub fn run(&self) -> Result<()> {
         #[allow(unused)]
         let x_device = self.x_device.as_host_vec()?;
-        #[cfg(debug_assertions)] {
+        #[cfg(debug_assertions)]
+        {
             assert_eq!(x_device, self.x_host);
         }
         Ok(())
@@ -126,7 +128,8 @@ impl Saxpy {
             saxpy(&self.cuda, &self.x_device, self.alpha, &mut self.y_device)?;
         }
         self.cuda.sync()?;
-        #[cfg(debug_assertions)] {
+        #[cfg(debug_assertions)]
+        {
             let y_device = self.y_device.as_host_vec()?;
             assert_relative_eq!(self.y_host.as_slice(), y_device.as_slice());
         }

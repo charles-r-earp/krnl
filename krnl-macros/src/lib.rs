@@ -113,7 +113,7 @@ pub fn module(attr: TokenStream, item: TokenStream) -> TokenStream {
                     panic!(#module_msg);
                 }
             };
-            include!(concat!(env!("CARGO_MANIFEST_DIR"), "/.krnl/packages/", env!("CARGO_PKG_NAME"), "/cache"));
+            include!(concat!(env!("CARGO_MANIFEST_DIR"), "/.krnl/cache"));
         }
     } else {
         quote! {
@@ -217,7 +217,6 @@ pub fn kernel(attr: TokenStream, item: TokenStream) -> TokenStream {
     let unsafe_token = &kernel.unsafe_token;
     let kernel_ident = &kernel.ident;
     let push_const_fields = kernel.push_const_fields();
-
     let push_consts_ident = kernel.push_consts_ident();
     let push_consts_struct = if let Some(ident) = push_consts_ident.as_ref() {
         quote! {
@@ -260,8 +259,19 @@ pub fn kernel(attr: TokenStream, item: TokenStream) -> TokenStream {
     let device_args: Punctuated<_, Comma> = spec_args
         .iter()
         .map(|x| {
+            let ident_string = x.ident.to_string();
+            let unused_variables = if attr_meta
+                .thread_specs
+                .iter()
+                .flatten()
+                .any(|s| s == &ident_string)
+            {
+                vec![format_ident!("unused_variables")]
+            } else {
+                Vec::new()
+            };
             quote! {
-                #[allow(non_snake_case)] #x
+                #[allow(non_snake_case, #(#unused_variables)*)] #x
             }
         })
         .chain(device_args.iter().map(ToTokens::to_token_stream))
@@ -362,8 +372,10 @@ pub fn kernel(attr: TokenStream, item: TokenStream) -> TokenStream {
             #device_call
         }
     };
-    //let device_src = prettyplease::unparse(&parse_quote!(#device_tokens));
-    //eprintln!("{device_src}");
+    /*if kernel.ident == "saxpy" {
+        let device_src = prettyplease::unparse(&parse_quote!(#device_tokens));
+        eprintln!("{device_src}");
+    }*/
     let tokens = quote! {
         #device_tokens
         #[automatically_derived]
@@ -598,7 +610,6 @@ impl KernelAttrMeta {
         }
         let mut asm_strings = Vec::new();
         asm_strings.push("%ty_u32 = OpTypeInt 32 0".to_string());
-        let mut thread_values = Punctuated::<Expr, Comma>::new();
         for (i, (thread, spec)) in self
             .threads
             .iter()
@@ -607,9 +618,8 @@ impl KernelAttrMeta {
         {
             if let Some(spec) = spec.as_ref() {
                 if let Some(id) = spec_ids.get(&spec.to_string()).copied() {
-                    asm_strings.push(format!("%t{i} = OpSpecConstant %ty_u32 {thread}"));
-                    asm_strings.push(format!("OpDecorate SpecId %t{i} {id}"));
-                    thread_values.push(parse_quote!(#spec));
+                    asm_strings.push(format!("%t{i} = OpSpecConstant %ty_u32 0"));
+                    asm_strings.push(format!("OpDecorate %t{i} SpecId {id}"));
                 } else {
                     return Err(Error::new_spanned(
                         &spec,
@@ -618,34 +628,30 @@ impl KernelAttrMeta {
                 }
             } else {
                 asm_strings.push(format!("%t{i} = OpConstant %ty_u32 {thread}"));
-                thread_values.push(parse_quote!(#thread));
             }
         }
         let threads_tokens = if self.dimensionality == 1 {
             quote! {
-                let threads = #thread_values;
+                let threads = threads.x;
             }
         } else if self.dimensionality == 2 {
             quote! {
-                let threads = ::krnl_core::glam::UVec2::new(#thread_values);
-            }
-        } else if self.dimensionality == 3 {
-            quote! {
-                let threads = ::krnl_core::glam::UVec3::new(#thread_values);
+                let threads = threads.truncate();
             }
         } else {
-            unreachable!();
+            TokenStream2::new()
         };
         Ok(quote! {
-            {
+            let threads: ::krnl_core::glam::UVec3 = (|| unsafe {
                 ::core::arch::asm! {
-                    #(#asm_strings),*
-                    "%uvec = OpVector %ty_u32 3",
-                    "%workgroup_size = OpSpecConstantComposite %t0 %t1 %t2",
-                    "OpDecorate WorkgroupSize %workgroup_size",
+                    #(#asm_strings,)*
+                    "%uvec3 = OpTypeVector %ty_u32 3",
+                    "%workgroup_size = OpSpecConstantComposite %uvec3 %t0 %t1 %t2",
+                    "OpDecorate %workgroup_size BuiltIn WorkgroupSize",
+                    "OpReturnValue %workgroup_size",
                     options(noreturn),
                 };
-            }
+            })();
             #threads_tokens
         })
     }

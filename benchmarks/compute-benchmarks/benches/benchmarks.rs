@@ -1,13 +1,16 @@
-use compute_benchmarks::krnl_backend::KrnlBackend;
 #[cfg(feature = "cuda")]
 use compute_benchmarks::cuda_backend::CudaBackend;
+use compute_benchmarks::krnl_backend::KrnlBackend;
 #[cfg(feature = "ocl")]
 use compute_benchmarks::ocl_backend::OclBackend;
-use std::{env::var, str::FromStr, rc::Rc, cell::RefCell, time::{Instant, Duration}};
 use criterion::{criterion_group, criterion_main, Criterion};
-use rand::{
-    distributions::OpenClosed01,
-    thread_rng, Rng,
+use rand::{distributions::OpenClosed01, thread_rng, Rng};
+use std::{
+    cell::RefCell,
+    env::var,
+    rc::Rc,
+    str::FromStr,
+    time::{Duration, Instant},
 };
 
 fn index_from_env(name: &str) -> usize {
@@ -19,10 +22,24 @@ fn index_from_env(name: &str) -> usize {
 }
 
 pub fn criterion_benchmark(c: &mut Criterion) {
-    let saxpy_n = 64_000_000;
-    let saxpy_x: Rc<Vec<f32>> = Rc::new(thread_rng().sample_iter(OpenClosed01).take(saxpy_n).collect());
+    let saxpy_n = if cfg!(debug_assertions) {
+        1024
+    } else {
+        256_000_000
+    };
+    let saxpy_x: Rc<Vec<f32>> = Rc::new(
+        thread_rng()
+            .sample_iter(OpenClosed01)
+            .take(saxpy_n)
+            .collect(),
+    );
     let saxpy_alpha = 0.5;
-    let saxpy_y: Rc<Vec<f32>> = Rc::new(thread_rng().sample_iter(OpenClosed01).take(saxpy_n).collect());
+    let saxpy_y: Rc<Vec<f32>> = Rc::new(
+        thread_rng()
+            .sample_iter(OpenClosed01)
+            .take(saxpy_n)
+            .collect(),
+    );
     {
         let index = index_from_env("KRNL_DEVICE");
         let krnl = KrnlBackend::new(index).unwrap();
@@ -34,7 +51,7 @@ pub fn criterion_benchmark(c: &mut Criterion) {
                 let x = x.clone();
                 b.iter_custom(move |i| {
                     let mut duration = Duration::default();
-                    for _ in 0 .. i {
+                    for _ in 0..i {
                         let start = Instant::now();
                         krnl.upload(&x).unwrap();
                         duration += start.elapsed();
@@ -50,7 +67,7 @@ pub fn criterion_benchmark(c: &mut Criterion) {
                 let download = krnl.download(&x).unwrap();
                 b.iter_custom(move |i| {
                     let mut duration = Duration::default();
-                    for _ in 0 .. i {
+                    for _ in 0..i {
                         let start = Instant::now();
                         download.run().unwrap();
                         duration += start.elapsed();
@@ -60,12 +77,14 @@ pub fn criterion_benchmark(c: &mut Criterion) {
             });
         }
         {
-            let saxpy = Rc::new(RefCell::new(krnl.saxpy(&saxpy_x, saxpy_alpha, &saxpy_y).unwrap()));
+            let saxpy = Rc::new(RefCell::new(
+                krnl.saxpy(&saxpy_x, saxpy_alpha, &saxpy_y).unwrap(),
+            ));
             c.bench_function("saxpy_krnl", move |b| {
                 let saxpy = saxpy.clone();
                 b.iter_custom(move |i| {
                     let mut duration = Duration::default();
-                    for _ in 0 .. i {
+                    for _ in 0..i {
                         let start = Instant::now();
                         saxpy.borrow_mut().run().unwrap();
                         duration += start.elapsed();
@@ -75,7 +94,8 @@ pub fn criterion_benchmark(c: &mut Criterion) {
             });
         }
     }
-    #[cfg(feature = "cuda")] {
+    #[cfg(feature = "cuda")]
+    {
         let index = index_from_env("CUDA_DEVICE");
         let cuda = CudaBackend::new(index).unwrap();
         {
@@ -86,7 +106,7 @@ pub fn criterion_benchmark(c: &mut Criterion) {
                 let x = x.clone();
                 b.iter_custom(move |i| {
                     let mut duration = Duration::default();
-                    for _ in 0 .. i {
+                    for _ in 0..i {
                         let start = Instant::now();
                         cuda.upload(&x).unwrap();
                         duration += start.elapsed();
@@ -102,7 +122,7 @@ pub fn criterion_benchmark(c: &mut Criterion) {
                 let download = cuda.download(&x).unwrap();
                 b.iter_custom(move |i| {
                     let mut duration = Duration::default();
-                    for _ in 0 .. i {
+                    for _ in 0..i {
                         let start = Instant::now();
                         download.run().unwrap();
                         duration += start.elapsed();
@@ -112,12 +132,14 @@ pub fn criterion_benchmark(c: &mut Criterion) {
             });
         }
         {
-            let saxpy = Rc::new(RefCell::new(cuda.saxpy(&saxpy_x, saxpy_alpha, &saxpy_y).unwrap()));
+            let saxpy = Rc::new(RefCell::new(
+                cuda.saxpy(&saxpy_x, saxpy_alpha, &saxpy_y).unwrap(),
+            ));
             c.bench_function("saxpy_cuda", move |b| {
                 let saxpy = saxpy.clone();
                 b.iter_custom(move |i| {
                     let mut duration = Duration::default();
-                    for _ in 0 .. i {
+                    for _ in 0..i {
                         let start = Instant::now();
                         saxpy.borrow_mut().run().unwrap();
                         duration += start.elapsed();
@@ -127,7 +149,8 @@ pub fn criterion_benchmark(c: &mut Criterion) {
             });
         }
     }
-    #[cfg(feature = "ocl")] {
+    #[cfg(feature = "ocl")]
+    {
         let platform_index = index_from_env("OCL_PLATFORM");
         let device_index = index_from_env("OCL_DEVICE");
         let ocl = OclBackend::new(platform_index, device_index).unwrap();
@@ -139,7 +162,7 @@ pub fn criterion_benchmark(c: &mut Criterion) {
                 let x = x.clone();
                 b.iter_custom(move |i| {
                     let mut duration = Duration::default();
-                    for _ in 0 .. i {
+                    for _ in 0..i {
                         let start = Instant::now();
                         ocl.upload(&x).unwrap();
                         duration += start.elapsed();
@@ -155,7 +178,7 @@ pub fn criterion_benchmark(c: &mut Criterion) {
                 let download = ocl.download(&x).unwrap();
                 b.iter_custom(move |i| {
                     let mut duration = Duration::default();
-                    for _ in 0 .. i {
+                    for _ in 0..i {
                         let start = Instant::now();
                         download.run().unwrap();
                         duration += start.elapsed();
@@ -165,12 +188,14 @@ pub fn criterion_benchmark(c: &mut Criterion) {
             });
         }
         {
-            let saxpy = Rc::new(RefCell::new(ocl.saxpy(&saxpy_x, saxpy_alpha, &saxpy_y).unwrap()));
+            let saxpy = Rc::new(RefCell::new(
+                ocl.saxpy(&saxpy_x, saxpy_alpha, &saxpy_y).unwrap(),
+            ));
             c.bench_function("saxpy_ocl", move |b| {
                 let saxpy = saxpy.clone();
                 b.iter_custom(move |i| {
                     let mut duration = Duration::default();
-                    for _ in 0 .. i {
+                    for _ in 0..i {
                         let start = Instant::now();
                         saxpy.borrow_mut().run().unwrap();
                         duration += start.elapsed();

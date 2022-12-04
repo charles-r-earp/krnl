@@ -1,11 +1,5 @@
 use krnl::anyhow::Result;
-use ocl::{
-    ProQue,
-    Platform,
-    Device,
-    Buffer,
-    flags::MemFlags,
-};
+use ocl::{flags::MemFlags, Buffer, Device, Platform, ProQue};
 
 #[derive(Clone)]
 pub struct OclBackend {
@@ -21,9 +15,7 @@ impl OclBackend {
             .device(device)
             .src(KERNELS)
             .build()?;
-        Ok(Self {
-            pro_que,
-        })
+        Ok(Self { pro_que })
     }
     pub fn upload(&self, x: &[f32]) -> Result<()> {
         let x_host = Buffer::builder()
@@ -38,10 +30,16 @@ impl OclBackend {
             .build()?;
         x_host.copy(&x_device, None, None).enq()?;
         self.pro_que.finish()?;
-        #[cfg(debug_assertions)] {
-            let mut x_vec = vec![0f32; x.len()];
-            x_device.read(&mut x_vec).enq()?;
-            assert_eq!(x, x_vec.as_slice());
+        #[cfg(debug_assertions)]
+        {
+            let y_host = Buffer::builder()
+                .queue(self.pro_que.queue().clone())
+                .len(x.len())
+                .build()?;
+            x_device.copy(&y_host, None, None).enq()?;
+            let mut y_vec = vec![0f32; x.len()];
+            y_host.read(&mut y_vec).enq()?;
+            assert_eq!(x, y_vec.as_slice());
         }
         Ok(())
     }
@@ -81,8 +79,8 @@ impl OclBackend {
         x_host.copy(&x_device, None, None).enq()?;
         let y_host = Buffer::builder()
             .queue(queue.clone())
-            .copy_host_slice(x)
-            .len(x.len())
+            .copy_host_slice(y)
+            .len(y.len())
             .build()?;
         let y_device = Buffer::builder()
             .queue(queue.clone())
@@ -93,7 +91,7 @@ impl OclBackend {
         #[cfg(debug_assertions)]
         let y_host = {
             let mut y_host = y.to_vec();
-            saxpy_host(x, alpha, &mut y_host);
+            crate::saxpy_host(x, alpha, &mut y_host);
             y_host
         };
         Ok(Saxpy {
@@ -125,13 +123,13 @@ impl Download {
         self.pro_que.finish()?;
         let mut x_vec = vec![0f32; x_host.len()];
         x_host.read(&mut x_vec).enq()?;
-        #[cfg(debug_assertions)] {
+        #[cfg(debug_assertions)]
+        {
             assert_eq!(x_vec, self.x_host);
         }
         Ok(())
     }
 }
-
 
 pub struct Saxpy {
     pro_que: ProQue,
@@ -147,7 +145,9 @@ impl Saxpy {
         let n = self.x_device.len() as u32;
         let lws = 256;
         let wgs = n / lws + if n % lws != 0 { 1 } else { 0 };
-        let kernel = self.pro_que.kernel_builder("saxpy")
+        let kernel = self
+            .pro_que
+            .kernel_builder("saxpy")
             .arg(&n)
             .arg(&self.x_device)
             .arg(&self.alpha)
@@ -159,13 +159,14 @@ impl Saxpy {
             kernel.enq()?;
         }
         self.pro_que.finish()?;
-        #[cfg(debug_assertions)] {
+        #[cfg(debug_assertions)]
+        {
             let y_host = Buffer::builder()
                 .queue(self.pro_que.queue().clone())
                 .len(self.x_device.len())
                 .flags(MemFlags::HOST_READ_ONLY)
                 .build()?;
-            self.y_device.copy(&x_host, None, None).enq()?;
+            self.y_device.copy(&y_host, None, None).enq()?;
             self.pro_que.finish()?;
             let mut y_vec = vec![0f32; y_host.len()];
             y_host.read(&mut y_vec).enq()?;

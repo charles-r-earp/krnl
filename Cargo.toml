@@ -10,6 +10,9 @@ readme = "README.md"
 repository = "https://github.com/charles-r-earp/krnl"
 publish = false
 
+[workspace]
+members = ["benchmarks/*"]
+
 [dependencies]
 krnl-macros = { path = "krnl-macros" }
 krnl-core = { path = "krnl-core" }

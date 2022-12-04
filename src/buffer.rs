@@ -991,19 +991,19 @@ impl ScalarDataOwned for ScalarCowBufferRepr<'_> {}
 mod buffer_fill {
     use krnl_core::kernel;
 
-    #[kernel(for_each, threads(256))]
+    #[kernel(for_each, threads(128))]
     pub fn fill_u8(#[item] y: &mut u8, #[push] x: u8) {
         *y = x;
     }
-    #[kernel(for_each, threads(256))]
+    #[kernel(for_each, threads(128))]
     pub fn fill_u16(#[item] y: &mut u16, #[push] x: u16) {
         *y = x;
     }
-    #[kernel(for_each, threads(256))]
+    #[kernel(for_each, threads(128))]
     pub fn fill_u32(#[item] y: &mut u32, #[push] x: u32) {
         *y = x;
     }
-    #[kernel(for_each, threads(256))]
+    #[kernel(for_each, threads(128))]
     pub fn fill_u64(#[item] y: &mut u64, #[push] x: u64) {
         *y = x;
     }
@@ -1028,7 +1028,7 @@ mod buffer_cast {
     macro_for!($X in [u8, i8, u16, i16, f16, bf16, u32, i32, f32, u64, i64, f64] {
         macro_for!($Y in [u8, i8, u16, i16, f16, bf16, u32, i32, f32, u64, i64, f64] {
             paste! {
-                #[kernel(threads(256), for_each)]
+                #[kernel(threads(128), for_each)]
                 pub fn [<cast_ $X _ $Y>](#[item] x: &$X, #[item] y: &mut $Y) {
                     *y = x.cast();
                 }

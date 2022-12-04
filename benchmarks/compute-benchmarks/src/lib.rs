@@ -2,9 +2,9 @@
 
 #[cfg(feature = "cuda")]
 pub mod cuda_backend;
+pub mod krnl_backend;
 #[cfg(feature = "ocl")]
 pub mod ocl_backend;
-pub mod krnl_backend;
 
 #[cfg(debug_assertions)]
 fn saxpy_host(x: &[f32], alpha: f32, y: &mut [f32]) {

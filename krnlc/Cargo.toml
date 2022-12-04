@@ -4,6 +4,8 @@ version = "0.0.1"
 edition = "2021"
 publish = false
 
+[workspace]
+
 [dependencies]
 clap = { version = "4.0.22", features = ["derive"] }
 clap-cargo = { version = "0.10.0", features = ["cargo_metadata"] }
