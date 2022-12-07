@@ -360,10 +360,11 @@ rustflags = ["--target-dir spirv-target"]
 
     let mut builder = SpirvBuilder::new(crate_dir, "spirv-unknown-vulkan1.2")
         .multimodule(true)
-        .spirv_metadata(SpirvMetadata::NameVariables)
+        .spirv_metadata(SpirvMetadata::Full /*NameVariables*/)
         .print_metadata(MetadataPrintout::None)
         .preserve_bindings(true)
-        .deny_warnings(true);
+        .deny_warnings(true)
+        .extension("SPV_KHR_non_semantic_info");
     for cap in capabilites {
         builder = builder.capability(cap);
     }
@@ -524,6 +525,10 @@ fn process_kernel(module_path: &str, entry_point: &str, spirv_bytes: &[u8]) -> R
         bail!("Kernel `{kernel_name}` push constant size not multiple of 4 bytes!");
     }
     let mut module = rspirv::dr::load_bytes(&spirv_bytes).map_err(|e| format_err!("{e}"))?;
+    /*{
+        use rspirv::binary::Disassemble;
+        eprintln!("{}", module.disassemble());
+    }*/
     let entry_id = if let [entry_point] = module.entry_points.as_mut_slice() {
         if let [Operand::ExecutionModel(exec_model), Operand::IdRef(entry_id), Operand::LiteralString(entry), ..] = entry_point.operands.as_mut_slice() {
             if *exec_model != ExecutionModel::GLCompute {
@@ -654,12 +659,13 @@ fn process_kernel(module_path: &str, entry_point: &str, spirv_bytes: &[u8]) -> R
                     if op == Op::AccessChain {
                         let id = inst.operands[0].unwrap_id_ref();
                         if let Some(binding) = bindings.get(&id).copied() {
-                            let index = inst.operands[2].unwrap_id_ref();
-                            dyn_op.replace(DynOp::Offset {
-                                binding,
-                                index,
-                            });
-                            break 'block;
+                            if let Some(index) = inst.operands.get(2).map(|x| x.unwrap_id_ref()) {
+                                dyn_op.replace(DynOp::Offset {
+                                    binding,
+                                    index,
+                                });
+                                break 'block;
+                            }
                         }
                     } else if op == Op::ArrayLength {
                         let id = inst.operands[0].unwrap_id_ref();
@@ -712,6 +718,7 @@ fn process_kernel(module_path: &str, entry_point: &str, spirv_bytes: &[u8]) -> R
     }
     let mut module = builder.module();
     let mut capabilities = HashSet::with_capacity(module.capabilities.len());
+    let mut extensions = HashSet::with_capacity(module.extensions.len());
     for inst in module.types_global_values.iter() {
         let class = inst.class;
         let op = class.opcode;
@@ -734,6 +741,7 @@ fn process_kernel(module_path: &str, entry_point: &str, spirv_bytes: &[u8]) -> R
             _ => (),
         }
         capabilities.extend(class.capabilities);
+        extensions.extend(class.extensions);
     }
     module.capabilities.retain(|inst| {
         if let [Operand::Capability(cap)] = inst.operands.as_slice() {
@@ -743,10 +751,26 @@ fn process_kernel(module_path: &str, entry_point: &str, spirv_bytes: &[u8]) -> R
             false
         }
     });
+    for inst in module.ext_inst_imports.iter() {
+        if let [Operand::LiteralString(ext_inst_import)] = inst.operands.as_slice() {
+            if ext_inst_import.starts_with("NonSemantic") {
+                extensions.insert("SPV_KHR_non_semantic_info");
+            }
+        }
+    }
+    module.extensions.retain(|inst| {
+        if let [Operand::LiteralString(ext)] = inst.operands.as_slice() {
+            ext.as_str() == "SPV_KHR_vulkan_memory_model"
+            || extensions.contains(ext.as_str())
+        } else {
+            false
+        }
+    });
     let spirv_words = module.assemble();
-    let validator = spirv_tools::val::create(None);
+    let target_env = spirv_tools::TargetEnv::Vulkan_1_2;
+    let validator = spirv_tools::val::create(Some(target_env));
     validator.validate(&spirv_words, None)?;
-    let mut optimizer = spirv_tools::opt::create(None);
+    let mut optimizer = spirv_tools::opt::create(Some(target_env));
     optimizer.register_performance_passes()
         .register_size_passes();
     let spirv_words = optimizer.optimize(&spirv_words, &mut |_| (), None)?.as_words().to_vec();

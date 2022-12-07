@@ -394,6 +394,24 @@ impl Features {
     }
 }
 
+#[cfg(feature = "device")]
+#[crate::kernel::module(dependencies(
+    "\"krnl-core\" = { path = \"/home/charles/Documents/rust/krnl/krnl-core\" }"
+))]
+#[krnl(crate = crate)]
+mod test_debug_printf {
+    use krnl_core::kernel;
+    #[cfg(target_arch = "spirv")]
+    use krnl_core::spirv_std::{self, macros::debug_printfln};
+
+    #[kernel(threads(1), for_each)]
+    pub fn test_debug_printf(#[item] x: &f32) {
+        unsafe {
+            debug_printfln!("test_debug_printf %f", *x);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     #[allow(unused_imports)]
@@ -416,5 +434,21 @@ mod tests {
     #[test]
     fn sync_device() -> Result<()> {
         Device::new(0)?.sync()?.block()
+    }
+
+    #[cfg(feature = "device")]
+    #[test]
+    fn test_debug_printf() -> Result<()> {
+        use crate::{buffer::Buffer, future::BlockableFuture};
+        let device = Device::builder().build()?;
+        let x = Buffer::from_vec(vec![1.2f32, 2.3, 3.4, 4.56])
+            .into_device(device.clone())?
+            .block()?;
+        super::test_debug_printf::test_debug_printf::Kernel::builder()
+            .build(device.clone())?
+            .dispatch_builder(x.as_slice())?
+            .dispatch()?;
+        device.sync()?.block()?;
+        Ok(())
     }
 }

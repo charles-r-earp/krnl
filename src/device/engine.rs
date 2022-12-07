@@ -27,6 +27,11 @@ use std::{
     task::{Context, Poll},
     time::{Duration, Instant},
 };
+#[cfg(debug_assertions)]
+use vulkano::instance::debug::{
+    DebugUtilsMessageSeverity, DebugUtilsMessageType, DebugUtilsMessenger,
+    DebugUtilsMessengerCreateInfo, ValidationFeatureDisable, ValidationFeatureEnable,
+};
 use vulkano::{
     buffer::{
         cpu_access::ReadLock,
@@ -113,18 +118,20 @@ fn create_instance(max_api_version: Option<InstanceVersion>) -> Result<Arc<Insta
     let engine_name = Some("krnl".to_string());
     let engine_version = InstanceVersion::from_str(env!("CARGO_PKG_VERSION"))?;
     let mut library = VulkanLibrary::new();
+    let mut enumerate_portability = false;
     #[cfg(any(target_os = "ios", target_os = "macos"))]
     {
         if library.is_err() {
             library = VulkanLibrary::with_loader(AshMoltenLoader)
         }
+        enumerate_portability = true;
     };
     let library = library?;
     let instance_create_info = InstanceCreateInfo {
         engine_name: engine_name.clone(),
         engine_version,
         max_api_version,
-        enumerate_portability: true,
+        enumerate_portability,
         ..InstanceCreateInfo::default()
     };
     Ok(Instance::new(library, instance_create_info)?)
@@ -210,7 +217,11 @@ impl Engine {
             })
             .map(|x| x.try_into().unwrap())
             .ok_or_else(|| format_err!("Device {index} doesn't support compute!"))?;
-        let device_extensions = DeviceExtensions::none();
+        let supported_extensions = physical_device.supported_extensions();
+        let device_extensions = DeviceExtensions {
+            khr_vulkan_memory_model: supported_extensions.khr_vulkan_memory_model,
+            ..DeviceExtensions::none()
+        };
         let queue_create_info = QueueCreateInfo {
             queue_family_index,
             queues: vec![1f32],
@@ -1047,6 +1058,13 @@ impl KernelCache {
         } else {
             specialize(spirv, spec_consts)?.into()
         };
+        let spirv: Cow<[u32]> = {
+            use rspirv::binary::Assemble;
+            let module = rspirv::dr::load_words(spirv.as_ref()).unwrap();
+            let mut builder = rspirv::dr::Builder::new_from_module(module);
+            builder.extension("SPV_KHR_vulkan_memory_model");
+            builder.module().assemble().into()
+        };
         let stages = ShaderStages {
             compute: true,
             ..ShaderStages::none()
@@ -1567,12 +1585,20 @@ impl Frame {
         } else {
             &[]
         };
+        let wait_dst_stage_mask =
+            [vk::PipelineStageFlags::COMPUTE_SHADER | vk::PipelineStageFlags::TRANSFER];
+        let wait_dst_stage_mask = if !wait_semaphores.is_empty() {
+            wait_dst_stage_mask.as_ref()
+        } else {
+            &[]
+        };
         let command_buffer = self.command_buffer.as_ref().unwrap().handle();
         let command_buffers = &[command_buffer];
         let semaphore = self.semaphore.handle();
         let semaphores = &[semaphore];
         let submit_info = vk::SubmitInfo::builder()
             .wait_semaphores(wait_semaphores)
+            .wait_dst_stage_mask(wait_dst_stage_mask)
             .command_buffers(command_buffers)
             .signal_semaphores(semaphores);
         unsafe {
