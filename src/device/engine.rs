@@ -16,6 +16,7 @@ use std::{
     iter::{once, Peekable},
     mem::ManuallyDrop,
     ops::Deref,
+    ops::Range,
     pin::Pin,
     ptr::NonNull,
     str::FromStr,
@@ -31,15 +32,12 @@ use vulkano::{
         cpu_access::ReadLock,
         cpu_pool::CpuBufferPoolChunk,
         device_local::DeviceLocalBuffer,
-        sys::{UnsafeBuffer, UnsafeBufferCreateInfo},
-        BufferAccess, BufferCreationError, BufferInner, BufferSlice, BufferUsage,
-        CpuAccessibleBuffer, CpuBufferPool,
+        sys::{Buffer, BufferCreateInfo, RawBuffer},
+        BufferAccess, BufferError, BufferInner, BufferSlice, BufferUsage, CpuAccessibleBuffer,
+        CpuBufferPool,
     },
     command_buffer::{
-        pool::{
-            CommandPool, UnsafeCommandPool, UnsafeCommandPoolAlloc, UnsafeCommandPoolCreateInfo,
-        },
-        submit::SubmitCommandBufferBuilder,
+        pool::{CommandPool, CommandPoolAlloc, CommandPoolCreateInfo},
         sys::{
             CommandBufferBeginInfo,
             //    UnsafeCommandBufferBuilderPipelineBarrier,
@@ -53,15 +51,12 @@ use vulkano::{
             DescriptorSetLayout, DescriptorSetLayoutBinding, DescriptorSetLayoutCreateInfo,
             DescriptorType,
         },
-        pool::{
-            standard::StdDescriptorPoolAlloc, DescriptorPool, DescriptorPoolAlloc,
-            DescriptorSetAllocateInfo, UnsafeDescriptorPool, UnsafeDescriptorPoolCreateInfo,
-        },
+        pool::{DescriptorPool, DescriptorPoolCreateInfo, DescriptorSetAllocateInfo},
         sys::UnsafeDescriptorSet,
         WriteDescriptorSet,
     },
     device::{
-        physical::{MemoryType, PhysicalDevice, PhysicalDeviceType, QueueFamily},
+        physical::{PhysicalDevice, PhysicalDeviceType},
         Device, DeviceCreateInfo, DeviceExtensions, DeviceOwned, Features as VulkanoFeatures,
         Queue, QueueCreateInfo,
     },
@@ -69,9 +64,10 @@ use vulkano::{
         Instance, InstanceCreateInfo, InstanceCreationError, InstanceExtensions,
         Version as InstanceVersion,
     },
+    library::VulkanLibrary,
     memory::{
-        pool::StdMemoryPool, DeviceMemory, DeviceMemoryAllocationError, MappedDeviceMemory,
-        MemoryAllocateInfo,
+        allocator::MemoryAlloc, DeviceMemory, DeviceMemoryError, MappedDeviceMemory,
+        MemoryAllocateInfo, MemoryType,
     },
     pipeline::{
         layout::{PipelineLayoutCreateInfo, PushConstantRange},
@@ -116,285 +112,26 @@ use molten::AshMoltenLoader;
 fn create_instance(max_api_version: Option<InstanceVersion>) -> Result<Arc<Instance>> {
     let engine_name = Some("krnl".to_string());
     let engine_version = InstanceVersion::from_str(env!("CARGO_PKG_VERSION"))?;
-    #[allow(unused_mut)]
-    let mut instance = Instance::new(InstanceCreateInfo {
+    let mut library = VulkanLibrary::new();
+    #[cfg(any(target_os = "ios", target_os = "macos"))]
+    {
+        if library.is_err() {
+            library = VulkanLibrary::with_loader(AshMoltenLoader)
+        }
+    };
+    let library = library?;
+    let instance_create_info = InstanceCreateInfo {
         engine_name: engine_name.clone(),
         engine_version,
         max_api_version,
         enumerate_portability: true,
         ..InstanceCreateInfo::default()
-    });
-    #[cfg(any(target_os = "ios", target_os = "macos"))]
-    {
-        use vulkano::instance::loader::FunctionPointers;
-        if instance.is_err() {
-            let info = InstanceCreateInfo {
-                engine_name,
-                engine_version,
-                max_api_version,
-                function_pointers: Some(FunctionPointers::new(Box::new(AshMoltenLoader))),
-                enumerate_portability: true,
-                ..InstanceCreateInfo::default()
-            };
-            instance = Instance::new(info);
-        }
-    }
-    Ok(instance?)
-}
-
-/*
-fn spirv_capability_to_vulkano_capability(input: Capability) -> Result<VulkanoCapability> {
-    macro_rules! impl_match {
-        ($input:ident { $($x:ident)*}) => {
-            match $input {
-                $(
-                    Capability::$x => Ok(VulkanoCapability::$x),
-                )*
-                other => Err(format_err!("vulkano does not support capability {other:?}!"))
-            }
-        };
-    }
-    // https://docs.rs/spirv/0.2.0+1.5.4/spirv/enum.Capability.html
-    // https://docs.rs/vulkano/0.30.0/vulkano/shader/spirv/enum.Capability.html
-    impl_match!(input {
-        Matrix
-        Shader
-        Geometry
-        Tessellation
-        Addresses
-        Linkage
-        Kernel
-        Vector16
-        Float16Buffer
-        Float16
-        Float64
-        Int64
-        Int64Atomics
-        ImageBasic
-        ImageReadWrite
-        ImageMipmap
-        Pipes
-        Groups
-        DeviceEnqueue
-        LiteralSampler
-        AtomicStorage
-        Int16
-        TessellationPointSize
-        GeometryPointSize
-        ImageGatherExtended
-        StorageImageMultisample
-        UniformBufferArrayDynamicIndexing
-        SampledImageArrayDynamicIndexing
-        StorageBufferArrayDynamicIndexing
-        StorageImageArrayDynamicIndexing
-        ClipDistance
-        CullDistance
-        ImageCubeArray
-        SampleRateShading
-        ImageRect
-        SampledRect
-        GenericPointer
-        Int8
-        InputAttachment
-        SparseResidency
-        MinLod
-        Sampled1D
-        Image1D
-        SampledCubeArray
-        SampledBuffer
-        ImageBuffer
-        ImageMSArray
-        StorageImageExtendedFormats
-        ImageQuery
-        DerivativeControl
-        InterpolationFunction
-        TransformFeedback
-        GeometryStreams
-        StorageImageReadWithoutFormat
-        StorageImageWriteWithoutFormat
-        MultiViewport
-        SubgroupDispatch
-        NamedBarrier
-        PipeStorage
-        GroupNonUniform
-        GroupNonUniformVote
-        GroupNonUniformArithmetic
-        GroupNonUniformBallot
-        GroupNonUniformShuffle
-        GroupNonUniformShuffleRelative
-        GroupNonUniformClustered
-        GroupNonUniformQuad
-        ShaderLayer
-        ShaderViewportIndex
-        FragmentShadingRateKHR
-        SubgroupBallotKHR
-        DrawParameters
-        SubgroupVoteKHR
-        StorageBuffer16BitAccess
-        UniformAndStorageBuffer16BitAccess
-        StoragePushConstant16
-        StorageInputOutput16
-        DeviceGroup
-        MultiView
-        VariablePointersStorageBuffer
-        VariablePointers
-        AtomicStorageOps
-        SampleMaskPostDepthCoverage
-        StorageBuffer8BitAccess
-        UniformAndStorageBuffer8BitAccess
-        StoragePushConstant8
-        DenormPreserve
-        DenormFlushToZero
-        SignedZeroInfNanPreserve
-        RoundingModeRTE
-        RoundingModeRTZ
-        RayQueryProvisionalKHR
-        RayQueryKHR
-        RayTraversalPrimitiveCullingKHR
-        RayTracingKHR
-        Float16ImageAMD
-        ImageGatherBiasLodAMD
-        FragmentMaskAMD
-        StencilExportEXT
-        ImageReadWriteLodAMD
-        Int64ImageEXT
-        ShaderClockKHR
-        SampleMaskOverrideCoverageNV
-        GeometryShaderPassthroughNV
-        ShaderViewportIndexLayerEXT
-        ShaderViewportMaskNV
-        ShaderStereoViewNV
-        PerViewAttributesNV
-        FragmentFullyCoveredEXT
-        MeshShadingNV
-        ImageFootprintNV
-        // FragmentBarycentricNV
-        ComputeDerivativeGroupQuadsNV
-        FragmentDensityEXT
-        GroupNonUniformPartitionedNV
-        ShaderNonUniform
-        RuntimeDescriptorArray
-        InputAttachmentArrayDynamicIndexing
-        UniformTexelBufferArrayDynamicIndexing
-        StorageTexelBufferArrayDynamicIndexing
-        UniformBufferArrayNonUniformIndexing
-        SampledImageArrayNonUniformIndexing
-        StorageBufferArrayNonUniformIndexing
-        StorageImageArrayNonUniformIndexing
-        InputAttachmentArrayNonUniformIndexing
-        UniformTexelBufferArrayNonUniformIndexing
-        StorageTexelBufferArrayNonUniformIndexing
-        RayTracingNV
-        VulkanMemoryModel
-        VulkanMemoryModelDeviceScope
-        PhysicalStorageBufferAddresses
-        ComputeDerivativeGroupLinearNV
-        RayTracingProvisionalKHR
-        CooperativeMatrixNV
-        FragmentShaderSampleInterlockEXT
-        FragmentShaderShadingRateInterlockEXT
-        ShaderSMBuiltinsNV
-        FragmentShaderPixelInterlockEXT
-        // DemoteToHelperInvocationEXT
-        SubgroupShuffleINTEL
-        SubgroupBufferBlockIOINTEL
-        SubgroupImageBlockIOINTEL
-        SubgroupImageMediaBlockIOINTEL
-        IntegerFunctions2INTEL
-        FunctionPointersINTEL
-        IndirectReferencesINTEL
-        SubgroupAvcMotionEstimationINTEL
-        SubgroupAvcMotionEstimationIntraINTEL
-        SubgroupAvcMotionEstimationChromaINTEL
-        FPGAMemoryAttributesINTEL
-        UnstructuredLoopControlsINTEL
-        FPGALoopControlsINTEL
-        KernelAttributesINTEL
-        FPGAKernelAttributesINTEL
-        BlockingPipesINTEL
-        FPGARegINTEL
-        AtomicFloat32AddEXT
-        AtomicFloat64AddEXT
-    })
-}
-
-fn capabilites_to_features(capabilites: &[Capability]) -> Features {
-    use Capability::*;
-    let mut f = Features::none();
-    for cap in capabilites {
-        match cap {
-            VulkanMemoryModel => {
-                f.vulkan_memory_model = true;
-            }
-            StorageBuffer8BitAccess => {
-                f.storage_buffer8_bit_access = true;
-            }
-            StorageBuffer16BitAccess => {
-                f.storage_buffer16_bit_access = true;
-            }
-            Int8 => {
-                f.shader_int8 = true;
-            }
-            Int16 => {
-                f.shader_int16 = true;
-            }
-            Int64 => {
-                f.shader_int64 = true;
-            }
-            Float64 => {
-                f.shader_float64 = true;
-            }
-            _ => todo!(),
-        }
-    }
-    f
-}
-
-fn features_to_capabilites(features: &Features) -> Vec<Capability> {
-    use Capability::*;
-    let f = features;
-    let mut caps = Vec::new();
-    if f.vulkan_memory_model {
-        caps.push(VulkanMemoryModel);
-    }
-    if f.storage_buffer8_bit_access {
-        caps.push(StorageBuffer8BitAccess);
-    }
-    if f.storage_buffer16_bit_access {
-        caps.push(StorageBuffer16BitAccess);
-    }
-    if f.shader_int8 {
-        caps.push(Int8);
-    }
-    if f.shader_int16 {
-        caps.push(Int16);
-    }
-    if f.shader_int64 {
-        caps.push(Int64);
-    }
-    caps
-}*/
-
-fn get_compute_family<'a>(
-    physical_device: &'a PhysicalDevice,
-) -> Result<QueueFamily<'a>, anyhow::Error> {
-    physical_device
-        .queue_families()
-        .find(|x| !x.supports_graphics() && x.supports_compute())
-        .or_else(|| {
-            physical_device
-                .queue_families()
-                .find(|x| x.supports_compute())
-        })
-        .ok_or_else(|| {
-            format_err!(
-                "Device {} doesn't support compute!",
-                physical_device.index()
-            )
-        })
+    };
+    Ok(Instance::new(library, instance_create_info)?)
 }
 
 pub(crate) struct Engine {
+    index: usize,
     features: Features,
     buffer_allocator: BufferAllocator,
     kernel_cache_map: KernelCacheMap,
@@ -407,15 +144,15 @@ impl Engine {
         index: usize,
         features: Option<Features>,
         max_api_version: Option<(u32, u32)>,
-    ) -> Result<Self, anyhow::Error> {
+    ) -> Result<Self> {
         let max_api_version =
             max_api_version.map(|(major, minor)| InstanceVersion::major_minor(major, minor));
         let instance = create_instance(max_api_version)?;
-        let physical_device = PhysicalDevice::from_index(&instance, index).ok_or_else(|| {
+        let physical_devices = instance.enumerate_physical_devices()?;
+        let physical_device_count = physical_devices.len();
+        let physical_device = physical_devices.skip(index).next().ok_or_else(|| {
             format_err!(
-                "Cannot create device at index {}, only {} devices!",
-                index,
-                PhysicalDevice::enumerate(&instance).len(),
+                "Cannot create device at index {index}, only {physical_device_count} devices!",
             )
         })?;
         let vulkan_version = physical_device.api_version();
@@ -460,10 +197,25 @@ impl Engine {
             shader_float16: device_features.shader_float16,
             shader_float64: device_features.shader_float64,
         };
-        let compute_family = get_compute_family(&physical_device)?;
+        let queue_family_properties = physical_device.queue_family_properties();
+        let queue_family_index = queue_family_properties
+            .iter()
+            .map(|x| x.queue_flags)
+            .position(|x| x.compute && !x.graphics)
+            .or_else(|| {
+                queue_family_properties
+                    .iter()
+                    .map(|x| x.queue_flags)
+                    .position(|x| x.compute && !x.graphics)
+            })
+            .map(|x| x.try_into().unwrap())
+            .ok_or_else(|| format_err!("Device {index} doesn't support compute!"))?;
         let device_extensions = DeviceExtensions::none();
-        let mut queue_create_info = QueueCreateInfo::family(compute_family);
-        queue_create_info.queues = vec![1f32];
+        let queue_create_info = QueueCreateInfo {
+            queue_family_index,
+            queues: vec![1f32],
+            ..QueueCreateInfo::default()
+        };
         let device_create_info = DeviceCreateInfo {
             enabled_extensions: device_extensions,
             enabled_features: device_features,
@@ -474,8 +226,9 @@ impl Engine {
         let queue = queues.next().unwrap();
         let buffer_allocator = BufferAllocator::new(device.clone())?;
         let kernel_cache_map = KernelCacheMap::new(device.clone());
-        let runner = Runner::new(queue)?;
+        let runner = Runner::new(queue, index)?;
         Ok(Self {
+            index,
             device,
             features,
             buffer_allocator,
@@ -484,7 +237,7 @@ impl Engine {
         })
     }
     pub(crate) fn index(&self) -> usize {
-        self.device.physical_device().index()
+        self.index
     }
     /*pub(crate) fn vulkan_version(&self) -> Version {
         let version = self.device.instance().api_version();
@@ -553,11 +306,10 @@ impl Engine {
             for bytes in bytes.chunks(64_000_000) {
                 let mut src = self.buffer_allocator.alloc_host(bytes.len() as u32)?;
                 Arc::get_mut(&mut src).unwrap().write_slice(bytes)?;
+                let len = src.alloc.block.len();
                 let upload = Upload {
                     src,
-                    dst: buffer
-                        .inner
-                        .slice_offset_len(offset as u32, bytes.len() as u32),
+                    dst: buffer.inner.slice_offset_len(offset as u32, len),
                 };
                 self.send_op(Op::Upload(upload))?;
                 offset += bytes.len();
@@ -565,9 +317,15 @@ impl Engine {
         }
         Ok(buffer)
     }
-    pub(crate) fn download(&self, buffer: Arc<DeviceBuffer>) -> Result<HostBufferFuture> {
+    pub(crate) fn download(
+        &self,
+        buffer: Arc<DeviceBuffer>,
+        offset: usize,
+        len: usize,
+    ) -> Result<HostBufferFuture> {
+        debug_assert_eq!(offset, 0);
         let src = buffer.inner.clone();
-        let dst = self.buffer_allocator.alloc_host(buffer.len() as u32)?;
+        let dst = self.buffer_allocator.alloc_host(len as u32)?;
         let download = Download {
             src,
             dst: dst.clone(),
@@ -655,52 +413,96 @@ impl Engine {
 
 #[derive(Debug)]
 pub(crate) struct HostBuffer {
-    alloc: Arc<ChunkAlloc<HostMemory>>,
+    alloc: Arc<ChunkAlloc>,
+    buffer: Arc<Buffer>,
+    memory_alloc: MemoryAlloc,
     len: u32,
 }
 
 impl HostBuffer {
-    fn new(alloc: Arc<ChunkAlloc<HostMemory>>, len: u32) -> Result<Arc<Self>> {
-        Ok(Arc::new(Self { alloc, len }))
+    fn new(alloc: Arc<ChunkAlloc>, len: u32) -> Result<Arc<Self>> {
+        let chunk_id = Arc::as_ptr(&alloc.chunk);
+        let device = alloc.chunk.memory_alloc.device().clone();
+        let usage = BufferUsage {
+            transfer_src: true,
+            transfer_dst: true,
+            ..BufferUsage::default()
+        };
+        let buffer = RawBuffer::new(
+            device,
+            BufferCreateInfo {
+                size: alloc.block.len() as DeviceSize,
+                usage,
+                ..Default::default()
+            },
+        )?;
+        let memory_alloc = unsafe {
+            let mut memory_alloc = alloc.memory_alloc().alias().unwrap();
+            memory_alloc.set_offset(alloc.block.start as DeviceSize);
+            memory_alloc.set_size(alloc.block.len() as DeviceSize);
+            memory_alloc
+        };
+        let memory_alloc2 = unsafe { memory_alloc.alias().unwrap() };
+        let buffer = Arc::new(buffer.bind_memory(memory_alloc2).map_err(|(e, _, _)| e)?);
+        Ok(Arc::new(Self {
+            alloc,
+            buffer,
+            memory_alloc,
+            len,
+        }))
     }
     pub(crate) fn read(&self) -> Result<&[u8]> {
-        let start = self.alloc.block.start as DeviceSize;
-        let end = start + self.len as DeviceSize;
-        Ok(unsafe { self.alloc.memory().memory.read(start..end)? })
+        let data = unsafe {
+            self.memory_alloc
+                .invalidate_range(0..self.memory_alloc.size())?;
+            self.memory_alloc
+                .mapped_slice()
+                .unwrap()
+                .get(..self.len as usize)
+                .unwrap()
+        };
+        Ok(data)
     }
     fn write_slice(&mut self, slice: &[u8]) -> Result<()> {
-        let start = self.alloc.block.start as DeviceSize;
-        let end = start + self.len as DeviceSize;
-        let data = unsafe { self.alloc.memory().memory.write(start..end)? };
+        let data = unsafe {
+            self.memory_alloc
+                .mapped_slice_mut()
+                .unwrap()
+                .get_mut(..self.len as usize)
+                .unwrap()
+        };
         data.copy_from_slice(slice);
+        unsafe {
+            self.memory_alloc.flush_range(0..self.memory_alloc.size())?;
+        }
         Ok(())
     }
     fn chunk_id(&self) -> usize {
         Arc::as_ptr(&self.alloc.chunk) as usize
     }
-    fn start(&self) -> DeviceSize {
-        self.alloc.block.start as DeviceSize
+    fn start(&self) -> u32 {
+        self.alloc.block.start
+    }
+    fn barrier_range(&self) -> Range<DeviceSize> {
+        0..self.buffer.size()
     }
 }
 
 unsafe impl DeviceOwned for HostBuffer {
     fn device(&self) -> &Arc<Device> {
-        self.alloc.memory().buffer.device()
+        self.buffer.device()
     }
 }
 
 unsafe impl BufferAccess for HostBuffer {
     fn inner(&self) -> BufferInner {
         BufferInner {
-            buffer: &self.alloc.memory().buffer,
-            offset: self.alloc.block.start as DeviceSize,
+            buffer: &self.buffer,
+            offset: 0,
         }
     }
     fn size(&self) -> DeviceSize {
-        self.alloc.block.len() as DeviceSize
-    }
-    fn usage(&self) -> &BufferUsage {
-        &self.alloc.memory().usage
+        self.buffer.size()
     }
 }
 
@@ -731,12 +533,13 @@ impl Future for HostBufferFuture {
     }
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub(crate) struct DeviceBufferInner {
-    buffer: Arc<UnsafeBuffer>,
-    chunk: Arc<Chunk<DeviceMemory>>,
+    buffer: Arc<Buffer>,
+    chunk: Arc<Chunk>,
     usage: BufferUsage,
     start: u32,
+    offset: u32,
     len: u32,
 }
 
@@ -745,16 +548,19 @@ impl DeviceBufferInner {
         Arc::as_ptr(&self.chunk) as usize
     }
     fn slice_offset_len(&self, offset: u32, len: u32) -> Arc<Self> {
-        let start = self.start + offset;
-        debug_assert!(start < self.start + self.len);
+        let offset = self.offset + offset;
+        debug_assert!(offset < self.offset + self.len);
         debug_assert!(len <= self.len);
         Arc::new(Self {
-            buffer: self.buffer.clone(),
-            chunk: self.chunk.clone(),
-            usage: self.usage,
-            start,
+            offset,
             len,
+            ..self.clone()
         })
+    }
+    fn barrier_range(&self) -> Range<DeviceSize> {
+        let start = self.offset as _;
+        let end = (self.offset + self.len) as DeviceSize;
+        start..end
     }
 }
 
@@ -768,11 +574,11 @@ unsafe impl BufferAccess for DeviceBufferInner {
     fn inner(&self) -> BufferInner {
         BufferInner {
             buffer: &self.buffer,
-            offset: 0,
+            offset: self.offset as _,
         }
     }
     fn size(&self) -> DeviceSize {
-        self.buffer.size()
+        self.len as _
     }
     fn usage(&self) -> &BufferUsage {
         &self.usage
@@ -782,49 +588,43 @@ unsafe impl BufferAccess for DeviceBufferInner {
 #[derive(Debug)]
 pub(crate) struct DeviceBuffer {
     inner: Arc<DeviceBufferInner>,
-    alloc: Arc<ChunkAlloc<DeviceMemory>>,
+    alloc: Arc<ChunkAlloc>,
 }
 
 impl DeviceBuffer {
-    fn new(
-        device: Arc<Device>,
-        alloc: Arc<ChunkAlloc<DeviceMemory>>,
-        len: u32,
-    ) -> Result<Arc<Self>> {
-        let usage = BufferUsage::transfer_src()
-            | BufferUsage::transfer_dst()
-            | BufferUsage::storage_buffer();
-        let start = alloc.block.start;
-        let align = device
-            .physical_device()
-            .properties()
-            .min_storage_buffer_offset_alignment as u32;
-        let pad = if len >= align {
-            len % align
-        } else {
-            align - len
+    fn new(device: Arc<Device>, alloc: Arc<ChunkAlloc>) -> Result<Arc<Self>> {
+        let usage = BufferUsage {
+            transfer_src: true,
+            transfer_dst: true,
+            storage_buffer: true,
+            ..BufferUsage::default()
         };
-        let buffer_len = len + pad;
-        let buffer = UnsafeBuffer::new(
+        let start = alloc.block.start;
+        let len = alloc.block.len();
+        let buffer = RawBuffer::new(
             device,
-            UnsafeBufferCreateInfo {
-                size: buffer_len as DeviceSize,
+            BufferCreateInfo {
+                size: len as DeviceSize,
                 usage,
                 ..Default::default()
             },
         )?;
-        unsafe { buffer.bind_memory(alloc.memory(), start as DeviceSize)? };
+        let memory_alloc = unsafe {
+            let mut memory_alloc = alloc.memory_alloc().alias().unwrap();
+            memory_alloc.set_offset(start as DeviceSize);
+            memory_alloc.set_size(len as DeviceSize);
+            memory_alloc
+        };
+        let buffer = Arc::new(buffer.bind_memory(memory_alloc).map_err(|(e, _, _)| e)?);
         let inner = Arc::new(DeviceBufferInner {
             buffer,
             chunk: alloc.chunk.clone(),
             usage,
             start,
+            offset: 0,
             len,
         });
         Ok(Arc::new(Self { alloc, inner }))
-    }
-    pub(crate) fn len(&self) -> usize {
-        self.inner.len as usize
     }
     pub(crate) fn inner(&self) -> &Arc<DeviceBufferInner> {
         &self.inner
@@ -844,18 +644,18 @@ impl Block {
 }
 
 #[derive(Debug)]
-struct ChunkAlloc<M> {
-    chunk: Arc<Chunk<M>>,
+struct ChunkAlloc {
+    chunk: Arc<Chunk>,
     block: Block,
 }
 
-impl<M> ChunkAlloc<M> {
-    fn memory(&self) -> &M {
-        &self.chunk.memory
+impl ChunkAlloc {
+    fn memory_alloc(&self) -> &MemoryAlloc {
+        &self.chunk.memory_alloc
     }
 }
 
-impl<M> Drop for ChunkAlloc<M> {
+impl Drop for ChunkAlloc {
     fn drop(&mut self) {
         let mut blocks = self.chunk.blocks.lock();
         if let Some(i) = blocks.iter().position(|x| x.start == self.block.start) {
@@ -864,9 +664,10 @@ impl<M> Drop for ChunkAlloc<M> {
     }
 }
 
+/*
 #[derive(Debug)]
 struct HostMemory {
-    buffer: Arc<UnsafeBuffer>,
+    buffer: Arc<RawBuffer>,
     memory: MappedDeviceMemory,
     usage: BufferUsage,
 }
@@ -891,9 +692,9 @@ impl ChunkMemory for HostMemory {
     }
     fn from_device_memory(device_memory: DeviceMemory) -> Result<Self> {
         let usage = BufferUsage::transfer_src() | BufferUsage::transfer_dst();
-        let buffer = UnsafeBuffer::new(
+        let buffer = RawBuffer::new(
             device_memory.device().clone(),
-            UnsafeBufferCreateInfo {
+            BufferCreateInfo {
                 size: device_memory.allocation_size(),
                 usage,
                 ..Default::default()
@@ -907,23 +708,27 @@ impl ChunkMemory for HostMemory {
             usage,
         })
     }
-}
+}*/
 
 const CHUNK_ALIGN: u32 = 256;
 const CHUNK_SIZE_MULTIPLE: usize = 256_000_000;
 
+#[derive(Copy, Clone, Debug)]
+enum MemoryKind {
+    Host,
+    Device,
+}
+
 #[derive(Debug)]
-struct Chunk<M> {
-    memory: M,
+struct Chunk {
+    kind: MemoryKind,
+    memory_alloc: MemoryAlloc,
     len: usize,
     blocks: Mutex<Vec<Block>>,
 }
 
-impl<M> Chunk<M> {
-    fn new(device: Arc<Device>, len: usize, ids: &[u32]) -> Result<Arc<Self>>
-    where
-        M: ChunkMemory,
-    {
+impl Chunk {
+    fn new(device: Arc<Device>, kind: MemoryKind, len: usize, ids: &[u32]) -> Result<Arc<Self>> {
         let len = CHUNK_SIZE_MULTIPLE * (1 + (len - 1) / CHUNK_SIZE_MULTIPLE);
         for id in ids {
             let result = DeviceMemory::allocate(
@@ -936,28 +741,40 @@ impl<M> Chunk<M> {
             );
             match result {
                 Ok(device_memory) => {
-                    let memory = M::from_device_memory(device_memory)?;
+                    let memory_alloc = MemoryAlloc::new(device_memory)?;
                     return Ok(Arc::new(Self {
-                        memory,
+                        kind,
+                        memory_alloc,
                         len,
                         blocks: Mutex::default(),
                     }));
                 }
-                Err(DeviceMemoryAllocationError::OomError(e)) => continue,
+                Err(DeviceMemoryError::OomError(e)) => continue,
                 Err(e) => {
                     return Err(e.into());
                 }
             }
         }
-        Err(M::oom_error().into())
+        match kind {
+            MemoryKind::Host => Err(DeviceMemoryError::OomError(OomError::OutOfHostMemory).into()),
+            MemoryKind::Device => {
+                Err(DeviceMemoryError::OomError(OomError::OutOfDeviceMemory).into())
+            }
+        }
     }
-    fn alloc(self: &Arc<Self>, len: u32) -> Option<Arc<ChunkAlloc<M>>> {
+    fn alloc(self: &Arc<Self>, len: u32) -> Option<Arc<ChunkAlloc>> {
         if len as usize > self.len {
             return None;
         }
         let block_len = CHUNK_ALIGN * (1 + (len - 1) / CHUNK_ALIGN);
         let mut blocks = self.blocks.lock();
-        let mut start = 0;
+        if !blocks.is_empty() {
+            return None;
+        }
+        let mut start = match self.kind {
+            MemoryKind::Host => 256,
+            MemoryKind::Device => 0,
+        };
         for (i, block) in blocks.iter().enumerate() {
             if start + len <= block.start {
                 let block = Block {
@@ -1000,8 +817,8 @@ struct BufferAllocator {
     device: Arc<Device>,
     host_ids: Vec<u32>,
     device_ids: Vec<u32>,
-    host_chunks: Vec<OnceCell<Arc<Chunk<HostMemory>>>>,
-    device_chunks: Vec<OnceCell<Arc<Chunk<DeviceMemory>>>>,
+    host_chunks: Vec<OnceCell<Arc<Chunk>>>,
+    device_chunks: Vec<OnceCell<Arc<Chunk>>>,
 }
 
 impl BufferAllocator {
@@ -1011,27 +828,32 @@ impl BufferAllocator {
         let mut max_device_chunks = 0;
         let mut host_ids = Vec::new();
         let mut device_ids = Vec::new();
-        for memory_type in physical_device.memory_types() {
-            let heap = memory_type.heap();
-            if memory_type.is_host_visible() {
-                max_host_chunks += (heap.size() / CHUNK_SIZE_MULTIPLE as u64) as usize;
-                host_ids.push(memory_type.id());
+        let memory_properties = physical_device.memory_properties();
+        for (id, memory_type) in memory_properties.memory_types.iter().enumerate() {
+            let heap = &memory_properties.memory_heaps[memory_type.heap_index as usize];
+            let id = id as u32;
+            if memory_type.property_flags.host_visible {
+                max_host_chunks += (heap.size / CHUNK_SIZE_MULTIPLE as u64) as usize;
+                host_ids.push(id);
             }
-            if heap.is_device_local() {
-                max_device_chunks += (heap.size() / CHUNK_SIZE_MULTIPLE as u64) as usize;
-                device_ids.push(memory_type.id());
+            if memory_type.property_flags.host_visible {
+                max_device_chunks += (heap.size / CHUNK_SIZE_MULTIPLE as u64) as usize;
+                device_ids.push(id);
             }
         }
         // sort largest heap first
         host_ids.sort_by_key(|x| {
-            let t = physical_device.memory_type_by_id(*x).unwrap();
+            let t = &memory_properties.memory_types[*x as usize];
+            let heap = &memory_properties.memory_heaps[t.heap_index as usize];
             HostMemoryTypeOrderKey {
-                not_cached: !t.is_host_cached(),
-                neg_size: -(t.heap().size() as i64),
+                not_cached: !t.property_flags.host_cached,
+                neg_size: -(heap.size as i64),
             }
         });
         device_ids.sort_by_key(|x| {
-            -(physical_device.memory_type_by_id(*x).unwrap().heap().size() as i64)
+            let t = &memory_properties.memory_types[*x as usize];
+            let heap = &memory_properties.memory_heaps[t.heap_index as usize];
+            -(heap.size as i64)
         });
         let host_chunks = (0..max_host_chunks)
             .into_iter()
@@ -1052,7 +874,12 @@ impl BufferAllocator {
     fn alloc_host(&self, len: u32) -> Result<Arc<HostBuffer>> {
         for chunk in self.host_chunks.iter() {
             let chunk = chunk.get_or_try_init(|| {
-                Chunk::new(self.device.clone(), len as usize, &self.host_ids)
+                Chunk::new(
+                    self.device.clone(),
+                    MemoryKind::Host,
+                    len as usize,
+                    &self.host_ids,
+                )
             })?;
             if let Some(alloc) = chunk.alloc(len) {
                 return HostBuffer::new(alloc, len);
@@ -1063,10 +890,15 @@ impl BufferAllocator {
     fn alloc_device(&self, len: u32) -> Result<Arc<DeviceBuffer>> {
         for chunk in self.device_chunks.iter() {
             let chunk = chunk.get_or_try_init(|| {
-                Chunk::new(self.device.clone(), len as usize, &self.device_ids)
+                Chunk::new(
+                    self.device.clone(),
+                    MemoryKind::Device,
+                    len as usize,
+                    &self.device_ids,
+                )
             })?;
             if let Some(alloc) = chunk.alloc(len) {
-                return DeviceBuffer::new(self.device.clone(), alloc, len);
+                return DeviceBuffer::new(self.device.clone(), alloc);
             }
         }
         Err(OomError::OutOfDeviceMemory.into())
@@ -1229,14 +1061,14 @@ impl KernelCache {
                 let storage_write = if desc.mutable() { Some(binding) } else { None };
                 let descriptor_requirements = DescriptorRequirements {
                     descriptor_types: vec![DescriptorType::StorageBuffer],
-                    descriptor_count: 1,
+                    descriptor_count: Some(1),
                     stages,
                     storage_write: storage_write.into_iter().collect(),
                     ..DescriptorRequirements::default()
                 };
                 ((set, binding), descriptor_requirements)
             })
-            .collect::<HashMap<_, _>>();
+            .collect();
         let push_consts_size = desc.push_consts_size();
         let push_constant_range = if push_consts_size > 0 {
             Some(PushConstantRange {
@@ -1327,32 +1159,32 @@ impl Upload {
         (self.dst.chunk_id(), self.dst.start)
     }
     fn barrier(&self) -> BufferMemoryBarrier {
-        let source_stages = PipelineStages {
-            transfer: true,
+        let src_stages = PipelineStages {
+            copy: true,
             compute_shader: true,
             ..Default::default()
         };
-        let source_access = AccessFlags {
+        let src_access = AccessFlags {
             transfer_read: true,
             transfer_write: true,
             shader_read: true,
             shader_write: true,
             ..Default::default()
         };
-        let destination_stages = PipelineStages {
-            transfer: true,
+        let dst_stages = PipelineStages {
+            copy: true,
             ..Default::default()
         };
-        let destination_access = AccessFlags {
+        let dst_access = AccessFlags {
             transfer_write: true,
             ..Default::default()
         };
         BufferMemoryBarrier {
-            source_stages,
-            source_access,
-            destination_stages,
-            destination_access,
-            range: 0..self.dst.buffer.size(),
+            src_stages,
+            src_access,
+            dst_stages,
+            dst_access,
+            range: self.dst.barrier_range(),
             ..BufferMemoryBarrier::buffer(self.dst.buffer.clone())
         }
     }
@@ -1366,7 +1198,7 @@ impl Encode for Upload {
         let barrier = self.barrier();
         let prev_access = encoder
             .barriers
-            .insert(self.barrier_key(), barrier.destination_access)
+            .insert(self.barrier_key(), barrier.dst_access)
             .unwrap_or(AccessFlags::none());
         if prev_access != AccessFlags::none() {
             unsafe {
@@ -1394,32 +1226,32 @@ impl Download {
         (self.src.chunk_id(), self.src.start)
     }
     fn barrier(&self) -> BufferMemoryBarrier {
-        let source_stages = PipelineStages {
-            transfer: true,
+        let src_stages = PipelineStages {
+            copy: true,
             compute_shader: true,
             ..Default::default()
         };
-        let source_access = AccessFlags {
+        let src_access = AccessFlags {
             transfer_write: true,
             transfer_read: true,
             shader_write: true,
             shader_read: true,
             ..Default::default()
         };
-        let destination_stages = PipelineStages {
-            transfer: true,
+        let dst_stages = PipelineStages {
+            copy: true,
             ..Default::default()
         };
-        let destination_access = AccessFlags {
+        let dst_access = AccessFlags {
             transfer_read: true,
             ..Default::default()
         };
         BufferMemoryBarrier {
-            source_stages,
-            source_access,
-            destination_stages,
-            destination_access,
-            range: 0..self.src.buffer.size(),
+            src_stages,
+            src_access,
+            dst_stages,
+            dst_access,
+            range: self.src.barrier_range(),
             ..BufferMemoryBarrier::buffer(self.src.buffer.clone())
         }
     }
@@ -1433,9 +1265,9 @@ impl Encode for Download {
         let barrier = self.barrier();
         let prev_access = encoder
             .barriers
-            .insert(self.barrier_key(), barrier.destination_access)
-            .unwrap_or(barrier.destination_access);
-        if prev_access != barrier.destination_access {
+            .insert(self.barrier_key(), barrier.dst_access)
+            .unwrap_or(barrier.dst_access);
+        if prev_access != barrier.dst_access {
             unsafe {
                 encoder.cb_builder.pipeline_barrier(&DependencyInfo {
                     buffer_memory_barriers: [barrier].into_iter().collect(),
@@ -1460,33 +1292,33 @@ pub(crate) struct Compute {
 
 impl Compute {
     fn barrier(buffer: &Arc<DeviceBufferInner>, mutable: bool) -> BufferMemoryBarrier {
-        let source_stages = PipelineStages {
-            transfer: true,
+        let src_stages = PipelineStages {
+            copy: true,
             compute_shader: true,
             ..Default::default()
         };
-        let source_access = AccessFlags {
+        let src_access = AccessFlags {
             transfer_write: true,
             transfer_read: true,
             shader_write: true,
             shader_read: true,
             ..Default::default()
         };
-        let destination_stages = PipelineStages {
+        let dst_stages = PipelineStages {
             compute_shader: true,
             ..Default::default()
         };
-        let destination_access = AccessFlags {
+        let dst_access = AccessFlags {
             shader_read: true,
             shader_write: mutable,
             ..Default::default()
         };
         BufferMemoryBarrier {
-            source_stages,
-            source_access,
-            destination_stages,
-            destination_access,
-            range: 0..buffer.size(),
+            src_stages,
+            src_access,
+            dst_stages,
+            dst_access,
+            range: buffer.barrier_range(),
             ..BufferMemoryBarrier::buffer(buffer.buffer.clone())
         }
     }
@@ -1529,9 +1361,9 @@ impl Encode for Compute {
             let barrier_key = (buffer.chunk_id(), buffer.start);
             let prev_access = encoder
                 .barriers
-                .insert(barrier_key, barrier.destination_access)
-                .unwrap_or(barrier.destination_access);
-            if prev_access != barrier.destination_access {
+                .insert(barrier_key, barrier.dst_access)
+                .unwrap_or(barrier.dst_access);
+            if prev_access != barrier.dst_access {
                 unsafe {
                     cb_builder.pipeline_barrier(&DependencyInfo {
                         buffer_memory_barriers: [barrier].into_iter().collect(),
@@ -1653,13 +1485,14 @@ impl Encode for Op {
 
 struct Frame {
     queue: Arc<Queue>,
+    device_index: usize,
     done: Arc<AtomicBool>,
     result: Arc<RwLock<Result<(), Arc<anyhow::Error>>>>,
     ops: Vec<Op>,
-    command_pool: UnsafeCommandPool,
-    command_pool_alloc: Option<UnsafeCommandPoolAlloc>,
+    command_pool: CommandPool,
+    command_pool_alloc: Option<CommandPoolAlloc>,
     command_buffer: Option<UnsafeCommandBuffer>,
-    descriptor_pool: UnsafeDescriptorPool,
+    descriptor_pool: DescriptorPool,
     descriptor_sets: Vec<UnsafeDescriptorSet>,
     semaphore: Arc<Semaphore>,
     fence: Fence,
@@ -1669,18 +1502,19 @@ impl Frame {
     const MAX_OPS: usize = 1_000;
     fn new(
         queue: Arc<Queue>,
+        device_index: usize,
         done: Arc<AtomicBool>,
         result: Arc<RwLock<Result<(), Arc<anyhow::Error>>>>,
     ) -> Result<Self, anyhow::Error> {
         let device = queue.device();
-        let command_pool_info = UnsafeCommandPoolCreateInfo {
-            queue_family_index: queue.family().id(),
+        let command_pool_info = CommandPoolCreateInfo {
+            queue_family_index: queue.queue_family_index(),
             transient: true,
             reset_command_buffer: false,
-            ..UnsafeCommandPoolCreateInfo::default()
+            ..CommandPoolCreateInfo::default()
         };
-        let command_pool = UnsafeCommandPool::new(device.clone(), command_pool_info)?;
-        let descriptor_pool_create_info = UnsafeDescriptorPoolCreateInfo {
+        let command_pool = CommandPool::new(device.clone(), command_pool_info)?;
+        let descriptor_pool_create_info = DescriptorPoolCreateInfo {
             max_sets: Encoder::MAX_SETS as u32,
             pool_sizes: [(
                 DescriptorType::StorageBuffer,
@@ -1688,10 +1522,9 @@ impl Frame {
             )]
             .into_iter()
             .collect(),
-            ..UnsafeDescriptorPoolCreateInfo::default()
+            ..DescriptorPoolCreateInfo::default()
         };
-        let descriptor_pool =
-            UnsafeDescriptorPool::new(device.clone(), descriptor_pool_create_info)?;
+        let descriptor_pool = DescriptorPool::new(device.clone(), descriptor_pool_create_info)?;
         let descriptor_sets = Vec::with_capacity(Encoder::MAX_DESCRIPTORS);
         let semaphore = Arc::new(Semaphore::from_pool(device.clone())?);
         let fence = Fence::new(
@@ -1704,6 +1537,7 @@ impl Frame {
         let ops = Vec::with_capacity(Self::MAX_OPS);
         Ok(Self {
             queue,
+            device_index,
             done,
             result,
             ops,
@@ -1719,27 +1553,37 @@ impl Frame {
     fn submit(&mut self, wait_semaphore: Option<&Semaphore>) -> Result<()> {
         debug_assert!(self.fence.is_signaled()?);
         self.fence.reset()?;
-        let mut submit_builder = SubmitCommandBufferBuilder::new();
-        if let Some(wait_semaphore) = wait_semaphore {
-            unsafe {
-                submit_builder.add_wait_semaphore(
-                    &wait_semaphore,
-                    PipelineStages {
-                        bottom_of_pipe: true,
-                        ..Default::default()
-                    },
-                );
-            }
-        }
+        use ash::vk;
+        use vulkano::VulkanObject;
+
+        let device = self.queue.device();
+        let wait_semaphores = if let Some(semaphore) = wait_semaphore {
+            Some([semaphore.handle()])
+        } else {
+            None
+        };
+        let wait_semaphores = if let Some(semaphores) = wait_semaphores.as_ref() {
+            semaphores.as_ref()
+        } else {
+            &[]
+        };
+        let command_buffer = self.command_buffer.as_ref().unwrap().handle();
+        let command_buffers = &[command_buffer];
+        let semaphore = self.semaphore.handle();
+        let semaphores = &[semaphore];
+        let submit_info = vk::SubmitInfo::builder()
+            .wait_semaphores(wait_semaphores)
+            .command_buffers(command_buffers)
+            .signal_semaphores(semaphores);
         unsafe {
-            submit_builder.add_command_buffer(&self.command_buffer.as_ref().unwrap());
+            (device.fns().v1_0.queue_submit)(
+                self.queue.handle(),
+                1,
+                &*submit_info as *const _,
+                self.fence.handle(),
+            )
+            .result()?;
         }
-        self.semaphore = Arc::new(Semaphore::from_pool(self.queue.device().clone())?);
-        unsafe {
-            submit_builder.add_signal_semaphore(&self.semaphore);
-            submit_builder.set_fence_signal(&self.fence);
-        }
-        submit_builder.submit(&self.queue)?;
         Ok(())
     }
     fn poll(&mut self) -> Result<()> {
@@ -1758,10 +1602,12 @@ impl Frame {
 impl Drop for Frame {
     fn drop(&mut self) {
         if !self.done.load(Ordering::SeqCst) {
-            let index = self.queue.device().physical_device().index();
             let mut result = self.result.write();
             if result.is_ok() {
-                *result = Err(Arc::new(format_err!("Device({}) panicked!", index)));
+                *result = Err(Arc::new(format_err!(
+                    "Device({}) panicked!",
+                    self.device_index
+                )));
             }
         }
         if !self.ops.is_empty() {
@@ -1855,8 +1701,7 @@ struct Runner {
 }
 
 impl Runner {
-    fn new(queue: Arc<Queue>) -> Result<Arc<Self>> {
-        let index = queue.device().physical_device().index();
+    fn new(queue: Arc<Queue>, index: usize) -> Result<Arc<Self>> {
         let done = Arc::new(AtomicBool::new(false));
         let (op_sender, op_reciever) = bounded(Frame::MAX_OPS);
         let n_frames = 3;
@@ -1866,7 +1711,7 @@ impl Runner {
         let result = Arc::new(RwLock::new(Ok(())));
         let mut ready_frames = VecDeque::with_capacity(n_frames);
         for _ in 0..n_frames {
-            let frame = Frame::new(queue.clone(), done.clone(), result.clone())?;
+            let frame = Frame::new(queue.clone(), index, done.clone(), result.clone())?;
             ready_frames.push_back(frame);
         }
         let result2 = result.clone();

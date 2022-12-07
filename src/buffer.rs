@@ -377,9 +377,11 @@ impl RawSlice {
             }
             #[cfg(feature = "device")]
             (RawSliceInner::Device(device_slice), DeviceInner::Host) => {
+                let offset = device_slice.offset;
+                let len = device_slice.len;
                 let dst_device = self.device.inner.device().unwrap();
                 let device_buffer = device_slice.device_buffer().unwrap();
-                let host_buffer_fut = dst_device.download(device_buffer.clone())?;
+                let host_buffer_fut = dst_device.download(device_buffer.clone(), offset, len)?;
                 Ok(RawBufferIntoDeviceFuture::future(
                     scalar_type,
                     host_buffer_fut,
