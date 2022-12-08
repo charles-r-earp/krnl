@@ -26,6 +26,7 @@ pub fn criterion_benchmark(c: &mut Criterion) {
         1024
     } else {
         256_000_000
+        // TODO: chunk downloads in krnl
     };
     let saxpy_x: Rc<Vec<f32>> = Rc::new(
         thread_rng()

@@ -127,7 +127,13 @@ fn create_instance(max_api_version: Option<InstanceVersion>) -> Result<Arc<Insta
         enumerate_portability = true;
     };
     let library = library?;
+    let optimal_extensions = InstanceExtensions {
+        khr_get_physical_device_properties2: true,
+        ..InstanceExtensions::empty()
+    };
+    let enabled_extensions = optimal_extensions.intersection(library.supported_extensions());
     let instance_create_info = InstanceCreateInfo {
+        enabled_extensions,
         engine_name: engine_name.clone(),
         engine_version,
         max_api_version,
@@ -169,6 +175,7 @@ impl Engine {
         let supported_device_features = physical_device.supported_features();
         let mut optimal_device_features = VulkanoFeatures {
             shader_int8: true,
+            storage_buffer8_bit_access: true,
             shader_int16: true,
             shader_int64: true,
             shader_float64: true,
@@ -213,15 +220,20 @@ impl Engine {
                 queue_family_properties
                     .iter()
                     .map(|x| x.queue_flags)
-                    .position(|x| x.compute && !x.graphics)
+                    .position(|x| x.compute)
             })
             .map(|x| x.try_into().unwrap())
-            .ok_or_else(|| format_err!("Device {index} doesn't support compute!"))?;
-        let supported_extensions = physical_device.supported_extensions();
-        let device_extensions = DeviceExtensions {
-            khr_vulkan_memory_model: supported_extensions.khr_vulkan_memory_model,
+            .ok_or_else(|| format_err!("Device({index}) doesn't support compute!"))?;
+        let optimal_device_extensions = DeviceExtensions {
+            khr_vulkan_memory_model: true,
+            khr_storage_buffer_storage_class: true,
+            khr_8bit_storage: true,
+            khr_shader_float16_int8: true,
+            khr_16bit_storage: true,
             ..DeviceExtensions::none()
         };
+        let device_extensions =
+            optimal_device_extensions.intersection(physical_device.supported_extensions());
         let queue_create_info = QueueCreateInfo {
             queue_family_index,
             queues: vec![1f32],
@@ -314,7 +326,7 @@ impl Engine {
         let buffer = unsafe { self.alloc(bytes.len())? };
         if let Some(buffer) = buffer.as_ref() {
             let mut offset = 0;
-            for bytes in bytes.chunks(64_000_000) {
+            for bytes in bytes.chunks(128_000_000) {
                 let mut src = self.buffer_allocator.alloc_host(bytes.len() as u32)?;
                 Arc::get_mut(&mut src).unwrap().write_slice(bytes)?;
                 let len = src.alloc.block.len();
@@ -722,7 +734,8 @@ impl ChunkMemory for HostMemory {
 }*/
 
 const CHUNK_ALIGN: u32 = 256;
-const CHUNK_SIZE_MULTIPLE: usize = 256_000_000;
+const HOST_CHUNK_SIZE: u32 = 128_000_000;
+const DEVICE_CHUNK_SIZE: u32 = (i32::MAX as u32 / CHUNK_ALIGN) * CHUNK_ALIGN;
 
 #[derive(Copy, Clone, Debug)]
 enum MemoryKind {
@@ -734,35 +747,46 @@ enum MemoryKind {
 struct Chunk {
     kind: MemoryKind,
     memory_alloc: MemoryAlloc,
-    len: usize,
+    len: u32,
     blocks: Mutex<Vec<Block>>,
 }
 
 impl Chunk {
-    fn new(device: Arc<Device>, kind: MemoryKind, len: usize, ids: &[u32]) -> Result<Arc<Self>> {
-        let len = CHUNK_SIZE_MULTIPLE * (1 + (len - 1) / CHUNK_SIZE_MULTIPLE);
+    fn new(device: Arc<Device>, kind: MemoryKind, _len: usize, ids: &[u32]) -> Result<Arc<Self>> {
+        //let len = CHUNK_SIZE_MULTIPLE * (1 + (len - 1) / CHUNK_SIZE_MULTIPLE);
+        // TODO: allow smaller chunks?
+        let len = match kind {
+            MemoryKind::Host => HOST_CHUNK_SIZE,
+            MemoryKind::Device => DEVICE_CHUNK_SIZE,
+        };
+        let memory_properties = device.physical_device().memory_properties();
         for id in ids {
-            let result = DeviceMemory::allocate(
-                device.clone(),
-                MemoryAllocateInfo {
-                    allocation_size: len as DeviceSize,
-                    memory_type_index: *id,
-                    ..Default::default()
-                },
-            );
-            match result {
-                Ok(device_memory) => {
-                    let memory_alloc = MemoryAlloc::new(device_memory)?;
-                    return Ok(Arc::new(Self {
-                        kind,
-                        memory_alloc,
-                        len,
-                        blocks: Mutex::default(),
-                    }));
-                }
-                Err(DeviceMemoryError::OomError(e)) => continue,
-                Err(e) => {
-                    return Err(e.into());
+            let allocation_size = len as DeviceSize;
+            let memory_type = &memory_properties.memory_types[*id as usize];
+            let heap = &memory_properties.memory_heaps[memory_type.heap_index as usize];
+            if allocation_size <= heap.size {
+                let result = DeviceMemory::allocate(
+                    device.clone(),
+                    MemoryAllocateInfo {
+                        allocation_size: len as DeviceSize,
+                        memory_type_index: *id,
+                        ..Default::default()
+                    },
+                );
+                match result {
+                    Ok(device_memory) => {
+                        let memory_alloc = MemoryAlloc::new(device_memory)?;
+                        return Ok(Arc::new(Self {
+                            kind,
+                            memory_alloc,
+                            len,
+                            blocks: Mutex::default(),
+                        }));
+                    }
+                    Err(DeviceMemoryError::OomError(e)) => continue,
+                    Err(e) => {
+                        return Err(e.into());
+                    }
                 }
             }
         }
@@ -774,18 +798,12 @@ impl Chunk {
         }
     }
     fn alloc(self: &Arc<Self>, len: u32) -> Option<Arc<ChunkAlloc>> {
-        if len as usize > self.len {
+        if len > self.len {
             return None;
         }
         let block_len = CHUNK_ALIGN * (1 + (len - 1) / CHUNK_ALIGN);
         let mut blocks = self.blocks.lock();
-        if !blocks.is_empty() {
-            return None;
-        }
-        let mut start = match self.kind {
-            MemoryKind::Host => 256,
-            MemoryKind::Device => 0,
-        };
+        let mut start = 0;
         for (i, block) in blocks.iter().enumerate() {
             if start + len <= block.start {
                 let block = Block {
@@ -801,7 +819,7 @@ impl Chunk {
                 start = block.end;
             }
         }
-        if (start + len) as usize <= self.len {
+        if start + len <= self.len {
             let block = Block {
                 start,
                 end: start + block_len,
@@ -844,15 +862,14 @@ impl BufferAllocator {
             let heap = &memory_properties.memory_heaps[memory_type.heap_index as usize];
             let id = id as u32;
             if memory_type.property_flags.host_visible {
-                max_host_chunks += (heap.size / CHUNK_SIZE_MULTIPLE as u64) as usize;
+                max_host_chunks += (heap.size / HOST_CHUNK_SIZE as u64) as usize;
                 host_ids.push(id);
             }
-            if memory_type.property_flags.host_visible {
-                max_device_chunks += (heap.size / CHUNK_SIZE_MULTIPLE as u64) as usize;
+            if !memory_type.property_flags.host_visible && heap.flags.device_local {
+                max_device_chunks += (heap.size / DEVICE_CHUNK_SIZE as u64) as usize;
                 device_ids.push(id);
             }
         }
-        // sort largest heap first
         host_ids.sort_by_key(|x| {
             let t = &memory_properties.memory_types[*x as usize];
             let heap = &memory_properties.memory_heaps[t.heap_index as usize];
@@ -896,6 +913,7 @@ impl BufferAllocator {
                 return HostBuffer::new(alloc, len);
             }
         }
+        unreachable!();
         Err(OomError::OutOfHostMemory.into())
     }
     fn alloc_device(&self, len: u32) -> Result<Arc<DeviceBuffer>> {
@@ -1058,13 +1076,11 @@ impl KernelCache {
         } else {
             specialize(spirv, spec_consts)?.into()
         };
-        let spirv: Cow<[u32]> = {
-            use rspirv::binary::Assemble;
+        /*{
+            use rspirv::binary::Disassemble;
             let module = rspirv::dr::load_words(spirv.as_ref()).unwrap();
-            let mut builder = rspirv::dr::Builder::new_from_module(module);
-            builder.extension("SPV_KHR_vulkan_memory_model");
-            builder.module().assemble().into()
-        };
+            panic!("{}", module.disassemble());
+        };*/
         let stages = ShaderStages {
             compute: true,
             ..ShaderStages::none()
@@ -1178,22 +1194,22 @@ impl Upload {
     }
     fn barrier(&self) -> BufferMemoryBarrier {
         let src_stages = PipelineStages {
-            copy: true,
-            compute_shader: true,
+            all_transfer: true,
             ..Default::default()
         };
         let src_access = AccessFlags {
-            transfer_read: true,
-            transfer_write: true,
-            shader_read: true,
-            shader_write: true,
+            memory_write: true,
             ..Default::default()
         };
         let dst_stages = PipelineStages {
-            copy: true,
+            compute_shader: true,
+            all_transfer: true,
             ..Default::default()
         };
         let dst_access = AccessFlags {
+            shader_read: true,
+            shader_write: true,
+            transfer_read: true,
             transfer_write: true,
             ..Default::default()
         };
@@ -1214,20 +1230,16 @@ impl Upload {
 impl Encode for Upload {
     unsafe fn encode(&self, encoder: &mut Encoder) -> Result<bool> {
         let barrier = self.barrier();
-        let prev_access = encoder
-            .barriers
-            .insert(self.barrier_key(), barrier.dst_access)
-            .unwrap_or(AccessFlags::none());
-        if prev_access != AccessFlags::none() {
-            unsafe {
-                encoder.cb_builder.pipeline_barrier(&DependencyInfo {
-                    buffer_memory_barriers: [barrier].into_iter().collect(),
-                    ..Default::default()
-                });
-            }
-        }
+        /*let prev_access = encoder
+        .barriers
+        .insert(self.barrier_key(), barrier.dst_access)
+        .unwrap_or(AccessFlags::none());*/
         unsafe {
             encoder.cb_builder.copy_buffer(&self.copy_buffer_info());
+            encoder.cb_builder.pipeline_barrier(&DependencyInfo {
+                buffer_memory_barriers: [barrier].into_iter().collect(),
+                ..Default::default()
+            });
         }
         Ok(true)
     }
@@ -1250,18 +1262,22 @@ impl Download {
             ..Default::default()
         };
         let src_access = AccessFlags {
-            transfer_write: true,
+            /*transfer_write: true,
             transfer_read: true,
             shader_write: true,
-            shader_read: true,
+            shader_read: true,*/
+            memory_read: true,
+            memory_write: true,
             ..Default::default()
         };
+        //let src_access = src_stages.supported_access();
         let dst_stages = PipelineStages {
             copy: true,
             ..Default::default()
         };
         let dst_access = AccessFlags {
-            transfer_read: true,
+            //transfer_read: true,
+            memory_read: true,
             ..Default::default()
         };
         BufferMemoryBarrier {
@@ -1280,20 +1296,17 @@ impl Download {
 
 impl Encode for Download {
     unsafe fn encode(&self, encoder: &mut Encoder) -> Result<bool> {
-        let barrier = self.barrier();
-        let prev_access = encoder
+        //let barrier = self.barrier();
+        /*let prev_access = encoder
             .barriers
             .insert(self.barrier_key(), barrier.dst_access)
             .unwrap_or(barrier.dst_access);
-        if prev_access != barrier.dst_access {
-            unsafe {
-                encoder.cb_builder.pipeline_barrier(&DependencyInfo {
-                    buffer_memory_barriers: [barrier].into_iter().collect(),
-                    ..Default::default()
-                });
-            }
-        }
+        */
         unsafe {
+            /*encoder.cb_builder.pipeline_barrier(&DependencyInfo {
+                buffer_memory_barriers: [barrier].into_iter().collect(),
+                ..Default::default()
+            });*/
             encoder.cb_builder.copy_buffer(&self.copy_buffer_info());
         }
         Ok(true)
@@ -1311,24 +1324,22 @@ pub(crate) struct Compute {
 impl Compute {
     fn barrier(buffer: &Arc<DeviceBufferInner>, mutable: bool) -> BufferMemoryBarrier {
         let src_stages = PipelineStages {
-            copy: true,
             compute_shader: true,
             ..Default::default()
         };
         let src_access = AccessFlags {
-            transfer_write: true,
-            transfer_read: true,
-            shader_write: true,
-            shader_read: true,
+            memory_read: true,
+            memory_write: mutable,
             ..Default::default()
         };
         let dst_stages = PipelineStages {
             compute_shader: true,
+            all_transfer: true,
             ..Default::default()
         };
         let dst_access = AccessFlags {
-            shader_read: true,
-            shader_write: mutable,
+            memory_read: true,
+            memory_write: true,
             ..Default::default()
         };
         BufferMemoryBarrier {
@@ -1374,22 +1385,6 @@ impl Encode for Compute {
             descriptor_set.write(layout, writes.iter());
         }
         let mut cb_builder = &mut encoder.cb_builder;
-        for (buffer, desc) in self.buffers.iter().zip(cache.desc.buffer_descs()) {
-            let barrier = Self::barrier(buffer, desc.mutable());
-            let barrier_key = (buffer.chunk_id(), buffer.start);
-            let prev_access = encoder
-                .barriers
-                .insert(barrier_key, barrier.dst_access)
-                .unwrap_or(barrier.dst_access);
-            if prev_access != barrier.dst_access {
-                unsafe {
-                    cb_builder.pipeline_barrier(&DependencyInfo {
-                        buffer_memory_barriers: [barrier].into_iter().collect(),
-                        ..Default::default()
-                    });
-                }
-            }
-        }
         unsafe {
             cb_builder.bind_pipeline_compute(&cache.compute_pipeline);
         }
@@ -1419,6 +1414,20 @@ impl Encode for Compute {
         }
         unsafe {
             cb_builder.dispatch(self.groups);
+        }
+        for (buffer, desc) in self.buffers.iter().zip(cache.desc.buffer_descs()) {
+            let barrier = Self::barrier(buffer, desc.mutable());
+            /*let barrier_key = (buffer.chunk_id(), buffer.start);
+            let prev_access = encoder
+                .barriers
+                .insert(barrier_key, barrier.dst_access)
+                .unwrap_or(barrier.dst_access);*/
+            unsafe {
+                cb_builder.pipeline_barrier(&DependencyInfo {
+                    buffer_memory_barriers: [barrier].into_iter().collect(),
+                    ..Default::default()
+                });
+            }
         }
         Ok(true)
     }
@@ -1571,41 +1580,36 @@ impl Frame {
     fn submit(&mut self, wait_semaphore: Option<&Semaphore>) -> Result<()> {
         debug_assert!(self.fence.is_signaled()?);
         self.fence.reset()?;
+
         use ash::vk;
         use vulkano::VulkanObject;
 
         let device = self.queue.device();
+        self.semaphore = Arc::new(Semaphore::from_pool(device.clone())?);
         let wait_semaphores = if let Some(semaphore) = wait_semaphore {
             Some([semaphore.handle()])
         } else {
             None
         };
-        let wait_semaphores = if let Some(semaphores) = wait_semaphores.as_ref() {
-            semaphores.as_ref()
-        } else {
-            &[]
-        };
         let wait_dst_stage_mask =
-            [vk::PipelineStageFlags::COMPUTE_SHADER | vk::PipelineStageFlags::TRANSFER];
-        let wait_dst_stage_mask = if !wait_semaphores.is_empty() {
-            wait_dst_stage_mask.as_ref()
-        } else {
-            &[]
-        };
+            &[vk::PipelineStageFlags::COMPUTE_SHADER | vk::PipelineStageFlags::TRANSFER];
         let command_buffer = self.command_buffer.as_ref().unwrap().handle();
         let command_buffers = &[command_buffer];
         let semaphore = self.semaphore.handle();
         let semaphores = &[semaphore];
-        let submit_info = vk::SubmitInfo::builder()
-            .wait_semaphores(wait_semaphores)
-            .wait_dst_stage_mask(wait_dst_stage_mask)
+        let mut submit_info = vk::SubmitInfo::builder()
             .command_buffers(command_buffers)
             .signal_semaphores(semaphores);
+        if let Some(wait_semaphores) = wait_semaphores.as_ref() {
+            submit_info = submit_info
+                .wait_semaphores(wait_semaphores)
+                .wait_dst_stage_mask(wait_dst_stage_mask);
+        }
         unsafe {
             (device.fns().v1_0.queue_submit)(
                 self.queue.handle(),
                 1,
-                &*submit_info as *const _,
+                [submit_info].as_ptr() as _,
                 self.fence.handle(),
             )
             .result()?;

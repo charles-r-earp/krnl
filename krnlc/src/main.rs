@@ -360,7 +360,7 @@ rustflags = ["--target-dir spirv-target"]
 
     let mut builder = SpirvBuilder::new(crate_dir, "spirv-unknown-vulkan1.2")
         .multimodule(true)
-        .spirv_metadata(SpirvMetadata::Full /*NameVariables*/)
+        .spirv_metadata(SpirvMetadata::NameVariables)
         .print_metadata(MetadataPrintout::None)
         .preserve_bindings(true)
         .deny_warnings(true)
