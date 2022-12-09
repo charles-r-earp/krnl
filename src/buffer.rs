@@ -5,7 +5,7 @@ use crate::{
 };
 #[cfg(feature = "device")]
 use crate::{
-    device::{DeviceBuffer, HostBuffer, VulkanDevice as DeviceBase},
+    device::{DeviceBuffer, UintVec, VulkanDevice as DeviceBase},
     kernel::module,
     krnl_core,
 };
@@ -41,7 +41,7 @@ use error::*;
 pub mod future {
     use super::*;
     #[cfg(feature = "device")]
-    use crate::device::future::HostBufferFuture;
+    use crate::device::future::DownloadFuture;
     use core::{
         future::Future,
         mem::replace,
@@ -52,23 +52,17 @@ pub mod future {
     enum RawBufferIntoDeviceFutureInner {
         Ready(Option<Result<RawBuffer>>),
         #[cfg(feature = "device")]
-        Future {
-            scalar_type: ScalarType,
-            host_buffer_fut: HostBufferFuture,
-        },
+        Future(DownloadFuture, ScalarType),
     }
 
     impl RawBufferIntoDeviceFutureInner {
         #[cfg(feature = "device")]
-        fn future_mut(&mut self) -> Option<&mut HostBufferFuture> {
-            #[cfg(feature = "device")]
-            if let Self::Future {
-                host_buffer_fut, ..
-            } = self
-            {
-                return Some(host_buffer_fut);
+        fn future_mut(&mut self) -> Option<&mut DownloadFuture> {
+            match self {
+                Self::Ready(_) => None,
+                #[cfg(feature = "device")]
+                Self::Future(fut, _) => Some(fut),
             }
-            None
         }
     }
 
@@ -83,12 +77,9 @@ pub mod future {
             }
         }
         #[cfg(feature = "device")]
-        pub(super) fn future(scalar_type: ScalarType, host_buffer_fut: HostBufferFuture) -> Self {
+        pub(super) fn future(fut: DownloadFuture, scalar_type: ScalarType) -> Self {
             Self {
-                inner: RawBufferIntoDeviceFutureInner::Future {
-                    scalar_type,
-                    host_buffer_fut,
-                },
+                inner: RawBufferIntoDeviceFutureInner::Future(fut, scalar_type),
             }
         }
     }
@@ -103,15 +94,22 @@ pub mod future {
             match &mut self.inner {
                 Inner::Ready(buffer) => Poll::Ready(buffer.take().unwrap()),
                 #[cfg(feature = "device")]
-                Inner::Future { scalar_type, .. } => {
+                Inner::Future(_, scalar_type) => {
                     let scalar_type = *scalar_type;
-                    let host_buffer_fut =
+                    let fut =
                         unsafe { Pin::map_unchecked_mut(self, |x| x.inner.future_mut().unwrap()) };
-                    match Future::poll(host_buffer_fut, cx) {
-                        Poll::Ready(host_buffer) => {
-                            let buffer = host_buffer.and_then(|host_buffer| {
-                                unsafe { RawSlice::from_bytes(scalar_type, host_buffer.read()?) }
-                                    .to_raw_buffer()
+                    match Future::poll(fut, cx) {
+                        Poll::Ready(vec) => {
+                            let buffer = vec.and_then(|vec| {
+                                let mut buffer = match vec {
+                                    UintVec::U8(vec) => RawBuffer::from_vec(vec),
+                                    UintVec::U16(vec) => RawBuffer::from_vec(vec),
+                                    UintVec::U32(vec) => RawBuffer::from_vec(vec),
+                                    UintVec::U64(vec) => RawBuffer::from_vec(vec),
+                                    _ => unreachable!(),
+                                };
+                                buffer.slice.scalar_type = scalar_type;
+                                Ok(buffer)
                             });
                             Poll::Ready(buffer)
                         }
@@ -354,7 +352,12 @@ impl RawSlice {
             }
             #[cfg(feature = "device")]
             (RawSliceInner::Device(_), DeviceInner::Device(_)) => {
-                Ok(RawBufferIntoDeviceFuture::ready(self.to_raw_buffer()))
+                if self.device == device {
+                    Ok(RawBufferIntoDeviceFuture::ready(self.to_raw_buffer()))
+                } else {
+                    // TODO: copy directly in engine
+                    self.to_device(Device::host())?.block()?.into_device(device)
+                }
             }
             #[cfg(feature = "device")]
             (RawSliceInner::Host(host_slice), DeviceInner::Device(dst_device)) => {
@@ -381,11 +384,15 @@ impl RawSlice {
                 let len = device_slice.len;
                 let dst_device = self.device.inner.device().unwrap();
                 let device_buffer = device_slice.device_buffer().unwrap();
-                let host_buffer_fut = dst_device.download(device_buffer.clone(), offset, len)?;
-                Ok(RawBufferIntoDeviceFuture::future(
-                    scalar_type,
-                    host_buffer_fut,
-                ))
+                let vec = match self.scalar_type().size() {
+                    1 => UintVec::U8(vec![0; len]),
+                    2 => UintVec::U16(vec![0; len / 2]),
+                    4 => UintVec::U32(vec![0; len / 4]),
+                    8 => UintVec::U64(vec![0; len / 8]),
+                    _ => unreachable!(),
+                };
+                let fut = dst_device.download(device_buffer.clone(), offset, vec)?;
+                Ok(RawBufferIntoDeviceFuture::future(fut, self.scalar_type))
             }
         }
     }

@@ -10,7 +10,7 @@ use std::{
 pub(crate) mod engine;
 #[cfg(feature = "device")]
 pub(crate) use engine::{
-    Compute, DeviceBuffer, DeviceBufferInner, Engine, HostBuffer, KernelCache,
+    Compute, DeviceBuffer, DeviceBufferInner, Engine, UintVec, KernelCache,
 };
 
 pub mod error {
@@ -37,7 +37,7 @@ pub(crate) mod future {
     };
 
     #[cfg(feature = "device")]
-    pub(crate) use super::engine::HostBufferFuture;
+    pub(crate) use super::engine::DownloadFuture;
 
     #[cfg(feature = "device")]
     use super::engine::SyncFuture as SyncFutureInner;

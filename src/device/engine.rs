@@ -8,7 +8,7 @@ use parking_lot::{Mutex, RwLock};
 use spirv::Capability;
 use std::{
     borrow::Cow,
-    cell::RefCell,
+    cell::{RefCell, UnsafeCell},
     collections::{HashMap, VecDeque},
     fmt::{self, Debug},
     future::Future,
@@ -21,11 +21,12 @@ use std::{
     ptr::NonNull,
     str::FromStr,
     sync::{
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
         Arc, Weak,
     },
     task::{Context, Poll},
     time::{Duration, Instant},
+    marker::PhantomData,
 };
 #[cfg(debug_assertions)]
 use vulkano::instance::debug::{
@@ -295,14 +296,7 @@ impl Engine {
         &self.features
     }
     fn send_op(&self, op: Op) -> Result<()> {
-        use std::{
-            error::Error,
-            marker::{Send, Sync},
-        };
-        let result = self.runner.result.read().clone();
-        if let Err(e) = result {
-            return Err(anyhow::Error::msg(e));
-        }
+        self.runner.result.read()?;
         self.runner.op_sender.send(op).unwrap();
         Ok(())
     }
@@ -326,7 +320,7 @@ impl Engine {
         let buffer = unsafe { self.alloc(bytes.len())? };
         if let Some(buffer) = buffer.as_ref() {
             let mut offset = 0;
-            for bytes in bytes.chunks(128_000_000) {
+            for bytes in bytes.chunks(HOST_BUFFER_SIZE as usize) {
                 let mut src = self.buffer_allocator.alloc_host(bytes.len() as u32)?;
                 Arc::get_mut(&mut src).unwrap().write_slice(bytes)?;
                 let len = src.alloc.block.len();
@@ -344,76 +338,36 @@ impl Engine {
         &self,
         buffer: Arc<DeviceBuffer>,
         offset: usize,
-        len: usize,
-    ) -> Result<HostBufferFuture> {
-        debug_assert_eq!(offset, 0);
-        let src = buffer.inner.clone();
-        let dst = self.buffer_allocator.alloc_host(len as u32)?;
-        let download = Download {
-            src,
-            dst: dst.clone(),
-        };
-        self.send_op(Op::Download(download))?;
-        Ok(HostBufferFuture {
-            host_buffer: Some(dst),
-            runner_result: self.runner.result.clone(),
-        })
-        /* TODO: break up host buffers into chunks?
-        // large copies are expensive, could be done in parallel?
-        // idea is to overlap host and device execution
-        use crate::future::BlockableFuture;
-        for _ in 0 .. 10 {
-            let chunk_size = 64_000_000;
-            let mut output = vec![0u8; buffer.len()];
-            let mut fut: Option<(&mut [u8], HostBufferFuture)> = None;
-            let mut offset = 0;
-            for bytes in output.chunks_mut(chunk_size) {
-                let mut dst = self.buffer_allocator.alloc_host(bytes.len() as u32)?;
-                let download = Download {
-                    src: buffer.inner.slice_offset_len(offset as u32, dst.len),
-                    dst: dst.clone(),
-                };
-                offset += bytes.len();
-                self.send_op(Op::Download(download))?;
-                if let Some((bytes, fut)) = fut.take() {
-                    bytes.copy_from_slice(fut.block()?.read()?);
-                }
-                fut.replace((bytes, HostBufferFuture {
-                    host_buffer: Some(dst),
-                    runner_result: self.runner.result.clone(),
-                }));
-            }
-            let (bytes, fut) = fut.take().unwrap();
-            bytes.copy_from_slice(fut.block()?.read()?);
-        }
-
-        let start = std::time::Instant::now();
-        let chunk_size = 64_000_000;
-        let mut output = vec![0u8; buffer.len()];
-        let mut fut: Option<(&mut [u8], HostBufferFuture)> = None;
+        vec: UintVec,
+    ) -> Result<DownloadFuture> {
+        let len = vec.as_bytes().len() as u32;
+        let buffer = buffer.inner.slice_offset_len(offset as u32, len);
         let mut offset = 0;
-        for bytes in output.chunks_mut(chunk_size) {
-            let mut dst = self.buffer_allocator.alloc_host(bytes.len() as u32)?;
-            let download = Download {
-                src: buffer.inner.slice_offset_len(offset as u32, dst.len),
-                dst: dst.clone(),
+        let n_chunks = len / HOST_BUFFER_SIZE + if len % HOST_BUFFER_SIZE != 0 { 1 } else { 0 };
+        let inner = Arc::new(DownloadInner {
+            vec: vec.into(),
+            pending: AtomicUsize::new(n_chunks as usize),
+        });
+        for i in 0 .. n_chunks {
+            let chunk_len = if i < n_chunks.checked_sub(1).unwrap() {
+                HOST_BUFFER_SIZE
+            } else {
+                len.checked_sub(offset).unwrap()
             };
-            offset += bytes.len();
+            let dst = self.buffer_allocator.alloc_host(chunk_len)?;
+            let download = Download {
+                src: buffer.slice_offset_len(offset, chunk_len),
+                dst,
+                inner: inner.clone(),
+                offset,
+            };
             self.send_op(Op::Download(download))?;
-            if let Some((bytes, fut)) = fut.take() {
-                bytes.copy_from_slice(fut.block()?.read()?);
-                dbg!(start.elapsed());
-            }
-            fut.replace((bytes, HostBufferFuture {
-                host_buffer: Some(dst),
-                runner_result: self.runner.result.clone(),
-            }));
-
+            offset += chunk_len;
         }
-        let (bytes, fut) = fut.take().unwrap();
-        bytes.copy_from_slice(fut.block()?.read()?);
-        dbg!(start.elapsed());
-        todo!()*/
+        Ok(DownloadFuture {
+            runner_result: self.runner.result.clone(),
+            inner: Some(inner),
+        })
     }
     pub(crate) fn kernel_cache(
         &self,
@@ -570,7 +524,10 @@ impl DeviceBufferInner {
     fn chunk_id(&self) -> usize {
         Arc::as_ptr(&self.chunk) as usize
     }
-    fn slice_offset_len(&self, offset: u32, len: u32) -> Arc<Self> {
+    fn slice_offset_len(&self, offset: u32, mut len: u32) -> Arc<Self> {
+        if len % CHUNK_ALIGN != 0 {
+            len += CHUNK_ALIGN - (len % CHUNK_ALIGN);
+        }
         let offset = self.offset + offset;
         debug_assert!(offset < self.offset + self.len);
         debug_assert!(len <= self.len);
@@ -734,7 +691,8 @@ impl ChunkMemory for HostMemory {
 }*/
 
 const CHUNK_ALIGN: u32 = 256;
-const HOST_CHUNK_SIZE: u32 = 128_000_000;
+const HOST_BUFFER_SIZE: u32 = 16_000_000;
+const HOST_CHUNK_SIZE: u32 = 64_000_000; // 16_000_000;
 const DEVICE_CHUNK_SIZE: u32 = (i32::MAX as u32 / CHUNK_ALIGN) * CHUNK_ALIGN;
 
 #[derive(Copy, Clone, Debug)]
@@ -1178,8 +1136,11 @@ impl KernelCache {
     }
 }
 
-trait Encode {
+trait FrameOp {
     unsafe fn encode(&self, encoder: &mut Encoder) -> Result<bool>;
+    unsafe fn finish(&self) -> Result<()> {
+        Ok(())
+    }
 }
 
 #[derive(Debug)]
@@ -1189,9 +1150,6 @@ struct Upload {
 }
 
 impl Upload {
-    fn barrier_key(&self) -> (usize, u32) {
-        (self.dst.chunk_id(), self.dst.start)
-    }
     fn barrier(&self) -> BufferMemoryBarrier {
         let src_stages = PipelineStages {
             all_transfer: true,
@@ -1227,13 +1185,9 @@ impl Upload {
     }
 }
 
-impl Encode for Upload {
+impl FrameOp for Upload {
     unsafe fn encode(&self, encoder: &mut Encoder) -> Result<bool> {
         let barrier = self.barrier();
-        /*let prev_access = encoder
-        .barriers
-        .insert(self.barrier_key(), barrier.dst_access)
-        .unwrap_or(AccessFlags::none());*/
         unsafe {
             encoder.cb_builder.copy_buffer(&self.copy_buffer_info());
             encoder.cb_builder.pipeline_barrier(&DependencyInfo {
@@ -1246,70 +1200,118 @@ impl Encode for Upload {
 }
 
 #[derive(Debug)]
+pub(crate) enum UintVec {
+    U8(Vec<u8>),
+    U16(Vec<u16>),
+    U32(Vec<u32>),
+    U64(Vec<u64>),
+}
+
+impl UintVec {
+    /*fn from_vec<T: 'static>(vec: Vec<T>) -> Option<Self> {
+        use std::{any::TypeId, mem::transmute};
+        fn type_eq<A: 'static, B: 'static>() -> bool {
+            TypeId::of::<A>() == TypeId::of::<B>()
+        }
+        if type_eq::<T, u8>() {
+            Some(Self::U8(unsafe { transmute(vec) }))
+        } else if type_eq::<T, u16>() {
+            Some(Self::U16(unsafe { transmute(vec) }))
+        } else if type_eq::<T, u32>() {
+            Some(Self::U32(unsafe { transmute(vec) }))
+        } else if type_eq::<T, u64>() {
+            Some(Self::U64(unsafe { transmute(vec) }))
+        } else {
+            None
+        }
+    }*/
+    fn as_bytes(&self) -> &[u8] {
+        use bytemuck::cast_slice;
+        match self {
+            Self::U8(x) => cast_slice(x),
+            Self::U16(x) => cast_slice(x),
+            Self::U32(x) => cast_slice(x),
+            Self::U64(x) => cast_slice(x),
+        }
+    }
+    fn as_bytes_mut(&mut self) -> &mut [u8] {
+        use bytemuck::cast_slice_mut;
+        match self {
+            Self::U8(x) => cast_slice_mut(x),
+            Self::U16(x) => cast_slice_mut(x),
+            Self::U32(x) => cast_slice_mut(x),
+            Self::U64(x) => cast_slice_mut(x),
+        }
+    }
+}
+
+pub(crate) struct DownloadFuture {
+    runner_result: Arc<RunnerResult>,
+    inner: Option<Arc<DownloadInner>>,
+}
+
+impl Future for DownloadFuture {
+    type Output = Result<UintVec>;
+    fn poll(mut self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Self::Output> {
+        match Arc::try_unwrap(self.inner.take().unwrap()) {
+            Ok(inner) => {
+                let result = self.runner_result.read();
+                if let Err(e) = result {
+                    Poll::Ready(Err(e))
+                } else if inner.pending.load(Ordering::Relaxed) > 0 {
+                    Poll::Ready(Err(format_err!("Device to host copy was not executed!")))
+                } else {
+                    Poll::Ready(Ok(inner.vec.into_inner()))
+                }
+            }
+            Err(inner) => {
+                self.inner.replace(inner);
+                Poll::Pending
+            }
+        }
+    }
+}
+
+#[derive(Debug)]
+struct DownloadInner {
+    vec: UnsafeCell<UintVec>,
+    pending: AtomicUsize,
+}
+
+unsafe impl Send for DownloadInner {}
+unsafe impl Sync for DownloadInner {}
+
+#[derive(Debug)]
 struct Download {
     src: Arc<DeviceBufferInner>,
     dst: Arc<HostBuffer>,
+    inner: Arc<DownloadInner>,
+    offset: u32,
 }
 
-impl Download {
-    fn barrier_key(&self) -> (usize, u32) {
-        (self.src.chunk_id(), self.src.start)
-    }
-    fn barrier(&self) -> BufferMemoryBarrier {
-        let src_stages = PipelineStages {
-            copy: true,
-            compute_shader: true,
-            ..Default::default()
-        };
-        let src_access = AccessFlags {
-            /*transfer_write: true,
-            transfer_read: true,
-            shader_write: true,
-            shader_read: true,*/
-            memory_read: true,
-            memory_write: true,
-            ..Default::default()
-        };
-        //let src_access = src_stages.supported_access();
-        let dst_stages = PipelineStages {
-            copy: true,
-            ..Default::default()
-        };
-        let dst_access = AccessFlags {
-            //transfer_read: true,
-            memory_read: true,
-            ..Default::default()
-        };
-        BufferMemoryBarrier {
-            src_stages,
-            src_access,
-            dst_stages,
-            dst_access,
-            range: self.src.barrier_range(),
-            ..BufferMemoryBarrier::buffer(self.src.buffer.clone())
-        }
-    }
-    fn copy_buffer_info(&self) -> CopyBufferInfo {
-        CopyBufferInfo::buffers(self.src.clone(), self.dst.clone())
-    }
-}
-
-impl Encode for Download {
+impl FrameOp for Download {
     unsafe fn encode(&self, encoder: &mut Encoder) -> Result<bool> {
-        //let barrier = self.barrier();
-        /*let prev_access = encoder
-            .barriers
-            .insert(self.barrier_key(), barrier.dst_access)
-            .unwrap_or(barrier.dst_access);
-        */
+        let copy_buffer_info = CopyBufferInfo::buffers(self.src.clone(), self.dst.clone());
         unsafe {
-            /*encoder.cb_builder.pipeline_barrier(&DependencyInfo {
-                buffer_memory_barriers: [barrier].into_iter().collect(),
-                ..Default::default()
-            });*/
-            encoder.cb_builder.copy_buffer(&self.copy_buffer_info());
+            encoder.cb_builder.copy_buffer(&copy_buffer_info);
         }
         Ok(true)
+    }
+    unsafe fn finish(&self) -> Result<()> {
+        let offset = self.offset as usize;
+        let len = self.dst.len as usize;
+        let x = self.dst.read()?;
+        let inner = &self.inner;
+        let mut vec = unsafe { &mut *inner.vec.get() };
+        let y = vec
+            .as_bytes_mut()
+            .get_mut(offset..offset+len)
+            .unwrap();
+        x.into_iter().zip(y.into_iter()).for_each(|(x, y)| {
+            *y = *x;
+        });
+        inner.pending.fetch_sub(1, Ordering::SeqCst);
+        Ok(())
     }
 }
 
@@ -1353,7 +1355,7 @@ impl Compute {
     }
 }
 
-impl Encode for Compute {
+impl FrameOp for Compute {
     unsafe fn encode(&self, encoder: &mut Encoder) -> Result<bool> {
         use vulkano::pipeline::Pipeline;
         let n_descriptors = self.buffers.len();
@@ -1417,11 +1419,6 @@ impl Encode for Compute {
         }
         for (buffer, desc) in self.buffers.iter().zip(cache.desc.buffer_descs()) {
             let barrier = Self::barrier(buffer, desc.mutable());
-            /*let barrier_key = (buffer.chunk_id(), buffer.start);
-            let prev_access = encoder
-                .barriers
-                .insert(barrier_key, barrier.dst_access)
-                .unwrap_or(barrier.dst_access);*/
             unsafe {
                 cb_builder.pipeline_barrier(&DependencyInfo {
                     buffer_memory_barriers: [barrier].into_iter().collect(),
@@ -1435,11 +1432,11 @@ impl Encode for Compute {
 
 pub(super) struct SyncFuture {
     inner: Option<Arc<()>>,
-    runner_result: Arc<RwLock<Result<(), Arc<anyhow::Error>>>>,
+    runner_result: Arc<RunnerResult>,
 }
 
 impl SyncFuture {
-    fn new(runner_result: Arc<RwLock<Result<(), Arc<anyhow::Error>>>>) -> Self {
+    fn new(runner_result: Arc<RunnerResult>) -> Self {
         Self {
             inner: Some(Arc::default()),
             runner_result,
@@ -1458,7 +1455,7 @@ impl Future for SyncFuture {
         let inner = self.inner.take().unwrap();
         match Arc::try_unwrap(inner) {
             Ok(_) => {
-                let result = self.runner_result.read().clone();
+                let result = self.runner_result.read();
                 if let Err(e) = result {
                     Poll::Ready(Err(anyhow::Error::msg(e)))
                 } else {
@@ -1478,7 +1475,13 @@ struct SyncGuard {
     inner: Arc<()>,
 }
 
-#[derive(Debug)]
+impl FrameOp for SyncGuard {
+    unsafe fn encode(&self, encoder: &mut Encoder) -> Result<bool> {
+        Ok(true)
+    }
+}
+
+#[derive(derive_more::IsVariant)]
 enum Op {
     Upload(Upload),
     Download(Download),
@@ -1486,26 +1489,32 @@ enum Op {
     SyncGuard(SyncGuard),
 }
 
-/*
-impl Op {
-    fn name(&self) -> &'static str {
+impl std::fmt::Debug for Op {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         match self {
-            Self::Upload(_) => "Upload",
-            Self::Download(_) => "Download",
-            Self::Compute(_) => "Compute",
-            Self::SyncGuard(_) => "SyncGuard",
+            Self::Upload(_) => f.debug_struct("Upload").finish(),
+            Self::Download(_) => f.debug_struct("Download").finish(),
+            Self::Compute(_) => f.debug_struct("Compute").finish(),
+            Self::SyncGuard(_) => f.debug_struct("SyncGuard").finish(),
         }
     }
 }
-*/
 
-impl Encode for Op {
+impl FrameOp for Op {
     unsafe fn encode(&self, encoder: &mut Encoder) -> Result<bool> {
         match self {
             Op::Upload(x) => unsafe { x.encode(encoder) },
             Op::Download(x) => unsafe { x.encode(encoder) },
             Op::Compute(x) => unsafe { x.encode(encoder) },
-            Op::SyncGuard(_) => Ok(true),
+            Op::SyncGuard(x) => unsafe { x.encode(encoder) },
+        }
+    }
+    unsafe fn finish(&self) -> Result<()> {
+        match self {
+            Op::Upload(x) => unsafe { x.finish() },
+            Op::Download(x) => unsafe { x.finish() },
+            Op::Compute(x) => unsafe { x.finish() },
+            Op::SyncGuard(x) => unsafe { x.finish() },
         }
     }
 }
@@ -1514,7 +1523,7 @@ struct Frame {
     queue: Arc<Queue>,
     device_index: usize,
     done: Arc<AtomicBool>,
-    result: Arc<RwLock<Result<(), Arc<anyhow::Error>>>>,
+    result: Arc<RunnerResult>,
     ops: Vec<Op>,
     command_pool: CommandPool,
     command_pool_alloc: Option<CommandPoolAlloc>,
@@ -1531,7 +1540,7 @@ impl Frame {
         queue: Arc<Queue>,
         device_index: usize,
         done: Arc<AtomicBool>,
-        result: Arc<RwLock<Result<(), Arc<anyhow::Error>>>>,
+        result: Arc<RunnerResult>,
     ) -> Result<Self, anyhow::Error> {
         let device = queue.device();
         let command_pool_info = CommandPoolCreateInfo {
@@ -1618,7 +1627,24 @@ impl Frame {
     }
     fn poll(&mut self) -> Result<()> {
         self.fence.wait(None)?;
-        self.ops.clear();
+        /*for op in self.ops.drain(..) {
+            if let Op::Compute(op) = op {
+                std::thread::spawn(move || unsafe {
+                    op.finish().unwrap();
+                });
+            }
+        }*/
+        //let finish = Instant::now();
+        /*let ops: Vec<_> = self.ops.drain(..).filter_map(|x| match x {
+            Op::Download(x) => Some(x),
+            _ => None
+        }).collect();*/
+        //let has_download = !ops.is_empty();
+        //use rayon::iter::{IntoParallelIterator, ParallelIterator};
+        //ops.into_par_iter().for_each(|x| unsafe { x.finish().unwrap() });
+        /*if has_download {
+            dbg!(finish.elapsed());
+        }*/
         self.command_pool_alloc = None;
         self.command_buffer = None;
         self.descriptor_sets.clear();
@@ -1632,16 +1658,11 @@ impl Frame {
 impl Drop for Frame {
     fn drop(&mut self) {
         if !self.done.load(Ordering::SeqCst) {
-            let mut result = self.result.write();
-            if result.is_ok() {
-                *result = Err(Arc::new(format_err!(
-                    "Device({}) panicked!",
-                    self.device_index
-                )));
-            }
+            let index = &self.device_index;
+            self.result.write(|| format_err!("Device({index}) panicked!"));
         }
         if !self.ops.is_empty() {
-            self.poll().unwrap();
+            self.fence.wait(None).unwrap();
         }
     }
 }
@@ -1705,28 +1726,35 @@ impl Encoder {
         self.frame.ops.len() >= Frame::MAX_OPS
             || self.frame.descriptor_sets.len() >= Self::MAX_SETS
             || self.n_descriptors >= Self::MAX_DESCRIPTORS
+            || self.frame.ops.iter().filter(|x| x.is_download()).count() >= 1
     }
     fn is_empty(&self) -> bool {
         self.frame.ops.is_empty()
     }
 }
 
-fn write_runner_result(
-    runner_result: &Arc<RwLock<Result<(), Arc<anyhow::Error>>>>,
-    result: Result<()>,
-) {
-    if let Err(e) = result {
-        let mut runner_result = runner_result.write();
-        if runner_result.is_ok() {
-            *runner_result = Err(Arc::new(e));
+#[derive(Default, Debug)]
+struct RunnerResult {
+    error: OnceCell<anyhow::Error>,
+}
+
+impl RunnerResult {
+    fn read(&self) -> Result<()> {
+        if let Some(error) = self.error.get() {
+            Err(format_err!("{error}"))
+        } else {
+            Ok(())
         }
+    }
+    fn write(&self, f: impl FnOnce() -> anyhow::Error) {
+        self.error.get_or_init(f);
     }
 }
 
 struct Runner {
     done: Arc<AtomicBool>,
     op_sender: ManuallyDrop<Sender<Op>>,
-    result: Arc<RwLock<Result<(), Arc<anyhow::Error>>>>,
+    result: Arc<RunnerResult>,
     device: ManuallyDrop<Arc<Device>>,
 }
 
@@ -1734,11 +1762,11 @@ impl Runner {
     fn new(queue: Arc<Queue>, index: usize) -> Result<Arc<Self>> {
         let done = Arc::new(AtomicBool::new(false));
         let (op_sender, op_reciever) = bounded(Frame::MAX_OPS);
-        let n_frames = 3;
+        let n_frames = 4;
         let (encode_sender, encode_receiver) = bounded(n_frames);
         let (submit_sender, submit_receiver) = bounded(n_frames);
         let (poll_sender, poll_receiver) = bounded(n_frames);
-        let result = Arc::new(RwLock::new(Ok(())));
+        let result = Arc::new(RunnerResult::default());
         let mut ready_frames = VecDeque::with_capacity(n_frames);
         for _ in 0..n_frames {
             let frame = Frame::new(queue.clone(), index, done.clone(), result.clone())?;
@@ -1749,28 +1777,34 @@ impl Runner {
         std::thread::Builder::new()
             .name(format!("krnl-device{}-encode", index))
             .spawn(move || {
-                write_runner_result(
-                    &result2,
-                    encode(
-                        &done2,
-                        ready_frames,
-                        op_reciever,
-                        encode_receiver,
-                        submit_sender,
-                    ),
+                let result = encode(
+                    &done2,
+                    ready_frames,
+                    op_reciever,
+                    encode_receiver,
+                    submit_sender,
                 );
+                if let Err(error) = result {
+                    result2.write(|| error);
+                }
             })?;
         let result2 = result.clone();
         std::thread::Builder::new()
             .name(format!("krnl-device{}-submit", index))
             .spawn(move || {
-                write_runner_result(&result2, submit(submit_receiver, poll_sender));
+                let result = submit(submit_receiver, poll_sender);
+                if let Err(error) = result {
+                    result2.write(|| error);
+                }
             })?;
         let result2 = result.clone();
         std::thread::Builder::new()
             .name(format!("krnl-device{}-poll", index))
             .spawn(move || {
-                write_runner_result(&result2, poll(poll_receiver, encode_sender));
+                let result = poll(poll_receiver, encode_sender);
+                if let Err(error) = result {
+                    result2.write(|| error);
+                }
             })?;
         Ok(Arc::new(Self {
             done,
@@ -1875,6 +1909,11 @@ fn submit(submit_receiver: Receiver<Frame>, poll_sender: Sender<Frame>) -> Resul
 fn poll(poll_receiver: Receiver<Frame>, encode_sender: Sender<Frame>) -> Result<()> {
     while let Ok(mut frame) = poll_receiver.recv() {
         frame.poll()?;
+        for op in frame.ops.drain(..).filter(|x| x.is_download()) {
+            unsafe {
+                op.finish()?;
+            }
+        }
         if encode_sender.send(frame).is_err() {
             break;
         }

@@ -44,13 +44,13 @@ fn tests(device: &Device) -> impl IntoIterator<Item = Trial> {
 
 fn buffer_tests(device: &Device) -> impl IntoIterator<Item = Trial> {
     fn buffer_test_lengths() -> impl IntoIterator<Item = usize> {
-        [0, 1, 3, 4, 16, 67, 300, 1011]
+        [0, 1, 3, 4, 16, 67, 300, 1_011, 16_179]
     }
     let features = device.features().copied().unwrap_or_default();
     let mut tests = Vec::new();
 
     fn buffer_from_vec(device: Device) -> Result<()> {
-        for n in buffer_test_lengths() {
+        for n in [0, 1, 3, 4, 16, 67, 300, 1_011, 16_179, 247_341, 5_437_921, 48_532_978, 112_789_546] {
             let x_vec = (1..=n as u32).into_iter().collect::<Vec<_>>();
             let buffer = Buffer::from_vec(x_vec.clone())
                 .into_device(device.clone())?
@@ -83,9 +83,7 @@ fn buffer_tests(device: &Device) -> impl IntoIterator<Item = Trial> {
 
     fn scalar_buffer_fill<T: Scalar>(device: Device) -> Result<()> {
         let elem = T::one();
-        for n in [1, 1]
-        /* buffer_test_lengths() */
-        {
+        for n in buffer_test_lengths() {
             let x_vec = (11..20)
                 .cycle()
                 .map(|x| T::from_u32(x).unwrap())
