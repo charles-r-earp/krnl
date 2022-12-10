@@ -9,9 +9,7 @@ use std::{
 #[cfg(feature = "device")]
 pub(crate) mod engine;
 #[cfg(feature = "device")]
-pub(crate) use engine::{
-    Compute, DeviceBuffer, DeviceBufferInner, Engine, UintVec, KernelCache,
-};
+pub(crate) use engine::{Compute, DeviceBuffer, DeviceBufferInner, Engine, KernelCache, UintVec};
 
 pub mod error {
 
@@ -437,8 +435,9 @@ mod tests {
     }
 
     #[cfg(feature = "device")]
+    #[ignore]
     #[test]
-    fn test_debug_printf() -> Result<()> {
+    fn debug_printf() -> Result<()> {
         use crate::{buffer::Buffer, future::BlockableFuture};
         let device = Device::builder().build()?;
         let x = Buffer::from_vec(vec![1.2f32, 2.3, 3.4, 4.56])

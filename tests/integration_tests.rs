@@ -50,7 +50,21 @@ fn buffer_tests(device: &Device) -> impl IntoIterator<Item = Trial> {
     let mut tests = Vec::new();
 
     fn buffer_from_vec(device: Device) -> Result<()> {
-        for n in [0, 1, 3, 4, 16, 67, 300, 1_011, 16_179, 247_341, 5_437_921, 48_532_978, 112_789_546] {
+        for n in [
+            0,
+            1,
+            3,
+            4,
+            16,
+            67,
+            300,
+            1_011,
+            16_179,
+            247_341,
+            5_437_921,
+            48_532_978,
+            112_789_546,
+        ] {
             let x_vec = (1..=n as u32).into_iter().collect::<Vec<_>>();
             let buffer = Buffer::from_vec(x_vec.clone())
                 .into_device(device.clone())?
@@ -103,19 +117,22 @@ fn buffer_tests(device: &Device) -> impl IntoIterator<Item = Trial> {
     macro_for!($buffer in [buffer, scalar_buffer] {
         macro_for!($T in [u8, i8, u16, i16, f16, bf16, u32, i32, f32, u64, i64, f64] {
             paste! {
-                let include = if device.is_host() {
-                    true
-                } else {
-                    match $T::scalar_type().size() {
-                        1 => features.shader_int8(),
-                        2 => features.shader_int16(),
-                        4 => true,
-                        8 => features.shader_int64(),
-                        _ => false,
+                {
+                    let ignore = if device.is_host() {
+                        false
+                    } else {
+                        match $T::scalar_type().size() {
+                            1 => !features.shader_int8(),
+                            2 => !features.shader_int16(),
+                            4 => false,
+                            8 => !features.shader_int64(),
+                            _ => unreachable!(),
+                        }
+                    };
+                    paste! {
+                        let trial = device_test(device, stringify!([<$buffer _fill_ $T>]), |device| [<$buffer _fill>]::<$T>(device));
                     }
-                };
-                if include {
-                    tests.push(device_test(device, stringify!([<$buffer _fill_ $T>]), |device| [<$buffer _fill>]::<$T>(device)));
+                    tests.push(trial.with_ignored_flag(ignore));
                 }
             }
         });
@@ -183,9 +200,11 @@ fn buffer_tests(device: &Device) -> impl IntoIterator<Item = Trial> {
     macro_for!($buffer in [buffer, scalar_buffer] {
         macro_for!($X in [u8, i8, u16, i16, f16, bf16, u32, i32, f32, u64, i64, f64] {
             macro_for!($Y in [u8, i8, u16, i16, f16, bf16, u32, i32, f32, u64, i64, f64] {
-                if device.is_host() || features.contains(&buffer_cast_features($X::scalar_type(), $Y::scalar_type())) {
+                {
+                    let ignore = !device.is_host() && !features.contains(&buffer_cast_features($X::scalar_type(), $Y::scalar_type()));
                     paste! {
-                        tests.push(device_test(device, stringify!([<$buffer _cast_ $X _ $Y>]), |device| [<$buffer _cast>]::<$X, $Y>(device)));
+                        let trial = device_test(device, stringify!([<$buffer _cast_ $X _ $Y>]), |device| [<$buffer _cast>]::<$X, $Y>(device));
+                        tests.push(trial.with_ignored_flag(ignore));
                     }
                 }
             });

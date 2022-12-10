@@ -14,6 +14,7 @@ use std::{
     future::Future,
     hash::{Hash, Hasher},
     iter::{once, Peekable},
+    marker::PhantomData,
     mem::ManuallyDrop,
     ops::Deref,
     ops::Range,
@@ -26,7 +27,6 @@ use std::{
     },
     task::{Context, Poll},
     time::{Duration, Instant},
-    marker::PhantomData,
 };
 #[cfg(debug_assertions)]
 use vulkano::instance::debug::{
@@ -318,9 +318,16 @@ impl Engine {
     }
     pub(crate) fn upload(&self, bytes: &[u8]) -> Result<Option<Arc<DeviceBuffer>>> {
         let buffer = unsafe { self.alloc(bytes.len())? };
+        let chunk_size = self
+            .device
+            .physical_device()
+            .properties()
+            .max_buffer_size
+            .map(|x| x.min(HOST_BUFFER_SIZE as _) as u32)
+            .unwrap_or(HOST_BUFFER_SIZE);
         if let Some(buffer) = buffer.as_ref() {
             let mut offset = 0;
-            for bytes in bytes.chunks(HOST_BUFFER_SIZE as usize) {
+            for bytes in bytes.chunks(chunk_size as usize) {
                 let mut src = self.buffer_allocator.alloc_host(bytes.len() as u32)?;
                 Arc::get_mut(&mut src).unwrap().write_slice(bytes)?;
                 let len = src.alloc.block.len();
@@ -341,16 +348,23 @@ impl Engine {
         vec: UintVec,
     ) -> Result<DownloadFuture> {
         let len = vec.as_bytes().len() as u32;
+        let chunk_size = self
+            .device
+            .physical_device()
+            .properties()
+            .max_buffer_size
+            .map(|x| x.min(HOST_BUFFER_SIZE as _) as u32)
+            .unwrap_or(HOST_BUFFER_SIZE);
         let buffer = buffer.inner.slice_offset_len(offset as u32, len);
         let mut offset = 0;
-        let n_chunks = len / HOST_BUFFER_SIZE + if len % HOST_BUFFER_SIZE != 0 { 1 } else { 0 };
+        let n_chunks = len / chunk_size + if len % chunk_size != 0 { 1 } else { 0 };
         let inner = Arc::new(DownloadInner {
             vec: vec.into(),
             pending: AtomicUsize::new(n_chunks as usize),
         });
-        for i in 0 .. n_chunks {
+        for i in 0..n_chunks {
             let chunk_len = if i < n_chunks.checked_sub(1).unwrap() {
-                HOST_BUFFER_SIZE
+                chunk_size
             } else {
                 len.checked_sub(offset).unwrap()
             };
@@ -710,40 +724,52 @@ struct Chunk {
 }
 
 impl Chunk {
-    fn new(device: Arc<Device>, kind: MemoryKind, _len: usize, ids: &[u32]) -> Result<Arc<Self>> {
-        //let len = CHUNK_SIZE_MULTIPLE * (1 + (len - 1) / CHUNK_SIZE_MULTIPLE);
-        // TODO: allow smaller chunks?
-        let len = match kind {
-            MemoryKind::Host => HOST_CHUNK_SIZE,
-            MemoryKind::Device => DEVICE_CHUNK_SIZE,
+    fn new(device: Arc<Device>, kind: MemoryKind, ids: &[u32]) -> Result<Arc<Self>> {
+        let chunk_sizes = match kind {
+            MemoryKind::Host => [HOST_CHUNK_SIZE].as_ref(),
+            MemoryKind::Device => [
+                DEVICE_CHUNK_SIZE,
+                DEVICE_CHUNK_SIZE / 2,
+                DEVICE_CHUNK_SIZE / 4,
+            ]
+            .as_ref(),
         };
-        let memory_properties = device.physical_device().memory_properties();
-        for id in ids {
-            let allocation_size = len as DeviceSize;
-            let memory_type = &memory_properties.memory_types[*id as usize];
-            let heap = &memory_properties.memory_heaps[memory_type.heap_index as usize];
-            if allocation_size <= heap.size {
-                let result = DeviceMemory::allocate(
-                    device.clone(),
-                    MemoryAllocateInfo {
-                        allocation_size: len as DeviceSize,
-                        memory_type_index: *id,
-                        ..Default::default()
-                    },
-                );
-                match result {
-                    Ok(device_memory) => {
-                        let memory_alloc = MemoryAlloc::new(device_memory)?;
-                        return Ok(Arc::new(Self {
-                            kind,
-                            memory_alloc,
-                            len,
-                            blocks: Mutex::default(),
-                        }));
+        let physical_device = device.physical_device();
+        let properties = physical_device.properties();
+        let memory_properties = physical_device.memory_properties();
+        for len in chunk_sizes.iter().copied() {
+            for id in ids {
+                let allocation_size = len as DeviceSize;
+                let memory_type = &memory_properties.memory_types[*id as usize];
+                let heap = &memory_properties.memory_heaps[memory_type.heap_index as usize];
+                if let Some(max_buffer_size) = properties.max_buffer_size {
+                    if allocation_size > max_buffer_size {
+                        continue;
                     }
-                    Err(DeviceMemoryError::OomError(e)) => continue,
-                    Err(e) => {
-                        return Err(e.into());
+                }
+                if allocation_size <= heap.size {
+                    let result = DeviceMemory::allocate(
+                        device.clone(),
+                        MemoryAllocateInfo {
+                            allocation_size,
+                            memory_type_index: *id,
+                            ..Default::default()
+                        },
+                    );
+                    match result {
+                        Ok(device_memory) => {
+                            let memory_alloc = MemoryAlloc::new(device_memory)?;
+                            return Ok(Arc::new(Self {
+                                kind,
+                                memory_alloc,
+                                len,
+                                blocks: Mutex::default(),
+                            }));
+                        }
+                        Err(DeviceMemoryError::OomError(e)) => continue,
+                        Err(e) => {
+                            return Err(e.into());
+                        }
                     }
                 }
             }
@@ -823,8 +849,8 @@ impl BufferAllocator {
                 max_host_chunks += (heap.size / HOST_CHUNK_SIZE as u64) as usize;
                 host_ids.push(id);
             }
-            if !memory_type.property_flags.host_visible && heap.flags.device_local {
-                max_device_chunks += (heap.size / DEVICE_CHUNK_SIZE as u64) as usize;
+            if heap.flags.device_local {
+                max_device_chunks += (heap.size / (DEVICE_CHUNK_SIZE / 4) as u64) as usize;
                 device_ids.push(id);
             }
         }
@@ -849,23 +875,21 @@ impl BufferAllocator {
             .into_iter()
             .map(|_| OnceCell::default())
             .collect();
-        Ok(Self {
+        let this = Self {
             device,
             host_ids,
             device_ids,
             host_chunks,
             device_chunks,
-        })
+        };
+        this.alloc_host(1)?;
+        this.alloc_device(1)?;
+        Ok(this)
     }
     fn alloc_host(&self, len: u32) -> Result<Arc<HostBuffer>> {
         for chunk in self.host_chunks.iter() {
             let chunk = chunk.get_or_try_init(|| {
-                Chunk::new(
-                    self.device.clone(),
-                    MemoryKind::Host,
-                    len as usize,
-                    &self.host_ids,
-                )
+                Chunk::new(self.device.clone(), MemoryKind::Host, &self.host_ids)
             })?;
             if let Some(alloc) = chunk.alloc(len) {
                 return HostBuffer::new(alloc, len);
@@ -877,17 +901,13 @@ impl BufferAllocator {
     fn alloc_device(&self, len: u32) -> Result<Arc<DeviceBuffer>> {
         for chunk in self.device_chunks.iter() {
             let chunk = chunk.get_or_try_init(|| {
-                Chunk::new(
-                    self.device.clone(),
-                    MemoryKind::Device,
-                    len as usize,
-                    &self.device_ids,
-                )
+                Chunk::new(self.device.clone(), MemoryKind::Device, &self.device_ids)
             })?;
             if let Some(alloc) = chunk.alloc(len) {
                 return DeviceBuffer::new(self.device.clone(), alloc);
             }
         }
+        panic!("Out of device memory!");
         Err(OomError::OutOfDeviceMemory.into())
     }
 }
@@ -1303,10 +1323,7 @@ impl FrameOp for Download {
         let x = self.dst.read()?;
         let inner = &self.inner;
         let mut vec = unsafe { &mut *inner.vec.get() };
-        let y = vec
-            .as_bytes_mut()
-            .get_mut(offset..offset+len)
-            .unwrap();
+        let y = vec.as_bytes_mut().get_mut(offset..offset + len).unwrap();
         x.into_iter().zip(y.into_iter()).for_each(|(x, y)| {
             *y = *x;
         });
@@ -1659,7 +1676,8 @@ impl Drop for Frame {
     fn drop(&mut self) {
         if !self.done.load(Ordering::SeqCst) {
             let index = &self.device_index;
-            self.result.write(|| format_err!("Device({index}) panicked!"));
+            self.result
+                .write(|| format_err!("Device({index}) panicked!"));
         }
         if !self.ops.is_empty() {
             self.fence.wait(None).unwrap();
