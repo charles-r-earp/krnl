@@ -5,6 +5,7 @@ pub use anyhow;
 pub use bincode;
 
 pub use krnl_core;
+pub use krnl_macros;
 
 #[doc(inline)]
 pub use krnl_core::scalar;

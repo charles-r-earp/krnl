@@ -21,6 +21,11 @@ use syn::{
     Result, Stmt, Type, Visibility,
 };
 
+mod metadata {
+    include!("../../src/kernel/__private/metadata.rs");
+}
+use metadata::ModuleData;
+
 macro_rules! todo {
     () => {
         std::todo!("[{}:{}]", file!(), line!())
@@ -128,6 +133,145 @@ pub fn module(attr: TokenStream, item: TokenStream) -> TokenStream {
         mod module {
             pub(super) use #krnl as __krnl;
             use __krnl::device::Features;
+            pub(super) const __BUILD: bool = #build;
+            #cache
+        }
+    });
+    item.to_token_stream().into()
+}
+
+#[proc_macro_attribute]
+pub fn module2(attr: TokenStream, item: TokenStream) -> TokenStream {
+    let attr = parse_macro_input!(attr as ModuleAttr);
+    let mut dependencies = String::new();
+    for arg in attr.args {
+        if let Some(deps) = arg.dependencies {
+            dependencies = deps.value.value().trim().to_string();
+        }
+    }
+    let mut item = syn::parse_macro_input!(item as ModuleItem);
+    let mut build = true;
+    let mut krnl = parse_quote! { krnl };
+    let new_attr = Vec::with_capacity(item.attr.len());
+    for attr in std::mem::replace(&mut item.attr, new_attr) {
+        if attr.path.segments.len() == 1
+            && attr
+                .path
+                .segments
+                .first()
+                .map_or(false, |x| x.ident == "krnl")
+        {
+            let tokens = attr.tokens.clone().into();
+            let args = syn::parse_macro_input!(tokens as ModuleKrnlArgs);
+            for arg in args.args.iter() {
+                if let Some(krnl_crate) = arg.krnl_crate.as_ref() {
+                    krnl = krnl_crate.clone();
+                } else if let Some(krnl_build) = arg.krnl_build.as_ref() {
+                    build = krnl_build.value();
+                } else {
+                    let ident = arg.ident.as_ref().unwrap();
+                    return Error::new_spanned(
+                        ident,
+                        format!("unknown krnl arg `{ident}`, expected `build` or `crate`"),
+                    )
+                    .into_compile_error()
+                    .into();
+                }
+            }
+        } else {
+            item.attr.push(attr);
+        }
+    }
+    /*let cache = if build {
+        let module_name = item.ident.to_string();
+        let module_tokens = item.tokens.to_string();
+        let module_src = format!("(dependencies({dependencies:?})) => ({module_tokens})");
+        let module_src_indices = (0..module_src.len()).into_iter().collect::<Vec<_>>();
+        let mut data = HashMap::new();
+        data.insert("dependencies", dependencies);
+        data.insert("krnl_module_tokens", module_tokens);
+        let data = bincode::serialize(&data).unwrap();
+        let data_len = data.len();
+        let module_msg = format!("module `{module_name}` has been modified, rebuild with `krnlc build`, install krnlc with `cargo install krnlc`");
+        quote! {
+            const krnlc__krnl_module_data: [u8; #data_len] = [#(#data),*];
+            static __module_check: () = {
+                let mod_path = module_path!();
+                let src = #module_src.as_bytes();
+                let mut success = false;
+                if let Some(cached_src) = __module(mod_path) {
+                    let cached_src = cached_src.as_bytes();
+                    if src.len() == cached_src.len() {
+                        success = #(src[#module_src_indices] == cached_src[#module_src_indices])&&*;
+                    }
+                }
+                if !success {
+                    panic!(#module_msg);
+                }
+            };
+            include!(concat!(env!("CARGO_MANIFEST_DIR"), "/.krnl/cache"));
+        }
+    } else {
+        quote! {
+            pub(super) const fn __kernel(_: &'static str) -> Option<(u64, &'static [u32], Features)> {
+                None
+            }
+        }
+    };*/
+    let cache = if build {
+        let data = ModuleData {
+            source: item.tokens.to_string(),
+        };
+        let data = bincode::serialize(&data).unwrap();
+        let data: Punctuated<_, Comma> = data
+            .into_iter()
+            .map(|x| LitInt::new(&x.to_string(), Span2::call_site()))
+            .collect();
+        let data_len = LitInt::new(&data.len().to_string(), Span2::call_site());
+        quote! {
+            const krnlc__krnl_module_data: [u8; #data_len] = [#data];
+
+            mod krnlc_cache {
+                include!(concat!(env!("CARGO_MANIFEST_DIR"), "/krnlc.cache"));
+            }
+
+            /*const fn select_module(desc: &ModuleDesc) -> bool {
+                    let module_path = module_path!();
+                    if desc.module_path.len() + "::module".len() == module_path.len() {
+                        let a = desc.module_path.as_bytes();
+                        let b = module_path.as_bytes();
+                        #(a[#module_path_indices] == b[#module_path_indices])&&*
+                    } else {
+                        false
+                    }
+                }*/
+
+            const MODULE_DESC: Option<&'static ModuleDesc> = {
+                if let Some(desc) = krnlc_cache::module(module_path!()) {
+                    if desc.module_data_hash == 0 {
+                        Some(desc)
+                    } else {
+                        panic!("module has been modified, run `krnlc build`")
+                    }
+                } else {
+                    panic!("module has not been built, run `krnlc build`")
+                }
+            };
+        }
+    } else {
+        quote! {
+            const MODULE_DESC: Option<&'static ModuleDesc> = None;
+        }
+    };
+    item.tokens.extend(quote! {
+        #[doc(hidden)]
+        #[automatically_derived]
+        mod module {
+            pub(super) use #krnl as __krnl;
+            use __krnl::{
+                device::Features,
+                kernel::__private::ModuleDesc,
+            };
             pub(super) const __BUILD: bool = #build;
             #cache
         }

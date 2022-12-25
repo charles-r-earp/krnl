@@ -115,33 +115,73 @@ pub mod kernels {
 }
 
 /* options */
-#[module(
-    dependencies(r#"
-        foo = { version = "0.1", git = "https:/github.com/myuser/mycrate", }
-    "#)
-)]
+#[module]
 #[krnl(crate=krnl)]
 #[krnl(no_build)]
 ```
 
-/* krnl dir */
-```
-- .krnl
-    - CASHDIR.TAG
-    - packages
-        - <package>
-            - .gitignore // ignore modules
-            - cache
+## package layout
+
+- my-crate
+    - krnl.toml
+    - krnl.cache
+    - target 
+        - krnl 
+            - lib 
             - modules
                 - <module>
                     - Cargo.toml
                     - config.toml
                     - src
                         - lib.rs
-            - target // target dir for check / expand 
+            - target 
+
+    
 
 ## encode data in entry_point
-__krnl_ <hash>_ <threads> _ <access> _ <kernel_name>
+__krnl_ #(#word)_* // <- words of serialized KernelDesc as bincode  
 
-- threads are c<constant> or s<spec id>
-- access is r (readonly) or w (writeonly) or a (readwrite) for each buffer
+## dependencies 
+
+Use host deps as specified in metadata
+```toml
+[dependencies]
+"foo" = "0.1.0"
+
+
+[metadata.krnlc]
+features = ["a", "b"]
+
+[metadata.krnlc.dependencies]
+"foo" = { default-features = false, features = ["bar"] }
+
+# deps 
+```
+
+```rust
+
+enum Context {
+    Host,
+    #[cfg(feature = "device")]
+    Device(Device),
+}
+
+struct Device {
+    #[cfg(feature = "device")]
+    inner: Arc<Engine>,
+}
+
+impl Device {
+    fn builder() -> Result<DeviceBuilder, DeviceNotAvailable> {
+        todo!()
+    }
+}
+
+impl<S: Data> BufferBase<S> {
+    pub fn into_context(self, context: impl Into<Context>) -> Result<BufferIntoContextFuture<S>> {
+        todo!()
+    }
+}
+
+```
+
