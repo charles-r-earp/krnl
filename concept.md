@@ -184,4 +184,3 @@ impl<S: Data> BufferBase<S> {
 }
 
 ```
-

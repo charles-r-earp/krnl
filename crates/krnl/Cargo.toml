@@ -1,0 +1,44 @@
+
+[package]
+name = "krnl"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+license.workspace = true
+readme.workspace = true
+repository.workspace = true
+publish = false
+
+[dependencies]
+krnl-macros = { path = "../krnl-macros" }
+krnl-core = { path = "../krnl-core" }
+vulkano = { git = "https://github.com/vulkano-rs/vulkano", branch = "0.32.X", optional = true }
+#vulkano = { path = "../../../vulkano/vulkano", optional = true }
+serde = { workspace = true, default-features = false, features = ["derive", "rc"] }
+anyhow.workspace = true
+half = { workspace = true, features = ["std"] }
+num-traits = { workspace = true, features = ["std"] }
+paste.workspace = true 
+dry.workspace = true
+derive_more.workspace = true
+thiserror.workspace = true
+parking_lot = "0.12.1"
+crossbeam-channel = { version = "0.5.6", optional = true }
+once_cell = { version = "1.13.0", default-features = false, features = ["std", "alloc"] }
+
+#crossbeam-channel = { version = "0.5.6", optional = true }
+bytemuck = { version = "1.11.0", default-features = false }
+#bincode = "1.3.3"
+#dashmap = { version = "5.3.4", optional = true }
+#rspirv = "0.11.0"
+
+ash = { version = "0.37.1", optional = true }
+rayon = "1.6.1"
+
+[target."cfg(any(target_os = \"ios\", target_os = \"macos\"))".dependencies]
+ash-molten = { version = "0.12.0", features = ["pre-built"], optional = true }
+
+[features]
+device = ["dep:vulkano", "dep:ash", "dep:ash-molten", "dep:crossbeam-channel"]

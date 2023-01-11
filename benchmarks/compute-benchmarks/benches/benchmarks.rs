@@ -26,7 +26,6 @@ pub fn criterion_benchmark(c: &mut Criterion) {
         1024
     } else {
         256_000_000
-        // TODO: chunk downloads in krnl
     };
     let saxpy_x: Rc<Vec<f32>> = Rc::new(
         thread_rng()
@@ -54,7 +53,7 @@ pub fn criterion_benchmark(c: &mut Criterion) {
                     let mut duration = Duration::default();
                     for _ in 0..i {
                         let start = Instant::now();
-                        krnl.upload(&x).unwrap();
+                        let _upload = krnl.upload(&x).unwrap();
                         duration += start.elapsed();
                     }
                     duration
@@ -109,7 +108,7 @@ pub fn criterion_benchmark(c: &mut Criterion) {
                     let mut duration = Duration::default();
                     for _ in 0..i {
                         let start = Instant::now();
-                        cuda.upload(&x).unwrap();
+                        let _upload = cuda.upload(&x).unwrap();
                         duration += start.elapsed();
                     }
                     duration
@@ -165,7 +164,7 @@ pub fn criterion_benchmark(c: &mut Criterion) {
                     let mut duration = Duration::default();
                     for _ in 0..i {
                         let start = Instant::now();
-                        ocl.upload(&x).unwrap();
+                        let _upload = ocl.upload(&x).unwrap();
                         duration += start.elapsed();
                     }
                     duration

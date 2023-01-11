@@ -55,7 +55,7 @@ impl CudaBackend {
             cuda: Arc::new(Cuda::new(index)?),
         })
     }
-    pub fn upload(&self, x: &[f32]) -> Result<()> {
+    pub fn upload(&self, x: &[f32]) -> Result<Upload> {
         #[allow(unused)]
         let x_device = DeviceBuffer::from_slice(x)?;
         self.cuda.sync()?;
@@ -64,7 +64,7 @@ impl CudaBackend {
             let x_device = x_device.as_host_vec()?;
             assert_eq!(x, x_device.as_slice());
         }
-        Ok(())
+        Ok(Upload { x_device })
     }
     pub fn download(&self, x: &[f32]) -> Result<Download> {
         let x_device = DeviceBuffer::from_slice(x)?;
@@ -93,6 +93,11 @@ impl CudaBackend {
             y_host,
         })
     }
+}
+
+pub struct Upload {
+    #[allow(dead_code)]
+    x_device: DeviceBuffer<f32>,
 }
 
 pub struct Download {

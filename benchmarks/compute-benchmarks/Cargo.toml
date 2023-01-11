@@ -11,7 +11,7 @@ approx = "0.5.1"
 argparse = "0.2.2"
 criterion = { version = "0.4.0", default-features = false }
 cust = { version = "0.3.2", optional = true }
-krnl = { path = "../../", features = ["device"] }
+krnl = { path = "../../crates/krnl", features = ["device"] }
 ocl = { version = "0.19.4", optional = true }
 rand = "0.8.5"
 

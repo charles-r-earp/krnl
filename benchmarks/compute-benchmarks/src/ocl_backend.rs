@@ -17,7 +17,7 @@ impl OclBackend {
             .build()?;
         Ok(Self { pro_que })
     }
-    pub fn upload(&self, x: &[f32]) -> Result<()> {
+    pub fn upload(&self, x: &[f32]) -> Result<Upload> {
         let x_host = Buffer::builder()
             .queue(self.pro_que.queue().clone())
             .len(x.len())
@@ -41,7 +41,7 @@ impl OclBackend {
             y_host.read(&mut y_vec).enq()?;
             assert_eq!(x, y_vec.as_slice());
         }
-        Ok(())
+        Ok(Upload { x_device })
     }
     pub fn download(&self, x: &[f32]) -> Result<Download> {
         let x_host = Buffer::builder()
@@ -103,6 +103,11 @@ impl OclBackend {
             y_host,
         })
     }
+}
+
+pub struct Upload {
+    #[allow(dead_code)]
+    x_device: Buffer<f32>,
 }
 
 pub struct Download {
