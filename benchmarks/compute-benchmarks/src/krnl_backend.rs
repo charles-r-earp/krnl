@@ -2,8 +2,8 @@
 
 #[cfg(debug_assertions)]
 use crate::saxpy_host;
-//#[cfg(debug_assertions)]
-//use approx::assert_relative_eq;
+#[cfg(debug_assertions)]
+use approx::assert_relative_eq;
 use krnl::{
     anyhow::Result,
     buffer::{Buffer, Slice},
@@ -45,6 +45,7 @@ impl KrnlBackend {
         let device = self.device.clone();
         let x_device = Slice::from(x).to_device(device.clone())?;
         let y_device = Slice::from(y).to_device(device.clone())?;
+        device.wait()?;
         #[cfg(debug_assertions)]
         let y_host = {
             let mut y_host = y.to_vec();
@@ -95,7 +96,11 @@ pub struct Saxpy {
 
 impl Saxpy {
     pub fn run(&mut self) -> Result<()> {
-        todo!()
+        krnl::buffer::saxpy(
+            self.x_device.as_slice(),
+            self.alpha,
+            self.y_device.as_slice_mut(),
+        )?;
         /*
         kernels::saxpy::Kernel::builder()
             .build(self.device.clone())?
@@ -105,13 +110,14 @@ impl Saxpy {
                 self.y_device.as_slice_mut(),
             )?
             .dispatch()?;
-        self.device.sync()?.block()?;
+        self.device.sync()?.block()?;*/
+        self.device.wait()?;
         #[cfg(debug_assertions)]
         {
-            let y_device = self.y_device.to_vec()?.block()?;
+            let y_device = self.y_device.to_vec()?;
             assert_relative_eq!(self.y_host.as_slice(), y_device.as_slice());
         }
-        Ok(())*/
+        Ok(())
     }
 }
 

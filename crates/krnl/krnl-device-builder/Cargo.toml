@@ -1,0 +1,10 @@
+[package]
+name = "krnl-device-builder"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[workspace]
+
+[dependencies]
+spirv-builder = { version = "0.5.0", default-features = false, features = ["use-installed-tools"] }
