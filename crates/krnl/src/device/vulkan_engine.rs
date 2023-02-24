@@ -113,6 +113,32 @@ impl DeviceEngine for Engine {
             .next()
             .unwrap();
         let name = physical_device.properties().device_name.clone();
+        let optimal_device_extensions = vulkano::device::DeviceExtensions {
+            khr_vulkan_memory_model: true,
+            ..vulkano::device::DeviceExtensions::none()
+        };
+        let device_extensions = physical_device
+            .supported_extensions()
+            .intersection(&optimal_device_extensions);
+        let optimal_device_features = vulkano::device::Features {
+            vulkan_memory_model: true,
+            shader_int8: optimal_features.shader_int8,
+            shader_int16: optimal_features.shader_int16,
+            shader_int64: optimal_features.shader_int64,
+            shader_float16: optimal_features.shader_float16,
+            shader_float64: optimal_features.shader_float64,
+            ..vulkano::device::Features::empty()
+        };
+        let device_features = physical_device
+            .supported_features()
+            .intersection(&optimal_device_features);
+        let features = Features {
+            shader_int8: device_features.shader_int8,
+            shader_int16: device_features.shader_int16,
+            shader_int64: device_features.shader_int64,
+            shader_float16: device_features.shader_float16,
+            shader_float64: device_features.shader_float64,
+        };
         let mut compute_families: Vec<_> = physical_device
             .queue_family_properties()
             .iter()
@@ -131,9 +157,9 @@ impl DeviceEngine for Engine {
             })
             .map(|x| x as u32);
         transfer_family.take();
-        //if transfer_family.is_none() {
-        compute_families.truncate(1);
-        //}
+        if transfer_family.is_none() {
+            compute_families.truncate(1);
+        }
         let queue_create_infos: Vec<_> = compute_families
             .iter()
             .copied()
@@ -147,6 +173,8 @@ impl DeviceEngine for Engine {
         let (device, mut queues) = Device::new(
             physical_device,
             DeviceCreateInfo {
+                enabled_extensions: device_extensions,
+                enabled_features: device_features,
                 queue_create_infos,
                 ..Default::default()
             },
@@ -180,8 +208,6 @@ impl DeviceEngine for Engine {
                 )?;
                 worker_states.push(worker.state.clone());
                 std::thread::spawn(move || worker.run());
-
-                break;
             }
         }
         let transfer_queue = queues.next();
@@ -398,7 +424,6 @@ impl Worker {
         })
     }
     unsafe fn submit(&self, command_buffer: &UnsafeCommandBuffer) -> Result<()> {
-        use ash::vk::PipelineStageFlags;
         let queue = &self.queue;
         let device = queue.device();
         let command_buffers = &[command_buffer.handle()];
@@ -549,13 +574,8 @@ impl Worker {
                     unsafe {
                         self.submit(&command_buffer)?;
                     }
-                    //let _ = future_sender.send(self.state.next());
-
-                    let start = Instant::now();
-                    self.fence.wait(None)?;
-                    let elapsed = start.elapsed();
-                    println!("{queue:?} {elapsed:?} ", queue = self.queue.handle());
                     let _ = future_sender.send(self.state.next());
+                    self.fence.wait(None)?;
                     self.state.finish();
                     unsafe {
                         descriptor_pool.reset()?;
@@ -898,9 +918,7 @@ impl Kernel {
                 ((set, binding), descriptor_requirements)
             })
             .collect();
-        let push_constant_range = if false
-        /*desc.push_consts_size > 0*/
-        {
+        let push_constant_range = if desc.push_consts_size > 0 {
             Some(PushConstantRange {
                 stages,
                 offset: 0,
@@ -1015,7 +1033,7 @@ impl DeviceEngineKernel for Kernel {
             push_const_size += 4 - (push_const_size % 4);
         }
         let mut push_const_bytes = Vec::with_capacity(push_const_size + buffers.len() * 2 * 4);
-        /*for push in push_consts {
+        for push in push_consts {
             use ScalarElem::*;
             match push.to_scalar_bits() {
                 U8(x) => push_const_bytes.push(x),
@@ -1033,7 +1051,7 @@ impl DeviceEngineKernel for Kernel {
         for buffer in buffers.iter() {
             push_const_bytes.extend((buffer.offset as u32).to_ne_bytes());
             push_const_bytes.extend((buffer.len as u32).to_ne_bytes());
-        }*/
+        }
         let mut futures: Vec<_> = buffers
             .iter()
             .map(|x| x.future.clone())

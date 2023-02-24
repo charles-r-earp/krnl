@@ -163,7 +163,7 @@ pub trait ScalarData: Sealed {
     }
     fn len(&self) -> usize {
         let slice = self.as_scalar_slice();
-        slice.raw.len() * slice.scalar_type().size()
+        slice.raw.len() / slice.scalar_type().size()
     }
 }
 
@@ -295,12 +295,13 @@ impl<T: Scalar> BufferRepr<T> {
             #[cfg(feature = "device")]
             DeviceInner::Device(device) => {
                 let width = size_of::<T>();
-                let device_buffer = unsafe { DeviceBuffer::uninit(device.clone(), len * width)? };
+                let cap = len * width;
+                let device_buffer = unsafe { DeviceBuffer::uninit(device.clone(), cap)? };
                 let raw = RawBuffer {
                     slice: RawSlice {
                         inner: RawSliceInner::Device(device_buffer),
                     },
-                    cap: len,
+                    cap,
                     width,
                 };
                 Ok(Self {
@@ -625,12 +626,14 @@ pub fn saxpy(x: Slice<f32>, alpha: f32, y: SliceMut<f32>) -> Result<()> {
 #[test]
 fn test_saxpy() -> Result<()> {
     let device = Device::builder().build()?;
-    let n = 256_000_000;
+    let n = 1000;
     let x = Buffer::from(vec![1f32; n]).to_device(device.clone())?;
     let mut y = Buffer::from(vec![1f32; n]).to_device(device.clone())?;
     saxpy(x.as_slice(), 2f32, y.as_slice_mut())?;
     let y = y.to_vec()?;
-    //assert_eq!(y, vec![3f32]);
+    if y.iter().any(|x| *x != 3f32) {
+        panic!();
+    }
     Ok(())
 }
 
@@ -684,12 +687,11 @@ pub fn fill(y: SliceMut<f32>) -> Result<()> {
 
 #[cfg(all(test, feature = "device"))]
 #[test]
-fn test_fill() -> Result<()> {
+fn test_fill1() -> Result<()> {
     let device = Device::builder().build()?;
     let n = 256_000_000;
     let mut y = Buffer::from(vec![0f32; n]).to_device(device.clone())?;
     for _ in 0..10 {
-        std::thread::sleep(std::time::Duration::from_secs(1));
         fill(y.as_slice_mut())?;
         device.wait()?;
     }
@@ -722,9 +724,8 @@ pub fn fill2(y: SliceMut<f32>) -> Result<()> {
 fn test_fill2() -> Result<()> {
     let device = Device::builder().build()?;
     let n = 256_000_000;
-    let mut y = Buffer::from(vec![0f32; n]).to_device(device.clone())?;
+    let mut y = unsafe { Buffer::uninit(device.clone(), n)? };
     for _ in 0..10 {
-        std::thread::sleep(std::time::Duration::from_secs(1));
         fill2(y.as_slice_mut())?;
         device.wait()?;
     }

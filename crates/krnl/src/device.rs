@@ -597,7 +597,7 @@ impl KernelDesc {
                 }
             }
         }
-        /*for inst in module.annotations.iter() {
+        for inst in module.annotations.iter() {
             let op = inst.class.opcode;
             let operands = inst.operands.as_slice();
             if op == Op::Decorate {
@@ -608,8 +608,7 @@ impl KernelDesc {
                     _ => (),
                 }
             }
-        }*/
-        buffer_descs[0].mutable = true;
+        }
         let push_consts_size = {
             let push_consts_ptr = module
                 .types_global_values
@@ -648,7 +647,7 @@ impl KernelDesc {
                     .last()
                     .unwrap()
                     .unwrap_id_ref();
-                /*let mut push_const_size = module
+                let mut push_const_size = module
                     .types_global_values
                     .iter()
                     .find(|inst| inst.result_id == Some(push_const_field))
@@ -673,8 +672,7 @@ impl KernelDesc {
                         }
                     }
                 }
-                push_const_offset + push_const_size*/
-                8
+                push_const_offset + push_const_size
             } else {
                 0
             }
@@ -687,7 +685,7 @@ impl KernelDesc {
         module.debug_names.clear();
         let spirv_version = module.header.as_ref().unwrap().version();
         let spirv_version = (spirv_version.0 as _, spirv_version.1 as _);
-        // println!("{}", module.disassemble());
+        //println!("{}", module.disassemble());
         let spirv = module.assemble();
         Ok(Self {
             name,
