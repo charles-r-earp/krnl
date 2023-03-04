@@ -7,11 +7,7 @@ publish = false
 [workspace]
 
 [dependencies]
-glam = "0.22.0"
-krnl = { path = "../../../", features = ["device"] }
+krnl = { path = "../../../krnl", features = ["device"] }
 
-[package.metadata.krnlc]
-# features = ["foo"] 
-
-[package.metadata.krnlc.dependencies]
-glam = { default-features = false, features = ["libm"] }
+[dev-dependencies]
+rayon = "1.7.0"

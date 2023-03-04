@@ -326,7 +326,7 @@ pub unsafe trait Scalar:
 {
     /// The [`ScalarType`] of the scalar.
     fn scalar_type() -> ScalarType;
-    fn scalar_elem(self) -> ScalarElem;
+    //fn scalar_elem(self) -> ScalarElem;
     fn cast<T: Scalar>(self) -> T;
 }
 
@@ -361,6 +361,7 @@ macro_for!($X in [u8, i8, u16, i16, f16, bf16, u32, i32, f32, u64, i64, f64] {
             fn scalar_type() -> ScalarType {
                 ScalarType::[<$X:upper>]
             }
+            #[cfg(not(target_arch = "spirv"))]
             fn scalar_elem(self) -> ScalarElem {
                 ScalarElem::[<$X:upper>](self)
             }

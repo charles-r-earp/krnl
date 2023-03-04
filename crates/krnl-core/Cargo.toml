@@ -12,14 +12,13 @@ publish = false
 
 [dependencies]
 krnl-macros = { path = "../krnl-macros" }
-spirv-std = "0.4.0"
+spirv-std = "0.5.0"
 paste.workspace = true
 dry.workspace = true
 
 [target.'cfg(not(target_arch = "spirv"))'.dependencies]
 glam = "0.22.0"
 num-traits = "0.2.14"
-#half = { git = "https://github.com/starkat99/half-rs", features = ["num-traits", "bytemuck", "serde"] }
 half = { version = "2.1.0", features = ["num-traits", "bytemuck", "serde"] }
 bytemuck = "1.4.1"
 serde = { version = "1.0.143", features = ["derive"] }
@@ -29,5 +28,4 @@ derive_more = { version = "0.99.11", default-features = false, features = ["disp
 [target.'cfg(target_arch = "spirv")'.dependencies]
 glam = { version = "0.22.0", default-features = false, features = ["libm"] }
 num-traits = { version = "0.2.14", default-features = false, features = ["libm"] }
-#half = { git = "https://github.com/starkat99/half-rs", default-features = false, features = ["num-traits", "bytemuck"] }
 half = { version = "2.1.0", default-features = false, features = ["num-traits", "bytemuck"] }

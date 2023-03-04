@@ -10,5 +10,4 @@ crate-type = ["dylib"]
 [workspace]
 
 [dependencies]
-glam = { version = "0.23.0", default-features = false, features = ["libm"] }
-spirv-std = "0.5.0"
+krnl-core = { path = "../../../krnl-core" }

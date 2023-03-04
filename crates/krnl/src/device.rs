@@ -2,6 +2,7 @@ use crate::scalar::ScalarElem;
 #[cfg(feature = "device")]
 use anyhow::format_err;
 use anyhow::Result;
+#[cfg(feature = "device")]
 use rspirv::binary::Disassemble;
 use std::{
     borrow::Cow,
