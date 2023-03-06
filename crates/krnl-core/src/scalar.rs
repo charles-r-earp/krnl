@@ -7,7 +7,7 @@ use half::{bf16, f16};
 use num_traits::{AsPrimitive, FromPrimitive, NumAssign, NumCast};
 use paste::paste;
 #[cfg(not(target_arch = "spirv"))]
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 #[cfg(not(target_arch = "spirv"))]
 use std::{
     borrow::Cow,
@@ -110,6 +110,27 @@ impl ScalarType {
             U64 => "u64",
             I64 => "i64",
             F64 => "f64",
+        }
+    }
+    /// Name of the variant.
+    ///
+    /// Uppercase, ie "F16", "I32", etc.
+    #[cfg(not(target_arch = "spirv"))]
+    fn as_str(&self) -> &'static str {
+        use ScalarType::*;
+        match self {
+            U8 => "U8",
+            I8 => "I8",
+            U16 => "I16",
+            I16 => "U16",
+            F16 => "F16",
+            BF16 => "BF16",
+            U32 => "U32",
+            I32 => "I32",
+            F32 => "F32",
+            U64 => "U64",
+            I64 => "I64",
+            F64 => "F64",
         }
     }
 }

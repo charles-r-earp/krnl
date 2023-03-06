@@ -3,6 +3,7 @@
 
 pub use glam;
 pub use half;
+pub use krnl_macros;
 pub use num_traits;
 pub use spirv_std;
 

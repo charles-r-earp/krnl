@@ -1,6 +1,5 @@
 #[cfg(not(target_arch = "spirv"))]
 use core::marker::PhantomData;
-
 #[cfg(target_arch = "spirv")]
 use core::ops::Index;
 #[cfg(target_arch = "spirv")]
@@ -33,17 +32,29 @@ fn debug_index_out_of_bounds(index: usize, len: usize) {
 }
 
 #[cfg(target_arch = "spirv")]
-// adapted from https://docs.rs/spirv-std/0.5.0/src/spirv_std/arch.rs.html#237-248
-unsafe fn index_unchecked_mut(self: &[T], index: usize) -> &mut T {
-    asm!(
-        "%val_ptr = OpAccessChain _ {array_ptr} {index}",
-        "OpReturnValue %val_ptr",
-        array_ptr = in(reg) self,
-        index = in(reg) index,
-        options(noreturn)
-    )
+trait IndexUncheckedMutExt<T> {
+    unsafe fn index_unchecked_mut_ext(&self, index: usize) -> &mut T;
 }
 
+#[cfg(target_arch = "spirv")]
+impl<T> IndexUncheckedMutExt<T> for [T] {
+    unsafe fn index_unchecked_mut_ext(&self, index: usize) -> &mut T {
+        // https://docs.rs/spirv-std/0.5.0/src/spirv_std/arch.rs.html#237-248
+        unsafe {
+            ::core::arch::asm!(
+                "%slice_ptr = OpLoad _ {slice_ptr_ptr}",
+                "%data_ptr = OpCompositeExtract _ %slice_ptr 0",
+                "%val_ptr = OpAccessChain _ %data_ptr {index}",
+                "OpReturnValue %val_ptr",
+                slice_ptr_ptr = in(reg) &self,
+                index = in(reg) index,
+                options(noreturn)
+            )
+        }
+    }
+}
+
+#[doc(hidden)]
 #[cfg(target_arch = "spirv")]
 pub struct Slice<'a, T> {
     inner: &'a [T],
@@ -138,7 +149,7 @@ impl<T> UnsafeIndexMut<usize> for UnsafeSliceMut<'_, T> {
     #[cfg(target_arch = "spirv")]
     unsafe fn unsafe_index_mut(&self, index: usize) -> &mut Self::Output {
         if index < self.len {
-            unsafe { index_unchecked_mut(self.inner, self.offset + index) }
+            unsafe { self.inner.index_unchecked_mut_ext(self.offset + index) }
         } else {
             debug_index_out_of_bounds(index, self.len);
             panic!();

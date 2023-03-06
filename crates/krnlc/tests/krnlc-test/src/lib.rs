@@ -1,9 +1,11 @@
 use krnl::krnl_macros::module;
 
 #[module]
-#[krnl(no_build)]
 mod foo {
-    use krnl::krnl_core::arch::{Length, UnsafeIndexMut};
+    #[cfg(not(target_arch = "spirv"))]
+    use krnl::krnl_core;
+    use krnl_core::arch::{Length, UnsafeIndexMut};
+    use krnl_core::krnl_macros::kernel;
 
     fn foo_impl(idx: usize, y: &(impl UnsafeIndexMut<usize, Output = u32> + Length)) {
         if idx < y.len() {
@@ -13,6 +15,12 @@ mod foo {
         }
     }
 
+    #[kernel(threads(256))]
+    pub fn foo(#[global] y: &mut [u32]) {
+        foo_impl(global_id as usize, y);
+    }
+
+    /*
     #[cfg(target_arch = "spirv")]
     #[krnl_core::spirv_std::spirv(compute(threads(1)))]
     pub fn foo(
@@ -22,7 +30,7 @@ mod foo {
         let y = unsafe { krnl_core::arch::UnsafeSliceMut::from_raw_parts(y, 0, 1) };
         let idx = global_id.x as usize;
         foo_impl(idx, y);
-    }
+    }*/
 
     #[cfg(test)]
     #[test]
