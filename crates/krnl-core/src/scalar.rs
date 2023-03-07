@@ -10,8 +10,8 @@ use paste::paste;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 #[cfg(not(target_arch = "spirv"))]
 use std::{
-    borrow::Cow,
     fmt::{Debug, Display},
+    str::FromStr,
 };
 
 mod sealed {
@@ -32,38 +32,11 @@ mod sealed {
 }
 use sealed::Sealed;
 
-pub mod error {
-    #[cfg(not(target_arch = "spirv"))]
-    use super::*;
-
-    #[cfg(not(target_arch = "spirv"))]
-    #[derive(Debug, thiserror::Error)]
-    #[error("ScalarTypeFromStrError: unknown scalar type {input:?}!")]
-    pub struct ScalarTypeFromStrError<'a> {
-        pub(super) input: Cow<'a, str>,
-    }
-
-    #[cfg_attr(
-        not(target_arch = "spirv"),
-        derive(Debug, thiserror::Error),
-        error("ScalarTypeFromU32Error: unknown scalar type {input}!")
-    )]
-    pub struct ScalarTypeFromU32Error {
-        #[cfg(not(target_arch = "spirv"))]
-        pub(super) input: u32,
-    }
-}
-use error::*;
-
 /// Numerical types supported in krnl.
 #[allow(missing_docs)]
 #[non_exhaustive]
 #[derive(Clone, Copy, Eq, PartialEq)]
-#[cfg_attr(
-    not(target_arch = "spirv"),
-    derive(Debug, Display, Serialize, Deserialize),
-    serde(into = "u32", try_from = "u32")
-)]
+#[cfg_attr(not(target_arch = "spirv"), derive(Debug, Display))]
 #[cfg_attr(target_arch = "spirv", repr(u32))]
 pub enum ScalarType {
     U8 = 1,
@@ -81,6 +54,10 @@ pub enum ScalarType {
 }
 
 impl ScalarType {
+    fn iter() -> impl Iterator<Item = Self> {
+        use ScalarType::*;
+        [U8, I8, U16, I16, F16, BF16, U32, I32, F32, U64, I64, F64].into_iter()
+    }
     /// Size of the type in bytes.
     pub fn size(&self) -> usize {
         use ScalarType::*;
@@ -116,7 +93,7 @@ impl ScalarType {
     ///
     /// Uppercase, ie "F16", "I32", etc.
     #[cfg(not(target_arch = "spirv"))]
-    fn as_str(&self) -> &'static str {
+    pub fn as_str(&self) -> &'static str {
         use ScalarType::*;
         match self {
             U8 => "U8",
@@ -142,52 +119,74 @@ impl From<ScalarType> for u32 {
 }
 
 impl TryFrom<u32> for ScalarType {
-    type Error = ScalarTypeFromU32Error;
-    fn try_from(input: u32) -> Result<Self, Self::Error> {
+    type Error = ();
+    fn try_from(input: u32) -> Result<Self, ()> {
         use ScalarType::*;
-        match input {
-            1 => Ok(U8),
-            2 => Ok(I8),
-            3 => Ok(U16),
-            4 => Ok(I16),
-            5 => Ok(F16),
-            6 => Ok(BF16),
-            7 => Ok(U32),
-            8 => Ok(I32),
-            9 => Ok(F32),
-            10 => Ok(U64),
-            11 => Ok(I64),
-            12 => Ok(F64),
-            _ => Err(ScalarTypeFromU32Error {
-                #[cfg(not(target_arch = "spirv"))]
-                input,
-            }),
-        }
+        let output = match input {
+            1 => U8,
+            2 => I8,
+            3 => U16,
+            4 => I16,
+            5 => F16,
+            6 => BF16,
+            7 => U32,
+            8 => I32,
+            9 => F32,
+            10 => U64,
+            11 => I64,
+            12 => F64,
+            _ => {
+                return Err(());
+            }
+        };
+        Ok(output)
     }
 }
 
-#[cfg(not(target_arch = "spirv"))]
-impl<'a> TryFrom<&'a str> for ScalarType {
-    type Error = ScalarTypeFromStrError<'a>;
-    fn try_from(input: &'a str) -> Result<Self, Self::Error> {
-        use ScalarType::*;
-        match input {
-            "U8" | "u8" => Ok(U8),
-            "I8" | "i8" => Ok(I8),
-            "U16" | "u16" => Ok(U16),
-            "I16" | "i16" => Ok(I16),
-            "F16" | "f16" => Ok(F16),
-            "BF16" | "bf16" => Ok(BF16),
-            "U32" | "u32" => Ok(U32),
-            "I32" | "i32" => Ok(I32),
-            "F32" | "f32" => Ok(F32),
-            "U64" | "u64" => Ok(U64),
-            "I64" | "i64" => Ok(I64),
-            "F64" | "f64" => Ok(F64),
-            _ => Err(ScalarTypeFromStrError {
-                input: input.into(),
-            }),
+impl FromStr for ScalarType {
+    type Err = ();
+    fn from_str(input: &str) -> Result<Self, ()> {
+        Self::iter()
+            .find(|x| x.as_str() == input || x.name() == input)
+            .ok_or(())
+    }
+}
+
+impl Serialize for ScalarType {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(self.as_str())
+    }
+}
+
+impl<'de> Deserialize<'de> for ScalarType {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        use serde::de::Visitor;
+
+        struct ScalarTypeVisitor;
+
+        impl Visitor<'_> for ScalarTypeVisitor {
+            type Value = ScalarType;
+            fn expecting(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+                write!(formatter, "a scalar type")
+            }
+            fn visit_str<E>(self, v: &str) -> Result<Self::Value, E>
+            where
+                E: serde::de::Error,
+            {
+                if let Ok(scalar_type) = ScalarType::from_str(v) {
+                    Ok(scalar_type)
+                } else {
+                    Err(E::custom(format!("unknown ScalarType {v}")))
+                }
+            }
         }
+        deserializer.deserialize_str(ScalarTypeVisitor)
     }
 }
 

@@ -3,8 +3,12 @@ use derive_syn_parse::Parse;
 use proc_macro::TokenStream;
 use proc_macro2::{Span as Span2, TokenStream as TokenStream2};
 use quote::{format_ident, quote, ToTokens};
-use serde::{Serialize, Serializer};
-use std::hash::{Hash, Hasher};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use std::{
+    collections::HashMap,
+    hash::{Hash, Hasher},
+    str::FromStr,
+};
 use syn::{
     parse::{Parse, ParseStream},
     parse_macro_input, parse_quote,
@@ -14,8 +18,10 @@ use syn::{
         Pound, Pub, Semi, Unsafe,
     },
     Attribute, Block, Error, Expr, FnArg, Ident, ItemFn, ItemMod, Lit, LitBool, LitInt, LitStr,
-    Result, Stmt, Type, Visibility,
+    Stmt, Type, Visibility,
 };
+
+type Result<T, E = Error> = std::result::Result<T, E>;
 
 #[derive(Parse, Debug)]
 struct InsideParen<T> {
@@ -87,7 +93,7 @@ pub fn module(_: TokenStream, item: TokenStream) -> TokenStream {
                 const __krnl_module_source: &'static str = #source;
             }
             include!(concat!(env!("CARGO_MANIFEST_DIR"), "/krnl-cache.rs"));
-            __krnl_module!(#name_with_hash);
+            __krnl_cache!(#name_with_hash);
         });
     } else {
     }
@@ -691,8 +697,18 @@ impl ScalarType {
     }
 }
 
+impl FromStr for ScalarType {
+    type Err = ();
+    fn from_str(input: &str) -> Result<Self, ()> {
+        use ScalarType::*;
+        Self::iter()
+            .find(|x| x.as_str() == input || x.name() == input)
+            .ok_or(())
+    }
+}
+
 impl Serialize for ScalarType {
-    fn serialize<S>(&self, serializer: S) -> core::result::Result<S::Ok, S::Error>
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: Serializer,
     {
@@ -700,9 +716,42 @@ impl Serialize for ScalarType {
     }
 }
 
-#[derive(Default, Serialize)]
+impl<'de> Deserialize<'de> for ScalarType {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        use serde::de::Visitor;
+
+        struct ScalarTypeVisitor;
+
+        impl Visitor<'_> for ScalarTypeVisitor {
+            type Value = ScalarType;
+            fn expecting(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+                write!(formatter, "a scalar type")
+            }
+            fn visit_str<E>(self, v: &str) -> Result<Self::Value, E>
+            where
+                E: serde::de::Error,
+            {
+                if let Ok(scalar_type) = ScalarType::from_str(v) {
+                    Ok(scalar_type)
+                } else {
+                    Err(E::custom(format!("unknown ScalarType {v}")))
+                }
+            }
+        }
+        deserializer.deserialize_str(ScalarTypeVisitor)
+    }
+}
+
+#[derive(Default, Serialize, Deserialize)]
 struct KernelDesc {
     name: String,
+    #[serde(skip_serializing)]
+    spirv: Vec<u32>,
+    #[serde(skip_serializing)]
+    features: Features,
     threads: Vec<u32>,
     safe: bool,
     spec_descs: Vec<SpecDesc>,
@@ -754,21 +803,30 @@ impl KernelDesc {
     }
 }
 
-#[derive(Serialize)]
+#[derive(Default, Debug, Serialize, Deserialize)]
+struct Features {
+    shader_int8: bool,
+    shader_int16: bool,
+    shader_int64: bool,
+    shader_float16: bool,
+    shader_float64: bool,
+}
+
+#[derive(Serialize, Deserialize)]
 struct SpecDesc {
     name: String,
     scalar_type: ScalarType,
     thread_dim: Option<u32>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 struct SliceDesc {
     name: String,
     scalar_type: ScalarType,
     mutable: bool,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 struct PushDesc {
     name: String,
     scalar_type: ScalarType,
@@ -911,4 +969,78 @@ fn kernel_impl(attr: KernelAttr, item: KernelItem) -> Result<TokenStream2> {
         eprintln!("{source}");
     }*/
     Ok(tokens)
+}
+
+#[proc_macro]
+pub fn __krnl_module(input: TokenStream) -> TokenStream {
+    let version = env!("CARGO_PKG_VERSION");
+    let input = parse_macro_input!(input as KrnlcCacheInput);
+    let cache_bytes: Vec<u8> = input
+        .bytes
+        .iter()
+        .map(|x| x.base10_parse().unwrap())
+        .collect();
+    let krnlc_version: String =
+        bincode::deserialize(&cache_bytes).expect("Expected krnlc version!");
+    let mut error = None;
+    if krnlc_version != version {
+        error.replace(format!(
+            "Cached krnlc version {krnlc_version} is not compatible!"
+        ));
+    }
+    let mut macro_arms = TokenStream2::new();
+    if error.is_none() {
+        let cache: KrnlcCache = bincode::deserialize(&cache_bytes).unwrap();
+        if let Some(modules) = cache.modules.as_ref() {
+            if let Some(module) = modules.get(&input.module.to_string()) {
+                for (kernel, kernel_desc) in module {
+                    let ident = format_ident!("{kernel}");
+                    let bytes = bincode::serialize(kernel_desc).unwrap();
+                    let bytes: Punctuated<LitInt, Comma> = bytes
+                        .iter()
+                        .map(|x| LitInt::new(&x.to_string(), Span2::call_site()))
+                        .collect();
+                    macro_arms.extend(quote! {
+                        (#ident) => {
+                            [#bytes]
+                        };
+                    });
+                }
+            } else {
+                error.replace("recompile with krnlc".to_string());
+            }
+        }
+    }
+    let error = if let Some(error) = error {
+        quote! {
+            compile_error!(#error)
+        }
+    } else {
+        TokenStream2::new()
+    };
+    quote! {
+        #error
+        macro_rules! __krnl_kernel {
+            #macro_arms
+            ($i:ident) => { None };
+        }
+    }
+    .into()
+}
+
+#[derive(Parse, Debug)]
+struct KrnlcCacheInput {
+    module: Ident,
+    comma: Comma,
+    #[bracket]
+    bracket: Bracket,
+    #[inside(bracket)]
+    #[call(Punctuated::parse_terminated)]
+    bytes: Punctuated<LitInt, Comma>,
+}
+
+#[derive(Deserialize)]
+struct KrnlcCache {
+    version: String,
+    modules: Option<HashMap<String, HashMap<String, KernelDesc>>>,
 }
