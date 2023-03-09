@@ -82,19 +82,22 @@ pub fn module(_: TokenStream, item: TokenStream) -> TokenStream {
     });
     if build {
         let file = syn::parse2(item.tokens.clone()).expect("unable to parse module tokens");
+        // TODO: filter out items with `#[cfg(not(target_arch = "spirv"))]`?
         let source = prettyplease::unparse(&file);
         let mut hasher = std::collections::hash_map::DefaultHasher::default();
         source.hash(&mut hasher);
         let hash = hasher.finish();
         let name_with_hash = format_ident!("{ident}_{hash:x}", ident = item.ident);
-        item.tokens.extend(quote! {
+        let tokens = item.tokens;
+        item.tokens = quote! {
             mod __krnl_module_data {
                 #[allow(non_upper_case_globals)]
                 const __krnl_module_source: &'static str = #source;
             }
             include!(concat!(env!("CARGO_MANIFEST_DIR"), "/krnl-cache.rs"));
             __krnl_cache!(#name_with_hash);
-        });
+            #tokens
+        };
     } else {
     }
 
@@ -241,8 +244,7 @@ impl ToTokens for IdentOrLiteral {
 struct KernelItem {
     #[call(Attribute::parse_outer)]
     attrs: Vec<Attribute>,
-    #[allow(unused)]
-    pub_token: Pub,
+    vis: Visibility,
     unsafe_token: Option<Unsafe>,
     #[allow(unused)]
     fn_token: Fn,
@@ -748,9 +750,7 @@ impl<'de> Deserialize<'de> for ScalarType {
 #[derive(Default, Serialize, Deserialize)]
 struct KernelDesc {
     name: String,
-    #[serde(skip_serializing)]
     spirv: Vec<u32>,
-    #[serde(skip_serializing)]
     features: Features,
     threads: Vec<u32>,
     safe: bool,
@@ -1002,7 +1002,7 @@ pub fn __krnl_module(input: TokenStream) -> TokenStream {
                         .collect();
                     macro_arms.extend(quote! {
                         (#ident) => {
-                            [#bytes]
+                            &[#bytes]
                         };
                     });
                 }
@@ -1013,17 +1013,17 @@ pub fn __krnl_module(input: TokenStream) -> TokenStream {
     }
     let error = if let Some(error) = error {
         quote! {
-            compile_error!(#error)
+            compile_error!(#error);
         }
     } else {
         TokenStream2::new()
     };
     quote! {
-        #error
         macro_rules! __krnl_kernel {
             #macro_arms
-            ($i:ident) => { None };
+            ($i:ident) => { &[] };
         }
+        #error
     }
     .into()
 }

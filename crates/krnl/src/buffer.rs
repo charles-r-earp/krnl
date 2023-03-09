@@ -147,7 +147,7 @@ macro_for!($S in [ScalarBufferRepr] {
     unsafe impl Sync for $S {}
 });
 
-macro_for!($S in [ScalarSliceRepr] {
+macro_for!($S in [ScalarSliceRepr,ScalarSliceMutRepr] {
     impl Sealed for $S<'_> {}
     unsafe impl Send for $S<'_> {}
     unsafe impl Sync for $S<'_> {}
@@ -229,16 +229,92 @@ impl ScalarData for ScalarSliceRepr<'_> {
     }
 }
 
+#[derive(Clone)]
+pub struct ScalarSliceMutRepr<'a> {
+    raw: RawSlice,
+    scalar_type: ScalarType,
+    _m: PhantomData<&'a ()>,
+}
+
+impl ScalarData for ScalarSliceMutRepr<'_> {
+    fn as_scalar_slice(&self) -> ScalarSliceRepr {
+        ScalarSliceRepr {
+            raw: self.raw.clone(),
+            scalar_type: self.scalar_type,
+            _m: PhantomData::default(),
+        }
+    }
+}
+
 pub struct ScalarBufferBase<S: ScalarData> {
     data: S,
 }
 
 pub type ScalarBuffer = ScalarBufferBase<ScalarBufferRepr>;
+pub type ScalarSlice<'a> = ScalarBufferBase<ScalarSliceRepr<'a>>;
+pub type ScalarSliceMut<'a> = ScalarBufferBase<ScalarSliceMutRepr<'a>>;
 
 impl<S: ScalarDataOwned> ScalarBufferBase<S> {
     pub fn zeros(device: Device, len: usize, scalar_type: ScalarType) -> Result<Self> {
         let data = ScalarBufferRepr::zeros(device, len, scalar_type)?.into();
         Ok(Self { data })
+    }
+}
+
+impl<S: ScalarData> ScalarBufferBase<S> {
+    pub fn device(&self) -> Device {
+        self.data.device()
+    }
+    pub fn scalar_type(&self) -> ScalarType {
+        self.data.scalar_type()
+    }
+}
+
+#[cfg(feature = "device")]
+impl ScalarSlice<'_> {
+    pub(crate) fn device_buffer(&self) -> Option<&DeviceBuffer> {
+        if let RawSliceInner::Device(buffer) = &self.data.raw.inner {
+            Some(buffer)
+        } else {
+            None
+        }
+    }
+}
+
+#[cfg(feature = "device")]
+impl ScalarSliceMut<'_> {
+    pub(crate) fn device_buffer_mut(&self) -> Option<&DeviceBuffer> {
+        if let RawSliceInner::Device(buffer) = &self.data.raw.inner {
+            Some(buffer)
+        } else {
+            None
+        }
+    }
+}
+
+impl<'a, T: Scalar> From<Slice<'a, T>> for ScalarSlice<'a> {
+    fn from(slice: Slice<'a, T>) -> Self {
+        let data = ScalarSliceRepr {
+            raw: slice.data.raw,
+            scalar_type: T::scalar_type(),
+            _m: PhantomData::default(),
+        };
+        Self {
+            data
+        }
+    }
+}
+
+impl<'a, T: Scalar> From<SliceMut<'a, T>> for ScalarSliceMut<'a> {
+    fn from(slice: SliceMut<'a, T>) -> Self {
+        let data = ScalarSliceMutRepr {
+            raw: slice.data.raw,
+            scalar_type: T::scalar_type(),
+            _m: PhantomData::default(),
+        };
+        Self {
+            data
+        }
     }
 }
 
@@ -559,6 +635,7 @@ impl<T: Scalar, S: Data<Elem = T>> BufferBase<S> {
     }
 }
 
+/*
 #[cfg(feature = "device")]
 pub fn saxpy(x: Slice<f32>, alpha: f32, y: SliceMut<f32>) -> Result<()> {
     use crate::device::RawKernel;
@@ -731,3 +808,4 @@ fn test_fill2() -> Result<()> {
     }
     Ok(())
 }
+*/

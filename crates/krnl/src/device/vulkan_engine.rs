@@ -1,6 +1,6 @@
 use super::{
-    BufferDesc, DeviceEngine, DeviceEngineBuffer, DeviceEngineKernel, DeviceInfo, DeviceLost,
-    DeviceOptions, Features, KernelDesc, PerformanceMetrics, TransferMetrics,
+    DeviceEngine, DeviceEngineBuffer, DeviceEngineKernel, DeviceInfo, DeviceLost, DeviceOptions,
+    Features, KernelDesc, KernelKey,
 };
 use crate::{device, scalar::ScalarElem};
 use anyhow::{format_err, Result};
@@ -846,6 +846,7 @@ impl DeviceEngineBuffer for DeviceBuffer {
     }
 }
 
+/*
 #[derive(Clone)]
 struct KernelKey {
     spirv: Arc<[u32]>,
@@ -867,7 +868,7 @@ impl Hash for KernelKey {
             for spec in spec_consts.iter() {
                 (spec.scalar_type() as u32).hash(state);
                 use ScalarElem::*;
-                match spec.to_scalar_bits() {
+                match sgpec.to_scalar_bits() {
                     U8(x) => x.hash(state),
                     U16(x) => x.hash(state),
                     U32(x) => x.hash(state),
@@ -877,16 +878,117 @@ impl Hash for KernelKey {
             }
         }
     }
-}
+}*/
 
 pub(super) struct Kernel {
     engine: Arc<Engine>,
+    desc: Arc<KernelDesc>,
     compute_pipeline: Arc<ComputePipeline>,
-    features: Features,
-    threads: [u32; 3],
-    buffer_descs: Vec<BufferDesc>,
 }
 
+impl Kernel {
+    fn new(engine: Arc<Engine>, desc: Arc<KernelDesc>) -> Result<Arc<Self>> {
+        use vulkano::{
+            descriptor_set::layout::{DescriptorSetLayoutBinding, DescriptorSetLayoutCreateInfo},
+            pipeline::layout::{PipelineLayout, PipelineLayoutCreateInfo, PushConstantRange},
+            shader::{spirv::ExecutionModel, EntryPointInfo},
+        };
+        let device = &engine.device;
+        let stages = ShaderStages {
+            compute: true,
+            ..ShaderStages::none()
+        };
+        let descriptor_requirements = desc
+            .slice_descs
+            .iter()
+            .enumerate()
+            .map(|(i, desc)| {
+                let set = 0u32;
+                let binding = i as u32;
+                let storage_write = if desc.mutable { Some(binding) } else { None };
+                let descriptor_requirements = DescriptorRequirements {
+                    descriptor_types: vec![DescriptorType::StorageBuffer],
+                    descriptor_count: Some(1),
+                    stages,
+                    storage_write: storage_write.into_iter().collect(),
+                    ..DescriptorRequirements::default()
+                };
+                ((set, binding), descriptor_requirements)
+            })
+            .collect();
+        let push_constant_range = if !desc.push_descs.is_empty() {
+            Some(PushConstantRange {
+                stages,
+                offset: 0,
+                size: desc.push_consts_range(),
+            })
+        } else {
+            None
+        };
+        let entry_point_info = EntryPointInfo {
+            execution: ShaderExecution::Compute,
+            descriptor_requirements,
+            push_constant_requirements: push_constant_range,
+            specialization_constant_requirements: Default::default(),
+            input_interface: ShaderInterface::empty(),
+            output_interface: ShaderInterface::empty(),
+        };
+        let version = Version::major_minor(1, 2);
+        let entry_point = "main";
+        let shader_module = unsafe {
+            ShaderModule::from_words_with_data(
+                device.clone(),
+                &desc.spirv,
+                version,
+                [],
+                [],
+                [(
+                    entry_point.to_string(),
+                    ExecutionModel::GLCompute,
+                    entry_point_info,
+                )],
+            )?
+        };
+        let bindings = (0..desc.slice_descs.len())
+            .map(|(binding)| {
+                let descriptor_set_layout_binding = DescriptorSetLayoutBinding {
+                    descriptor_count: 1,
+                    stages,
+                    ..DescriptorSetLayoutBinding::descriptor_type(DescriptorType::StorageBuffer)
+                };
+                (binding as u32, descriptor_set_layout_binding)
+            })
+            .collect();
+        let descriptor_set_layout_create_info = DescriptorSetLayoutCreateInfo {
+            bindings,
+            ..DescriptorSetLayoutCreateInfo::default()
+        };
+        let descriptor_set_layout =
+            DescriptorSetLayout::new(device.clone(), descriptor_set_layout_create_info)?;
+        let pipeline_layout_create_info = PipelineLayoutCreateInfo {
+            set_layouts: vec![descriptor_set_layout],
+            push_constant_ranges: push_constant_range.into_iter().collect(),
+            ..PipelineLayoutCreateInfo::default()
+        };
+        let pipeline_layout = PipelineLayout::new(device.clone(), pipeline_layout_create_info)?;
+        let cache = None;
+        let specialization_constants = ();
+        let compute_pipeline = ComputePipeline::with_pipeline_layout(
+            device.clone(),
+            shader_module.entry_point(entry_point).unwrap(),
+            &specialization_constants,
+            pipeline_layout,
+            cache,
+        )?;
+        Ok(Arc::new(Self {
+            engine,
+            desc,
+            compute_pipeline,
+        }))
+    }
+}
+
+/*
 impl Kernel {
     fn from_key(engine: Arc<Engine>, key: KernelKey) -> Result<Arc<Self>> {
         use vulkano::{
@@ -993,17 +1095,25 @@ impl Kernel {
             buffer_descs,
         }))
     }
-}
+}*/
 
 impl DeviceEngineKernel for Kernel {
     type Engine = Engine;
     type DeviceBuffer = DeviceBuffer;
-    fn new(
-        engine: Arc<Self::Engine>,
-        spirv: Arc<[u32]>,
-        spec_consts: &[krnl_core::scalar::ScalarElem],
+    fn cached(
+        engine: &Arc<Self::Engine>,
+        key: KernelKey,
+        desc_fn: impl FnOnce() -> Result<Arc<KernelDesc>>,
     ) -> Result<Arc<Self>> {
-        let engine = &engine;
+        let kernel = engine
+            .kernels
+            .entry(key)
+            .or_try_insert_with(move || Kernel::new(engine.clone(), desc_fn()?))?
+            .clone();
+        Ok(kernel)
+    }
+    /*fn new(engine: Arc<Self::Engine>, id: KernelId, desc: KernelDesc) -> Result<Arc<Self>> {
+        /*let engine = &engine;
         let spec_consts = if !spec_consts.is_empty() {
             Some(Arc::from(spec_consts))
         } else {
@@ -1014,9 +1124,9 @@ impl DeviceEngineKernel for Kernel {
             .kernels
             .entry(key.clone())
             .or_try_insert_with(move || Kernel::from_key(engine.clone(), key))?
-            .clone();
+            .clone();*/
         Ok(kernel)
-    }
+    }*/
     fn engine(&self) -> &Arc<Self::Engine> {
         &self.engine
     }
@@ -1024,38 +1134,21 @@ impl DeviceEngineKernel for Kernel {
         &self,
         groups: [u32; 3],
         buffers: &[Arc<Self::DeviceBuffer>],
-        push_consts: &[krnl_core::scalar::ScalarElem],
+        mut push_consts: Vec<u8>,
     ) -> Result<()> {
         let engine = &self.engine;
         let device = &engine.device;
-        let mut push_const_size: usize = push_consts.iter().map(|x| x.scalar_type().size()).sum();
-        if push_const_size % 4 != 0 {
-            push_const_size += 4 - (push_const_size % 4);
-        }
-        let mut push_const_bytes = Vec::with_capacity(push_const_size + buffers.len() * 2 * 4);
-        for push in push_consts {
-            use ScalarElem::*;
-            match push.to_scalar_bits() {
-                U8(x) => push_const_bytes.push(x),
-                U16(x) => push_const_bytes.extend(x.to_ne_bytes()),
-                U32(x) => push_const_bytes.extend(x.to_ne_bytes()),
-                U64(x) => push_const_bytes.extend(x.to_ne_bytes()),
-                _ => unreachable!(),
-            }
-        }
-        if push_const_bytes.len() % 4 != 0 {
-            for _ in 0..4 - (push_const_bytes.len() % 4) {
-                push_const_bytes.push(0);
-            }
+        while push_consts.len() % 4 != 0 {
+            push_consts.push(0);
         }
         for buffer in buffers.iter() {
-            push_const_bytes.extend((buffer.offset as u32).to_ne_bytes());
-            push_const_bytes.extend((buffer.len as u32).to_ne_bytes());
+            push_consts.extend((buffer.offset as u32).to_ne_bytes());
+            push_consts.extend((buffer.len as u32).to_ne_bytes());
         }
         let mut futures: Vec<_> = buffers
             .iter()
             .map(|x| x.future.clone())
-            .zip(self.buffer_descs.iter().map(BufferDesc::mutable))
+            .zip(self.desc.slice_descs.iter().map(|x| x.mutable))
             .collect();
         futures.sort_by_key(|(x, _)| Arc::as_ptr(x) as usize);
         let future_guards: Vec<_> = futures
@@ -1082,7 +1175,7 @@ impl DeviceEngineKernel for Kernel {
             futures,
             compute_pipeline: self.compute_pipeline.clone(),
             buffers,
-            push_consts: push_const_bytes,
+            push_consts,
             groups,
             future_sender,
         };
@@ -1098,13 +1191,7 @@ impl DeviceEngineKernel for Kernel {
         }
         Ok(())
     }
-    fn features(&self) -> Features {
-        self.features
-    }
-    fn threads(&self) -> [u32; 3] {
-        self.threads
-    }
-    fn buffer_descs(&self) -> &[BufferDesc] {
-        &self.buffer_descs
+    fn desc(&self) -> &Arc<KernelDesc> {
+        &self.desc
     }
 }

@@ -3,6 +3,8 @@ use bytemuck::Pod;
 #[cfg(not(target_arch = "spirv"))]
 use derive_more::Display;
 use dry::macro_for;
+#[cfg(not(target_arch = "spirv"))]
+use dry::macro_wrap;
 use half::{bf16, f16};
 use num_traits::{AsPrimitive, FromPrimitive, NumAssign, NumCast};
 use paste::paste;
@@ -54,6 +56,7 @@ pub enum ScalarType {
 }
 
 impl ScalarType {
+    #[cfg(not(target_arch = "spirv"))]
     fn iter() -> impl Iterator<Item = Self> {
         use ScalarType::*;
         [U8, I8, U16, I16, F16, BF16, U32, I32, F32, U64, I64, F64].into_iter()
@@ -143,6 +146,7 @@ impl TryFrom<u32> for ScalarType {
     }
 }
 
+#[cfg(not(target_arch = "spirv"))]
 impl FromStr for ScalarType {
     type Err = ();
     fn from_str(input: &str) -> Result<Self, ()> {
@@ -152,6 +156,7 @@ impl FromStr for ScalarType {
     }
 }
 
+#[cfg(not(target_arch = "spirv"))]
 impl Serialize for ScalarType {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
@@ -161,6 +166,7 @@ impl Serialize for ScalarType {
     }
 }
 
+#[cfg(not(target_arch = "spirv"))]
 impl<'de> Deserialize<'de> for ScalarType {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
@@ -285,6 +291,14 @@ impl ScalarElem {
             I64(x) => (*x as u64).into(),
             F64(x) => x.to_bits().into(),
         }
+    }
+    pub fn as_bytes(&self) -> &[u8] {
+        use ScalarElem::*;
+        macro_wrap!(match self {
+            macro_for!($E in [U8, I8, U16, I16, F16, BF16, U32, I32, F32, U64, I64, F64] {
+                $E(x) => bytemuck::bytes_of(x),
+            })
+        })
     }
 }
 

@@ -4,6 +4,8 @@
 pub use anyhow;
 pub use krnl_core;
 pub use krnl_macros;
+#[doc(hidden)]
+pub use once_cell;
 
 #[doc(inline)]
 pub use krnl_core::scalar;

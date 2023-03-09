@@ -23,6 +23,8 @@ rspirv = "0.11.0"
 #spirv-tools = "0.9.0"
 #proc-macro2 = "1.0.47"
 itertools = "0.10.5"
+ctrlc = { version = "3.2.5", features = ["termination"] }
+parking_lot = "0.12.1"
 
 [features]
 default = ["use-installed-tools"]

@@ -1,0 +1,11 @@
+[package]
+name = "krnlc-tests"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+krnl = { path = "../../crates/krnl", features = ["device"] }
+
+[dev-dependencies]
+rayon = "1.7.0"
