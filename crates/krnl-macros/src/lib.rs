@@ -631,6 +631,62 @@ impl KernelMeta {
             )
             .collect()
     }
+    fn dispatch_args(&self) -> TokenStream2 {
+        let dim = LitInt::new(
+            &self.attr_meta.threads.len().to_string(),
+            Span2::call_site(),
+        );
+        let mut tokens = quote! {
+            groups: [u32; #dim],
+        };
+        for arg in self.arg_metas.iter() {
+            let ident = &arg.ident;
+            let ty = &arg.scalar_ty.ident;
+            if let Some(attr) = arg.attr.as_ref() {
+                if attr == "global" {
+                    let slice_ty = if arg.mutable {
+                        format_ident!("SliceMut")
+                    } else {
+                        format_ident!("Slice")
+                    };
+                    tokens.extend(quote! {
+                        #ident: #slice_ty<#ty>,
+                    });
+                }
+            } else {
+                tokens.extend(quote! {
+                    #ident: #ty,
+                });
+            }
+        }
+        tokens
+    }
+    fn dispatch_slice_args(&self) -> TokenStream2 {
+        let mut tokens = TokenStream2::new();
+        for arg in self.arg_metas.iter() {
+            let ident = &arg.ident;
+            if let Some(attr) = arg.attr.as_ref() {
+                if attr == "global" {
+                    tokens.extend(quote! {
+                        #ident.into(),
+                    });
+                }
+            }
+        }
+        tokens
+    }
+    fn dispatch_push_args(&self) -> TokenStream2 {
+        let mut tokens = TokenStream2::new();
+        for arg in self.arg_metas.iter() {
+            let ident = &arg.ident;
+            if arg.attr.is_none() {
+                tokens.extend(quote! {
+                    #ident.into(),
+                })
+            }
+        }
+        tokens
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -895,8 +951,7 @@ fn kernel_impl(attr: KernelAttr, item: KernelItem) -> Result<TokenStream2> {
         };
         let push_struct_tokens = quote! {
             #[cfg(target_arch = "spirv")]
-            #[allow(non_camel_case_types)]
-            #[allow(unused)]
+            #[automatically_derived]
             #[repr(C)]
             pub struct #push_consts_ident {
                 #push_const_fields
@@ -906,9 +961,9 @@ fn kernel_impl(attr: KernelAttr, item: KernelItem) -> Result<TokenStream2> {
             todo!("for_each")
         } else {
             quote! {
-
                 #push_struct_tokens
                 #[cfg(target_arch = "spirv")]
+
                 #[::krnl_core::spirv_std::spirv(compute(threads(#compute_threads)))]
                 pub fn #entry_ident(
                     #compute_def_args
@@ -961,13 +1016,67 @@ fn kernel_impl(attr: KernelAttr, item: KernelItem) -> Result<TokenStream2> {
             }
         }
     };
-    let tokens = device_tokens;
+    let host_tokens = {
+        let dispatch_args = kernel_meta.dispatch_args();
+        let dispatch_slice_args = kernel_meta.dispatch_slice_args();
+        let dispatch_push_args = kernel_meta.dispatch_push_args();
+        quote! {
+            #[cfg(not(target_arch = "spirv"))]
+            #[automatically_derived]
+            pub mod foo {
+                use super::__krnl::{
+                    anyhow::{self, Result},
+                    buffer::{Slice, SliceMut},
+                    device::{Device, Kernel as KernelBase, KernelBuilder as KernelBuilderBase},
+                    once_cell::sync::Lazy,
+                };
+
+                pub struct KernelBuilder {
+                    inner: &'static KernelBuilderBase,
+                }
+
+                pub fn builder() -> Result<KernelBuilder> {
+                    static BUILDER: Lazy<Result<KernelBuilderBase, String>> = Lazy::new(|| {
+                        let bytes = __krnl_kernel!(foo);
+                        KernelBuilderBase::from_bytes(bytes).map_err(|e| e.to_string())
+                    });
+                    match &*BUILDER {
+                        Ok(inner) => {
+                            debug_assert!(inner.safe());
+                            Ok(KernelBuilder { inner })
+                        }
+                        Err(e) => Err(anyhow::Error::msg(e)),
+                    }
+                }
+
+                impl KernelBuilder {
+                    pub fn build(&self, device: Device) -> Result<Kernel> {
+                        let inner = self.inner.build(device)?;
+                        Ok(Kernel { inner })
+                    }
+                }
+
+                pub struct Kernel {
+                    inner: KernelBase,
+                }
+
+                impl Kernel {
+                    pub fn dispatch(&self, #dispatch_args) -> Result<()> {
+                        unsafe { self.inner.dispatch(&groups, &[#dispatch_slice_args], &[#dispatch_push_args]) }
+                    }
+                }
+            }
+        }
+    };
     /*{
-        //panic!("{}", tokens.to_string());
-        let file = syn::parse2(tokens.clone()).expect("unable to parse module tokens");
+        let file = syn::parse2(host_tokens.clone()).expect("unable to parse module tokens");
         let source = prettyplease::unparse(&file);
         eprintln!("{source}");
     }*/
+    let tokens = quote! {
+        #host_tokens
+        #device_tokens
+    };
     Ok(tokens)
 }
 

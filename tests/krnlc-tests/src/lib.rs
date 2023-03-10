@@ -20,6 +20,7 @@ pub mod foo {
         foo_impl(global_id as usize, y);
     }
 
+    /*
     /* generates */
     #[cfg(not(target_arch = "spirv"))]
     pub mod foo {
@@ -64,7 +65,7 @@ pub mod foo {
                 unsafe { self.inner.dispatch(&groups, &[y.into()], &[]) }
             }
         }
-    }
+    }*/
 
     /*
     #[cfg(target_arch = "spirv")]
