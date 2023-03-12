@@ -156,7 +156,6 @@ impl DeviceEngine for Engine {
                 flags.transfer && !flags.compute && !flags.graphics
             })
             .map(|x| x as u32);
-        transfer_family.take();
         if transfer_family.is_none() {
             compute_families.truncate(1);
         }

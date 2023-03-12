@@ -482,7 +482,7 @@ impl KernelArgMeta {
             }
         } else {
             quote! {
-                #ident: #ty
+                #ident: #ty,
             }
         }
     }
@@ -816,7 +816,7 @@ struct KernelDesc {
 }
 
 impl KernelDesc {
-    fn to_entry_point(&self) -> Result<String> {
+    fn encode(&self) -> Result<String> {
         let mut entry_point = "__krnl_kernel_data_".to_string();
         let bytes = bincode::serialize(self).map_err(|e| Error::new(Span2::call_site(), e))?;
         for byte in bytes.iter().copied() {
@@ -895,8 +895,7 @@ fn kernel_impl(attr: KernelAttr, item: KernelItem) -> Result<TokenStream2> {
     let ident = &kernel_meta.ident;
     let dimensionality = kernel_desc.threads.len();
     let device_tokens = {
-        let entry_point = kernel_desc.to_entry_point()?;
-        let entry_ident = Ident::new(&entry_point, ident.span());
+        let kernel_data = format_ident!("{}", kernel_desc.encode()?);
         let block = &kernel_meta.block;
         let compute_threads: Punctuated<_, Comma> = kernel_meta
             .attr_meta
@@ -965,7 +964,7 @@ fn kernel_impl(attr: KernelAttr, item: KernelItem) -> Result<TokenStream2> {
                 #[cfg(target_arch = "spirv")]
 
                 #[::krnl_core::spirv_std::spirv(compute(threads(#compute_threads)))]
-                pub fn #entry_ident(
+                pub fn #ident(
                     #compute_def_args
                     #[allow(unused)]
                     #[spirv(push_constant)]
@@ -985,7 +984,15 @@ fn kernel_impl(attr: KernelAttr, item: KernelItem) -> Result<TokenStream2> {
                     #[allow(unused)]
                     #[spirv(local_invocation_index)]
                     thread_index: u32,
+                    #[allow(unused)]
+                    #[spirv(storage_buffer, descriptor_set = 1, binding = 0)]
+                    #kernel_data: &mut [u32],
                 ) {
+                    /*unsafe {
+                        use ::krnl_core::spirv_std::arch::IndexUnchecked;
+                        let kernel_data = #kernel_data;
+                        *kernel_data.index_unchecked_mut(0) = 1;
+                    }*/
                     #unsafe_token fn #ident(
                         #device_fn_def_args
                         #[allow(unused)]
@@ -1023,7 +1030,7 @@ fn kernel_impl(attr: KernelAttr, item: KernelItem) -> Result<TokenStream2> {
         quote! {
             #[cfg(not(target_arch = "spirv"))]
             #[automatically_derived]
-            pub mod foo {
+            pub mod #ident {
                 use super::__krnl::{
                     anyhow::{self, Result},
                     buffer::{Slice, SliceMut},
@@ -1037,7 +1044,7 @@ fn kernel_impl(attr: KernelAttr, item: KernelItem) -> Result<TokenStream2> {
 
                 pub fn builder() -> Result<KernelBuilder> {
                     static BUILDER: Lazy<Result<KernelBuilderBase, String>> = Lazy::new(|| {
-                        let bytes = __krnl_kernel!(foo);
+                        let bytes = __krnl_kernel!(#ident);
                         KernelBuilderBase::from_bytes(bytes).map_err(|e| e.to_string())
                     });
                     match &*BUILDER {
@@ -1068,15 +1075,15 @@ fn kernel_impl(attr: KernelAttr, item: KernelItem) -> Result<TokenStream2> {
             }
         }
     };
-    /*{
-        let file = syn::parse2(host_tokens.clone()).expect("unable to parse module tokens");
-        let source = prettyplease::unparse(&file);
-        eprintln!("{source}");
-    }*/
     let tokens = quote! {
         #host_tokens
         #device_tokens
     };
+    /*{
+        let file = syn::parse2(tokens.clone()).expect("unable to parse module tokens");
+        let source = prettyplease::unparse(&file);
+        eprintln!("{source}");
+    }*/
     Ok(tokens)
 }
 

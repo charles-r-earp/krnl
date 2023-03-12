@@ -8,7 +8,7 @@ use krnl::{
     anyhow::Result,
     buffer::{Buffer, Slice},
     device::Device,
-    //kernel::module,
+    krnl_macros::module,
 };
 
 #[derive(Clone)]
@@ -96,21 +96,17 @@ pub struct Saxpy {
 
 impl Saxpy {
     pub fn run(&mut self) -> Result<()> {
-        krnl::buffer::saxpy(
-            self.x_device.as_slice(),
-            self.alpha,
-            self.y_device.as_slice_mut(),
-        )?;
-        /*
-        kernels::saxpy::Kernel::builder()
+        let n = self.x_device.len() as u32;
+        let threads = 128;
+        let groups = n / threads + if n % threads != 0 { 1 } else { 0 };
+        kernels::saxpy::builder()?
             .build(self.device.clone())?
-            .dispatch_builder(
+            .dispatch(
+                [groups],
                 self.x_device.as_slice(),
                 self.alpha,
                 self.y_device.as_slice_mut(),
-            )?
-            .dispatch()?;
-        self.device.sync()?.block()?;*/
+            )?;
         self.device.wait()?;
         #[cfg(debug_assertions)]
         {
@@ -121,17 +117,19 @@ impl Saxpy {
     }
 }
 
-/*
-#[module(dependencies(
-    "\"krnl-core\" = { path = \"/home/charles/Documents/rust/krnl/krnl-core\" }"
-))]
+#[module]
 mod kernels {
     #[cfg(not(target_arch = "spirv"))]
     use krnl::krnl_core;
-    use krnl_core::kernel;
+    use krnl_core::krnl_macros::kernel;
 
-    #[kernel(threads(128), for_each)]
-    pub fn saxpy(#[item] x: &f32, #[push] alpha: f32, #[item] y: &mut f32) {
-        *y += alpha * *x;
+    #[kernel(threads(128))]
+    pub fn saxpy(#[global] x: &[f32], alpha: f32, #[global] y: &mut [f32]) {
+        let idx = global_id as usize;
+        if idx < x.len().min(y.len()) {
+            unsafe {
+                *y.unsafe_index_mut(idx) += alpha * x[idx];
+            }
+        }
     }
-}*/
+}

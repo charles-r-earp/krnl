@@ -42,17 +42,24 @@ fn main() -> Result<()> {
     for package in selected {
         let (features, dependencies) = extract_features_dependencies(&metadata, &package)?;
         let manifest_path = &package.manifest_path;
-        {
-            let mut cache_manifest_path = cache_manifest_path.lock();
-            cache_manifest_path.replace(manifest_path.clone().into());
-            cache(manifest_path.as_std_path(), None)?;
+        let result = (|| -> Result<()> {
+            {
+                let mut cache_manifest_path = cache_manifest_path.lock();
+                cache_manifest_path.replace(manifest_path.clone().into());
+                cache(manifest_path.as_std_path(), None)?;
+            }
+            cargo_check(&package, &features)?;
+            let module_datas = cargo_expand(&package, &features)?;
+            let modules = compile(&package, &dependencies, module_datas)?;
+            cache(manifest_path.as_std_path(), Some(modules))?;
+            cache_manifest_path.lock().take();
+            cargo_check(&package, &features)?;
+            Ok(())
+        })();
+        if let Err(e) = result {
+            cache(manifest_path.as_std_path(), Some(Default::default()))?;
+            return Err(e.into());
         }
-        cargo_check(&package, &features)?;
-        let module_datas = cargo_expand(&package, &features)?;
-        let modules = compile(&package, &dependencies, module_datas)?;
-        cache(manifest_path.as_std_path(), Some(modules))?;
-        cache_manifest_path.lock().take();
-        cargo_check(&package, &features)?;
     }
     Ok(())
 }
@@ -485,7 +492,7 @@ extern crate krnl_core;
             .multimodule(true)
             .spirv_metadata(SpirvMetadata::NameVariables)
             .print_metadata(MetadataPrintout::None)
-            .preserve_bindings(true)
+            //.preserve_bindings(true)
             .deny_warnings(true)
             .extension("SPV_KHR_non_semantic_info");
         for cap in capabilites {
@@ -494,39 +501,113 @@ extern crate krnl_core;
         let output = builder.build()?;
         let spirv_modules = output.module.unwrap_multi();
         for (entry_point, spirv_path) in spirv_modules.iter() {
-            use rspirv::{binary::Assemble, dr::Operand, spirv::Op};
+            use rspirv::{
+                binary::Assemble,
+                dr::{Instruction, Operand},
+                spirv::{Decoration, Op},
+            };
             let spirv = std::fs::read(spirv_path)?;
             let mut spirv_module = rspirv::dr::load_bytes(&spirv).unwrap();
-            spirv_module.entry_points[0].operands[2] = Operand::LiteralString("main".to_string());
-            let (module_name_with_hash, entry_point) = entry_point.split_once("::").unwrap();
+            /*{
+                use rspirv::binary::Disassemble;
+                eprintln!("{}", spirv_module.disassemble());
+            }*/
+            let (module_name_with_hash, kernel_name) = entry_point.split_once("::").unwrap();
             let module_data = module_datas.get(module_name_with_hash).unwrap();
             let module_path = &module_data.path;
-            let entry_point = if let Some(entry_point) =
-                entry_point.strip_prefix("__krnl_kernel_data_")
-            {
-                entry_point
-            } else {
-                bail!("Entry_point `{module_path}::{entry_point}` should be declared via `krnl_macros::kernel`!");
-            };
-            let mut entry_point_iter = entry_point.chars();
-            let mut kernel_data = Vec::with_capacity(entry_point.len() / 2);
-            while let Some(a) = entry_point_iter.next() {
-                fn parse(a: char, b: Option<char>) -> Option<u8> {
-                    a.to_digit(16)
-                        .unwrap()
-                        .checked_mul(16)?
-                        .checked_add(b?.to_digit(16)?)?
-                        .try_into()
-                        .ok()
+            let mut kernel_desc: KernelDesc = {
+                let mut kernel_data_var = None;
+                for inst in spirv_module.annotations.iter() {
+                    let op = inst.class.opcode;
+                    if op == Op::Decorate {
+                        if let [Operand::IdRef(id), Operand::Decoration(Decoration::DescriptorSet), Operand::LiteralInt32(1)] =
+                            inst.operands.as_slice()
+                        {
+                            kernel_data_var.replace(*id);
+                            break;
+                        }
+                    }
                 }
-                if let Some(byte) = parse(a, entry_point_iter.next()) {
-                    kernel_data.push(byte);
+                let kernel_data_var = if let Some(var) = kernel_data_var {
+                    var
                 } else {
-                    bail!("Unable to parse kernel data in module `{module_path}`!")
+                    bail!("Unable to decode kernel {module_path}::{kernel_name}!");
+                };
+                /*spirv_module.annotations.retain(|inst| {
+                    let op = inst.class.opcode;
+                    !(op == Op::Decorate
+                        && inst.operands.first() == Some(&Operand::IdRef(kernel_data_var)))
+                });*/
+                /*let mut kernel_data_ptrs = std::collections::HashSet::new();
+                for function in spirv_module.functions.iter_mut() {
+                    for block in function.blocks.iter_mut() {
+                        for inst in block.instructions.iter_mut() {
+                            let op = inst.class.opcode;
+                            if op == Op::AccessChain
+                                && inst.operands.first().unwrap().unwrap_id_ref() == kernel_data_var
+                            {
+                                kernel_data_ptrs.insert(inst.result_id.unwrap());
+                                *inst = Instruction::new(Op::Nop, None, None, Vec::new());
+                            }
+                        }
+                    }
                 }
-            }
-            let mut kernel_desc: KernelDesc = bincode::deserialize(&kernel_data).unwrap();
-            let kernel_name = std::mem::take(&mut kernel_desc.name);
+                for function in spirv_module.functions.iter_mut() {
+                    for block in function.blocks.iter_mut() {
+                        for inst in block.instructions.iter_mut() {
+                            let op = inst.class.opcode;
+                            if op == Op::Store {
+                                if kernel_data_ptrs
+                                    .contains(&inst.operands.first().unwrap().unwrap_id_ref())
+                                {
+                                    *inst = Instruction::new(Op::Nop, None, None, Vec::new());
+                                }
+                            }
+                        }
+                    }
+                }*/
+                let mut kernel_data = None;
+                for (i, inst) in spirv_module.debug_names.iter().enumerate() {
+                    let op = inst.class.opcode;
+                    if op == Op::Name
+                        && inst.operands.first().unwrap().unwrap_id_ref() == kernel_data_var
+                    {
+                        kernel_data.replace(inst.operands[1].unwrap_literal_string().to_string());
+                        //spirv_module.debug_names.remove(i);
+                        break;
+                    }
+                }
+                let kernel_data = kernel_data.unwrap();
+                /*for (i, inst) in spirv_module.types_global_values.iter().enumerate() {
+                    if inst.result_id == Some(kernel_data_var) {
+                        spirv_module.types_global_values.remove(i);
+                        break;
+                    }
+                }*/
+                let kernel_data =
+                    if let Some(kernel_data) = kernel_data.strip_prefix("__krnl_kernel_data_") {
+                        kernel_data
+                    } else {
+                        todo!()
+                    };
+                let mut bytes = Vec::with_capacity(kernel_data.len() / 2);
+                let mut iter = kernel_data.chars();
+                while let Some((a, b)) = iter.next().zip(iter.next()) {
+                    let byte = a
+                        .to_digit(16)
+                        .unwrap()
+                        .checked_mul(16)
+                        .unwrap()
+                        .checked_add(b.to_digit(16).unwrap())
+                        .unwrap()
+                        .try_into()
+                        .unwrap();
+                    bytes.push(byte);
+                }
+                bincode::deserialize(&bytes)?
+            };
+            spirv_module.entry_points.first_mut().unwrap().operands[2] =
+                Operand::LiteralString("main".to_string());
             kernel_desc.name = format!("{crate_name_ident}::{module_path}::{kernel_name}");
             let mut features = Features::default();
             for inst in spirv_module.types_global_values.iter() {
@@ -562,11 +643,44 @@ extern crate krnl_core;
                     _ => true,
                 }
             });
-            kernel_desc.spirv = spirv_module.assemble();
+            /*{
+                use rspirv::binary::Disassemble;
+                eprintln!("{}", spirv_module.disassemble());
+            }*/
+            let spirv = spirv_module.assemble();
+            kernel_desc.spirv = {
+                use spirv_tools::{
+                    opt::{Optimizer, Passes},
+                    val::Validator,
+                    TargetEnv,
+                };
+                let target_env = TargetEnv::Vulkan_1_2;
+                let validator = spirv_tools::val::create(Some(target_env));
+                validator.validate(&spirv, None)?;
+                let mut optimizer = spirv_tools::opt::create(Some(target_env));
+                optimizer
+                    .register_pass(Passes::StripNonSemanticInfo)
+                    .register_pass(Passes::StripDebugInfo)
+                    .register_pass(Passes::RemoveUnusedInterfaceVariables)
+                    .register_performance_passes();
+                optimizer
+                    .optimize(&spirv, &mut |_| (), None)?
+                    .as_words()
+                    .to_vec()
+            };
+            {
+                use rspirv::binary::Disassemble;
+                /*eprintln!(
+                    "{}",
+                    rspirv::dr::load_words(&kernel_desc.spirv)
+                        .unwrap()
+                        .disassemble()
+                );*/
+            }
             modules
                 .entry(module_data.name_with_hash.clone())
                 .or_default()
-                .insert(kernel_name, kernel_desc);
+                .insert(kernel_name.to_string(), kernel_desc);
         }
     }
     Ok(modules)
