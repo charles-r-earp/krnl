@@ -102,7 +102,6 @@ impl Saxpy {
         kernels::saxpy::builder()?
             .build(self.device.clone())?
             .dispatch(
-                [groups],
                 self.x_device.as_slice(),
                 self.alpha,
                 self.y_device.as_slice_mut(),
@@ -124,12 +123,7 @@ mod kernels {
     use krnl_core::krnl_macros::kernel;
 
     #[kernel(threads(128))]
-    pub fn saxpy(#[global] x: &[f32], alpha: f32, #[global] y: &mut [f32]) {
-        let idx = global_id as usize;
-        if idx < x.len().min(y.len()) {
-            unsafe {
-                *y.unsafe_index_mut(idx) += alpha * x[idx];
-            }
-        }
+    pub fn saxpy(#[item] x: f32, alpha: f32, #[item] y: &mut f32) {
+        *y += alpha * x;
     }
 }

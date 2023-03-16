@@ -2,6 +2,234 @@
 
 #[module]
 mod foo {
+    struct Kernel<const N: usize> {}
+    
+    #[kernel]
+    pub fn saxpy(
+        #[item] x: f32,
+        alpha: f32,
+        #[item] y: &mut f32,
+    ) {
+        *y = alpha * x;
+    }
+    
+    /* generates */
+    fn saxpy(
+        
+    ) {
+        let __krnl_items = __krnl_push_consts.__krnl_len_x.max(__krnl_push_consts.__krnl_len_y);
+        let mut kernel = KernelBase::from(KernelInner {
+            groups,
+            group_id,
+            threads,
+            thread_id,
+            items: __krnl_items,
+            item_id,
+        });
+        while {
+            saxpy(
+                &kernel, 
+                x[kernel.item_id() as usize + x_offset], 
+                unsafe { 
+                    y.unsafe_index_mut(kernel.item_id() as usize)
+                }
+            );
+            kernel.next_item();
+        }
+    }
+    
+    
+    #[kernel]
+    pub fn saxpy(
+        #[global] x: &[f32],
+        alpha: f32,
+        #[global] y: &mut [f32],
+    ) {
+        let idx = kernel.global_id() as usize;
+        if idx < x.len().min(y.len()) {
+            unsafe {
+                *y.unsafe_index_mut(idx) = alpha * x[idx];
+            }
+        }
+    }
+    
+    struct KernelBase<T> {
+        
+    }
+    
+    impl<T> KernelBase<T> {
+        fn global_threads(&self) -> T;
+        fn global_id(&self) -> T;
+        fn global_index(&self) -> u32;
+        fn groups(&self) -> T;
+        fn group_id(&self) -> T;
+        fn group_index(&self) -> u32;
+        fn threads(&self) -> T;
+        fn thread_id(&self) -> T;
+        fn thread_index(&self) -> u32;
+        fn items(&self) -> u32;
+        fn item_id(&self) -> u32;
+    }
+    
+    #[kernel]
+    pub fn bias(
+        kernel: &Kernel1,
+        #[global] x: &[f32],
+        #[item] y: &mut f32,
+    ) {
+        let x_idx = kernel.item_id() as usize % x.len();
+        *y += x[x_idx];
+    }
+    
+    
+    #[kernel]
+    pub fn transpose_naive(
+        kernel: &Kernel2,   
+        #[global] input: &[f32],
+        #[global] output: &mut [f32],
+        output_rows: u32,
+        output_cols: u32,
+    ) {
+        let global_id = kernel.global_id();
+        let [output_col, output_row] = global_id.to_array();
+        let [input_row, input_col] = [output_col, output_row];
+        let [input_rows, input_cols] = [output_cols, output_rows];
+        if output_row < output_rows && output_col < output_cols {
+            let input_idx = (input_row * input_cols + input_col) as usize;
+            let output_idx = (output_row + output_rows * output_col) as usize;
+            unsafe {
+                *output.unsafe_index_mut(output_idx) = input[input_idx];
+            }
+        } 
+    }
+    
+    
+    trait UnsafeSliceMutLike<T>: UnsafeIndexMut<usize, Output=T> + Length {}
+    
+    pub fn axpy<T>(
+        x: T,
+        alpha: T,
+        y: &mut T,
+    ) {
+        *y += alpha * x;
+    }
+    
+    #[kernel]
+    pub fn saxpy(
+        kernel: &Kernel<1>,
+        #[global] x: &Slice<f32>,
+        alpha: f32,
+        #[global] y: &UnsafeSliceMut<u32>,
+    ) {
+        let idx = kernel.global_index();
+        if idx < x.len().min(y.len()) {
+            axpy(x[idx], alpha, unsafe { y.unsafe_index_mut(idx) });
+        }
+    }
+    
+    impl Kernel<'a> {
+        pub fn dispatch(self) -> Result<()> {
+            
+        }
+    }
+    
+    mod saxpy {
+        pub struct KernelBuilder {
+            
+        }
+        
+        pub fn builder() -> KernelBuilder<'static> {
+            todo!()
+        }
+        
+        impl<'a> KernelBuilder<'a> {
+            pub fn device(mut self, device: Device) {
+                todo!()
+            }
+            pub fn args<'b>(mut self, x: Slice<'b, f32>, alpha: f32, y: KernelScopedMut<SliceMut<'b, f32>>) -> KernelBuilder<'b> {
+                todo!()
+            }
+            pub fn global_threads(mut self, global_threads: [u32; 1]) -> Self {
+                todo!()
+            }
+            pub fn groups(mut self, groups: [u32; 1]) -> Self {
+                todo!()
+            }
+            pub fn threads(mut self, threads: [u32; 1]) -> Self {
+                todo!()
+            }
+            pub fn build(self) -> Result<Kernel<'a>> {
+                todo!()
+            }
+        }
+    }
+    
+    
+    
+    
+    
+    
+    #[kernel]
+    pub fn sum<#[spec] const X_GROUP: u32>(
+        #[builtin] global_id: u32,
+        #[builtin] group_id: u32,
+        #[builtin] threads: u32,
+        #[builtin] thread_id: u32,
+        #[global] x: &Slice<f32>,
+        #[group] x_group: &UnsafeArrayMut<f32, X_GROUP>, // -> &UnsafeSliceMutLike<f32>
+        #[global] y: &mut ItemMut<f32>,
+    ) {
+        let idx = global_id as usize;
+        let thread_id = thread_id as usize;
+        if idx < x.len() {
+            x_group[thread_id] = x[idx];
+        }
+        unsafe {
+            group_barrier();
+        } 
+        if thread_id == 0 {
+            *y = 0f32;
+            for i in 0 .. threads as usize {
+                if idx + i < x.len() {
+                    *y += x_group[i];
+                }
+            }
+        }
+    }
+    
+    pub mod saxpy {
+        pub fn call(x: f32, alpha: f32, y: &mut f32) {
+            *y = alpha * x;
+        }
+        
+        impl KernelBuilder {
+            pub fn threads(mut self, threads: [u32; 1]) -> Self {
+                todo!()
+            }
+            pub fn build(device: Device) -> Result<Kernel> {
+                todo!()
+            }
+        }
+        
+        impl Kernel {
+            fn global_threads(mut self, global_threads: [u32; 1]) -> Self {
+                todo!()
+            }
+            fn groups(mut self, groups: [u32; 1]) -> Self {
+                todo!()
+            }
+            fn parallel(mut self, parallel: bool) -> Self {
+                todo!()
+            }
+            fn dispatch(mut self, x: Slice<f32>, alpha: f32, y: SliceMut<f32>) -> Result<()> {
+                let x = x.as_host_slice().unwrap();
+                let y = y.as_host_slice_mut().unwrap();
+                y.par_iter_mut().zip(x.iter().copied()).for_each(|(x, y)| call(x, alpha, y));
+            }
+        }
+    }
+    
+    
     #[kernel(foreach, threads(TS))]
     pub fn cast_u32_f32<#[spec] const TS: u32>(
         #[item] x: u32,
@@ -10,8 +238,8 @@ mod foo {
         *y = x as _;
     }
 
-    #[kernel(threads(256))]
-    pub fn saxpy(#[global] x: &[f32], alpha: f32, #[global] y: &mut [f32]) {
+    #[kernel]
+    pub fn saxpy(#[global] x: &Slice<f32>, alpha: f32, #[global] y: &UnsafeSliceMut<f32>) {
         let idx = global_id.x as usize;
         if idx < x.len() && idx < y.len() {
             unsafe {

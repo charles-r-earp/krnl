@@ -2,15 +2,17 @@ use anyhow::{bail, format_err, Result};
 use cargo_metadata::{Metadata, Package, PackageId};
 use clap::Parser;
 use clap_cargo::{Manifest, Workspace};
-use parking_lot::Mutex;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use spirv_builder::{MetadataPrintout, SpirvBuilder, SpirvMetadata};
 use std::{
     collections::HashMap,
-    path::{Path, PathBuf},
+    path::PathBuf,
     process::{Command, Stdio},
     str::FromStr,
-    sync::Arc,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    },
 };
 use syn::{visit::Visit, Expr, Item, ItemMod, Lit, Visibility};
 
@@ -23,45 +25,71 @@ struct Cli {
 }
 
 fn main() -> Result<()> {
-    let cache_manifest_path: Arc<Mutex<Option<PathBuf>>> = Arc::new(Mutex::new(None));
-    {
-        let cache_manifest_path = cache_manifest_path.clone();
-        ctrlc::set_handler(move || {
-            if let Some(path) = cache_manifest_path.lock().take() {
-                let result = cache(&path, Some(Default::default()));
-                if let Err(e) = result {
-                    eprintln!("{e:?}");
-                }
-            }
-        })?;
-    }
-
+    let ctrlc_signal = CtrlcSignal::new()?;
     let cli = Cli::parse();
     let metadata = cli.manifest.metadata().exec()?;
     let (selected, _) = cli.workspace.partition_packages(&metadata);
     for package in selected {
+        ctrlc_signal.check()?;
         let (features, dependencies) = extract_features_dependencies(&metadata, &package)?;
-        let manifest_path = &package.manifest_path;
-        let result = (|| -> Result<()> {
-            {
-                let mut cache_manifest_path = cache_manifest_path.lock();
-                cache_manifest_path.replace(manifest_path.clone().into());
-                cache(manifest_path.as_std_path(), None)?;
-            }
-            cargo_check(&package, &features)?;
-            let module_datas = cargo_expand(&package, &features)?;
-            let modules = compile(&package, &dependencies, module_datas)?;
-            cache(manifest_path.as_std_path(), Some(modules))?;
-            cache_manifest_path.lock().take();
-            cargo_check(&package, &features)?;
-            Ok(())
-        })();
-        if let Err(e) = result {
-            cache(manifest_path.as_std_path(), Some(Default::default()))?;
-            return Err(e.into());
-        }
+        let cache_guard = CacheGuard::new(&package);
+        cache(&package, None)?;
+        //cargo_check(&package, &features)?;
+        //ctrlc_signal.check()?;
+        let module_datas = cargo_expand(&package, &features)?;
+        ctrlc_signal.check()?;
+        let modules = compile(&package, &dependencies, module_datas)?;
+        cache(&package, Some(modules))?;
+        cache_guard.finish();
+        //ctrlc_signal.check()?;
+        //cargo_check(&package, &features)?;
     }
     Ok(())
+}
+
+struct CtrlcSignal {
+    signal: Arc<AtomicBool>,
+}
+
+impl CtrlcSignal {
+    fn new() -> Result<Self> {
+        let signal = Arc::new(AtomicBool::default());
+        let signal2 = signal.clone();
+        ctrlc::set_handler(move || {
+            signal2.store(true, Ordering::SeqCst);
+        })?;
+        Ok(Self { signal })
+    }
+    fn check(&self) -> Result<()> {
+        if self.signal.load(Ordering::SeqCst) {
+            Err(format_err!("Process interupted!"))
+        } else {
+            Ok(())
+        }
+    }
+}
+
+struct CacheGuard<'a> {
+    package: Option<&'a Package>,
+}
+
+impl<'a> CacheGuard<'a> {
+    fn new(package: &'a Package) -> Self {
+        Self {
+            package: Some(package),
+        }
+    }
+    fn finish(mut self) {
+        self.package.take();
+    }
+}
+
+impl Drop for CacheGuard<'_> {
+    fn drop(&mut self) {
+        if let Some(package) = self.package {
+            cache(package, Some(Default::default())).unwrap();
+        }
+    }
 }
 
 fn cargo_expand(package: &Package, features: &str) -> Result<HashMap<String, ModuleData>> {
@@ -79,6 +107,9 @@ fn cargo_expand(package: &Package, features: &str) -> Result<HashMap<String, Mod
         .args(&["--profile=check", "--", "-Zunpretty=expanded"])
         .stderr(Stdio::inherit());
     let output = command.output()?;
+    if !output.status.success() {
+        bail!("expansion failed!");
+    }
     let expanded = std::str::from_utf8(&output.stdout)?;
     let file: syn::File = syn::parse_str(expanded)?;
     let mut modules = HashMap::new();
@@ -93,9 +124,14 @@ fn cargo_expand(package: &Package, features: &str) -> Result<HashMap<String, Mod
     Ok(modules)
 }
 
-fn cargo_check(package: &Package, features: &str) -> Result<()> {
+/*fn cargo_check(package: &Package, features: &str) -> Result<()> {
     let mut command = Command::new("cargo");
-    command.args(["check", "--manifest-path", package.manifest_path.as_str()]);
+    command.args([
+        "+nightly",
+        "check",
+        "--manifest-path",
+        package.manifest_path.as_str(),
+    ]);
     if !features.is_empty() {
         command.args(["--features", &features]);
     }
@@ -106,7 +142,7 @@ fn cargo_check(package: &Package, features: &str) -> Result<()> {
     } else {
         Err(format_err!("cargo check failed!"))
     }
-}
+}*/
 
 fn extract_features_dependencies(
     metadata: &Metadata,
@@ -336,7 +372,7 @@ impl<'a, 'ast> Visit<'ast> for ModuleVisitor<'a> {
 }
 
 fn cache(
-    manifest_path: &Path,
+    package: &Package,
     modules: Option<HashMap<String, HashMap<String, KernelDesc>>>,
 ) -> Result<()> {
     let version = env!("CARGO_PKG_VERSION");
@@ -354,7 +390,14 @@ fn cache(
     );
     let mut cache = prettyplease::unparse(&syn::parse_str(&cache)?);
     cache.insert_str(0, &format!("/* generated by krnlc {version} */\n"));
-    std::fs::write(manifest_path.parent().unwrap().join("krnl-cache.rs"), cache)?;
+    std::fs::write(
+        package
+            .manifest_path
+            .parent()
+            .unwrap()
+            .join("krnl-cache.rs"),
+        cache,
+    )?;
     Ok(())
 }
 
@@ -435,6 +478,22 @@ crate-type = ["dylib"]
 
 [dependencies]
 {dependencies}
+
+# https://github.com/EmbarkStudios/rust-gpu/blob/main/Cargo.toml
+# Enable incremental by default in release mode.
+[profile.release]
+incremental = true
+# HACK(eddyb) this is the default but without explicitly specifying it, Cargo
+# will treat the identical settings in `[profile.release.build-override]` below
+# as different sets of `rustc` flags and will not reuse artifacts between them.
+codegen-units = 256
+
+# Compile build-dependencies in release mode with the same settings
+# as regular dependencies (including the incremental enabled above).
+[profile.release.build-override]
+opt-level = 3
+incremental = true
+codegen-units = 256
 "#
         );
         if let Ok(old_manifest) = std::fs::read_to_string(&device_crate_manifest_path) {
@@ -465,7 +524,12 @@ extern crate krnl_core;
         }
         let file = syn::parse_str(&source)?;
         let source = prettyplease::unparse(&file);
-        std::fs::write(src_dir.join("lib.rs"), source.as_bytes())?;
+        let src_path = src_dir.join("lib.rs");
+        if let Ok(old_source) = std::fs::read_to_string(&src_path) {
+            if source != old_source {
+                std::fs::write(src_path, source.as_bytes())?;
+            }
+        }
     }
     if update {
         let status = Command::new("cargo")
@@ -493,6 +557,7 @@ extern crate krnl_core;
             .spirv_metadata(SpirvMetadata::NameVariables)
             .print_metadata(MetadataPrintout::None)
             //.preserve_bindings(true)
+            //.relax_struct_store(true)
             .deny_warnings(true)
             .extension("SPV_KHR_non_semantic_info");
         for cap in capabilites {
@@ -503,7 +568,7 @@ extern crate krnl_core;
         for (entry_point, spirv_path) in spirv_modules.iter() {
             use rspirv::{
                 binary::Assemble,
-                dr::{Instruction, Operand},
+                dr::Operand,
                 spirv::{Decoration, Op},
             };
             let spirv = std::fs::read(spirv_path)?;
@@ -573,7 +638,7 @@ extern crate krnl_core;
                         && inst.operands.first().unwrap().unwrap_id_ref() == kernel_data_var
                     {
                         kernel_data.replace(inst.operands[1].unwrap_literal_string().to_string());
-                        //spirv_module.debug_names.remove(i);
+                        spirv_module.debug_names.remove(i);
                         break;
                     }
                 }
@@ -649,28 +714,25 @@ extern crate krnl_core;
             }*/
             let spirv = spirv_module.assemble();
             kernel_desc.spirv = {
-                use spirv_tools::{
-                    opt::{Optimizer, Passes},
-                    val::Validator,
-                    TargetEnv,
-                };
+                use spirv_tools::{opt::Optimizer, val::Validator, TargetEnv};
                 let target_env = TargetEnv::Vulkan_1_2;
                 let validator = spirv_tools::val::create(Some(target_env));
                 validator.validate(&spirv, None)?;
                 let mut optimizer = spirv_tools::opt::create(Some(target_env));
                 optimizer
-                    .register_pass(Passes::StripNonSemanticInfo)
-                    .register_pass(Passes::StripDebugInfo)
-                    .register_pass(Passes::RemoveUnusedInterfaceVariables)
+                    //.register_pass(Passes::StripNonSemanticInfo)
+                    //.register_pass(Passes::StripDebugInfo)
+                    //.register_pass(Passes::RemoveUnusedInterfaceVariables)
                     .register_performance_passes();
-                optimizer
+                let spirv = optimizer
                     .optimize(&spirv, &mut |_| (), None)?
                     .as_words()
-                    .to_vec()
+                    .to_vec();
+                spirv
             };
             {
-                use rspirv::binary::Disassemble;
-                /*eprintln!(
+                /*use rspirv::binary::Disassemble;
+                eprintln!(
                     "{}",
                     rspirv::dr::load_words(&kernel_desc.spirv)
                         .unwrap()
@@ -834,6 +896,7 @@ struct SliceDesc {
     name: String,
     scalar_type: ScalarType,
     mutable: bool,
+    item: bool,
 }
 
 /*

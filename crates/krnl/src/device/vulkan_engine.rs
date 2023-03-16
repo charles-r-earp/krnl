@@ -513,39 +513,41 @@ impl Worker {
                     push_consts,
                     groups,
                 } => {
+                    let descriptor_pool = self.descriptor_pool.as_ref().unwrap();
                     unsafe {
                         builder.bind_pipeline_compute(&compute_pipeline);
                     }
                     let pipeline_layout = compute_pipeline.layout();
-                    let descriptor_set_layout = pipeline_layout.set_layouts().first().unwrap();
-                    // TODO Push descriptor
-                    let descriptor_pool = self.descriptor_pool.as_ref().unwrap();
-                    let mut descriptor_set = unsafe {
-                        descriptor_pool
-                            .allocate_descriptor_sets([DescriptorSetAllocateInfo {
-                                layout: descriptor_set_layout,
-                                variable_descriptor_count: 0,
-                            }])?
-                            .next()
-                            .unwrap()
-                    };
-                    let buffer_iter = buffers
-                        .iter()
-                        .map(|x| -> Arc<dyn BufferAccess> { x.clone() });
-                    unsafe {
-                        descriptor_set.write(
-                            descriptor_set_layout,
-                            &[WriteDescriptorSet::buffer_array(0, 0, buffer_iter)],
-                        );
-                    }
-                    unsafe {
-                        builder.bind_descriptor_sets(
-                            PipelineBindPoint::Compute,
-                            pipeline_layout,
-                            0,
-                            &[descriptor_set],
-                            [],
-                        );
+                    if !buffers.is_empty() {
+                        let descriptor_set_layout = pipeline_layout.set_layouts().first().unwrap();
+                        // TODO Push descriptor
+                        let mut descriptor_set = unsafe {
+                            descriptor_pool
+                                .allocate_descriptor_sets([DescriptorSetAllocateInfo {
+                                    layout: descriptor_set_layout,
+                                    variable_descriptor_count: 0,
+                                }])?
+                                .next()
+                                .unwrap()
+                        };
+                        let buffer_iter = buffers
+                            .iter()
+                            .map(|x| -> Arc<dyn BufferAccess> { x.clone() });
+                        unsafe {
+                            descriptor_set.write(
+                                descriptor_set_layout,
+                                &[WriteDescriptorSet::buffer_array(0, 0, buffer_iter)],
+                            );
+                        }
+                        unsafe {
+                            builder.bind_descriptor_sets(
+                                PipelineBindPoint::Compute,
+                                pipeline_layout,
+                                0,
+                                &[descriptor_set],
+                                [],
+                            );
+                        }
                     }
                     if !push_consts.is_empty() {
                         unsafe {
@@ -915,11 +917,12 @@ impl Kernel {
                 ((set, binding), descriptor_requirements)
             })
             .collect();
-        let push_constant_range = if !desc.push_descs.is_empty() {
+        let push_consts_range = desc.push_consts_range();
+        let push_constant_range = if push_consts_range > 0 {
             Some(PushConstantRange {
                 stages,
                 offset: 0,
-                size: desc.push_consts_range(),
+                size: push_consts_range,
             })
         } else {
             None
@@ -1140,9 +1143,11 @@ impl DeviceEngineKernel for Kernel {
         while push_consts.len() % 4 != 0 {
             push_consts.push(0);
         }
-        for buffer in buffers.iter() {
+        for (buffer, slice_desc) in buffers.iter().zip(self.desc.slice_descs.iter()) {
             push_consts.extend((buffer.offset as u32).to_ne_bytes());
-            push_consts.extend((buffer.len as u32).to_ne_bytes());
+            let len = buffer.len / slice_desc.scalar_type.size();
+            debug_assert_ne!(len, 0);
+            push_consts.extend((len as u32).to_ne_bytes());
         }
         let mut futures: Vec<_> = buffers
             .iter()

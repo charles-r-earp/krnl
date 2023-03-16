@@ -473,7 +473,7 @@ impl Hash for KernelKey {
     }
 }*/
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Debug)]
 struct KernelDesc {
     name: String,
     spirv: Vec<u32>,
@@ -498,21 +498,22 @@ impl KernelDesc {
     }
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Debug)]
 struct SpecDesc {
     name: String,
     scalar_type: ScalarType,
     thread_dim: Option<u32>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Debug)]
 struct SliceDesc {
     name: String,
     scalar_type: ScalarType,
     mutable: bool,
+    item: bool,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Debug)]
 struct PushDesc {
     name: String,
     scalar_type: ScalarType,
@@ -572,7 +573,10 @@ impl KernelBuilder {
                 } else {
                     <<Engine as DeviceEngine>::Kernel>::cached(&device.engine, key, || Ok(desc))?
                 };
-                Ok(Kernel { inner })
+                Ok(Kernel {
+                    inner,
+                    groups: None,
+                })
             }
         }
     }
@@ -590,22 +594,48 @@ struct KernelKey {
 pub struct Kernel {
     #[cfg(feature = "device")]
     inner: Arc<<Engine as DeviceEngine>::Kernel>,
+    groups: Option<[u32; 3]>,
+}
+
+fn global_threads_to_groups(global_threads: &[u32], threads: &[u32]) -> [u32; 3] {
+    debug_assert_eq!(global_threads.len(), threads.len());
+    let mut groups = [1; 3];
+    for (gt, (g, t)) in global_threads
+        .iter()
+        .copied()
+        .zip(groups.iter_mut().zip(threads.iter().copied()))
+    {
+        *g = gt / t + if gt % t != 0 { 1 } else { 0 };
+    }
+    groups
 }
 
 #[cfg(feature = "device")]
 impl Kernel {
+    pub fn global_threads(mut self, global_threads: &[u32]) -> Self {
+        let desc = &self.inner.desc();
+        let threads = &desc.threads;
+        let groups = global_threads_to_groups(global_threads, &desc.threads);
+        self.groups.replace(groups);
+        self
+    }
+    pub fn groups(mut self, groups: &[u32]) -> Self {
+        let desc = &self.inner.desc();
+        debug_assert_eq!(groups.len(), self.inner.desc().threads.len());
+        let mut new_groups = [1; 3];
+        new_groups[..groups.len()].copy_from_slice(groups);
+        self.groups.replace(new_groups);
+        self
+    }
     pub unsafe fn dispatch(
         &self,
-        groups: &[u32],
         slices: &[KernelSliceArg],
         push_consts: &[ScalarElem],
     ) -> Result<()> {
         let desc = &self.inner.desc();
         let kernel_name = &desc.name;
-        let mut groups_array = [1u32; 3];
-        debug_assert_eq!(groups.len(), desc.threads.len());
-        groups_array[..groups.len()].copy_from_slice(groups);
         let mut buffers = Vec::with_capacity(desc.slice_descs.len());
+        let mut items: Option<usize> = None;
         for (slice, slice_desc) in slices.into_iter().zip(desc.slice_descs.iter()) {
             debug_assert_eq!(slice.scalar_type(), slice_desc.scalar_type);
             debug_assert!(!slice_desc.mutable || slice.mutable());
@@ -625,13 +655,30 @@ impl Kernel {
                 );
             }
             buffers.push(buffer.inner.clone());
+            if slice_desc.item {
+                items.replace(if let Some(items) = items {
+                    items.min(slice.len())
+                } else {
+                    slice.len()
+                });
+            }
         }
+        let groups = if let Some(groups) = self.groups {
+            groups
+        } else if let Some(items) = items {
+            if desc.threads.iter().skip(1).any(|t| *t > 1) {
+                bail!("Kernel `{kernel_name}` cannot infer global_threads if threads.y > 1 or threads.z > 1, threads = {threads:?}!", threads = desc.threads);
+            }
+            global_threads_to_groups(&[items as u32], &[desc.threads[0]])
+        } else {
+            bail!("Kernel `{kernel_name}` global_threads or groups not provided!");
+        };
         let mut push_bytes = Vec::with_capacity(desc.push_consts_range() as usize);
         for (push, push_desc) in push_consts.iter().zip(desc.push_descs.iter()) {
             debug_assert_eq!(push.scalar_type(), push_desc.scalar_type);
             push_bytes.extend_from_slice(push.as_bytes());
         }
-        unsafe { self.inner.dispatch(groups_array, &buffers, push_bytes) }
+        unsafe { self.inner.dispatch(groups, &buffers, push_bytes) }
     }
     pub fn threads(&self) -> &[u32] {
         todo!()
@@ -671,6 +718,12 @@ impl KernelSliceArg<'_> {
         match self {
             Self::Slice(x) => x.device_buffer(),
             Self::SliceMut(x) => x.device_buffer_mut(),
+        }
+    }
+    fn len(&self) -> usize {
+        match self {
+            Self::Slice(x) => x.len(),
+            Self::SliceMut(x) => x.len(),
         }
     }
 }

@@ -12,7 +12,7 @@ publish = false
 
 [dependencies]
 krnl-macros = { path = "../krnl-macros" }
-spirv-std = "0.5.0"
+spirv-std = "0.6.0"
 paste.workspace = true
 dry.workspace = true
 

@@ -268,6 +268,9 @@ impl<S: ScalarData> ScalarBufferBase<S> {
     pub fn scalar_type(&self) -> ScalarType {
         self.data.scalar_type()
     }
+    pub fn len(&self) -> usize {
+        self.data.len()
+    }
 }
 
 #[cfg(feature = "device")]
