@@ -8,7 +8,7 @@ use krnl::{
     anyhow::Result,
     buffer::{Buffer, Slice},
     device::Device,
-    krnl_macros::module,
+    macros::module,
 };
 
 #[derive(Clone)]
@@ -97,6 +97,7 @@ pub struct Saxpy {
 impl Saxpy {
     pub fn run(&mut self) -> Result<()> {
         kernels::saxpy::builder()?
+            .specialize(128)?
             .build(self.device.clone())?
             .dispatch(
                 self.x_device.as_slice(),
@@ -119,8 +120,8 @@ mod kernels {
     use krnl::krnl_core;
     use krnl_core::krnl_macros::kernel;
 
-    #[kernel(threads(128))]
-    pub fn saxpy(#[item] x: f32, alpha: f32, #[item] y: &mut f32) {
+    #[kernel(threads(TS))]
+    pub fn saxpy<#[spec] const TS: u32>(#[item] x: f32, alpha: f32, #[item] y: &mut f32) {
         *y += alpha * x;
     }
 }

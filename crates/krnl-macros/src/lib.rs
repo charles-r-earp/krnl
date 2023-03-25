@@ -622,6 +622,7 @@ impl KernelArgMeta {
                 if mutable {
                     quote! {
                         unsafe {
+                            use ::krnl_core::buffer::UnsafeIndex;
                             #ident.unsafe_index_mut(kernel.item_id() as usize)
                         },
                     }
@@ -1328,7 +1329,6 @@ fn kernel_impl(attr: KernelAttr, item: KernelItem) -> Result<TokenStream2> {
         };
         let mut device_fn_call = quote! {
             #unsafe_token {
-                use krnl_core::buffer::UnsafeIndex;
                 #ident (
                     &kernel,
                     #device_fn_call_args

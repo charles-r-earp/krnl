@@ -190,6 +190,8 @@ impl<T: Scalar> UnsafeIndex<usize> for UnsafeSliceRepr<'_, T> {
     }
 }
 
+impl<T: Scalar> UnsafeData for UnsafeSliceRepr<'_, T> {}
+
 pub struct BufferBase<S> {
     data: S,
 }
@@ -213,8 +215,8 @@ impl<S: Data> Index<usize> for BufferBase<S> {
     }
 }
 
-impl UnsafeIndex<usize> for UnsafeSlice<'_, u32> {
-    type Output = u32;
+impl<S: UnsafeData> UnsafeIndex<usize> for BufferBase<S> {
+    type Output = S::Elem;
     unsafe fn unsafe_index(&self, index: usize) -> &Self::Output {
         unsafe { self.data.unsafe_index(index) }
     }
