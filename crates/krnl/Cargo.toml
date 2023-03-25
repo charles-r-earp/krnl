@@ -41,3 +41,7 @@ ash-molten = { version = "0.12.0", features = ["pre-built"], optional = true }
 
 [features]
 device = ["dep:vulkano", "dep:ash", "dep:ash-molten", "dep:crossbeam-channel", "dep:dashmap", "dep:rspirv"]
+cast = []
+
+[package.metadata.krnlc]
+features = ["device"]

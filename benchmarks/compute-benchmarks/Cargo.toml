@@ -8,7 +8,6 @@ publish = false
 
 [dependencies]
 approx = "0.5.1"
-#argparse = "0.2.2"
 criterion = { version = "0.4.0", default-features = false }
 cust = { version = "0.3.2", optional = true }
 krnl = { path = "../../crates/krnl", features = ["device"] }

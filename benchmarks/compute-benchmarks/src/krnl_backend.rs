@@ -96,9 +96,6 @@ pub struct Saxpy {
 
 impl Saxpy {
     pub fn run(&mut self) -> Result<()> {
-        let n = self.x_device.len() as u32;
-        let threads = 128;
-        let groups = n / threads + if n % threads != 0 { 1 } else { 0 };
         kernels::saxpy::builder()?
             .build(self.device.clone())?
             .dispatch(

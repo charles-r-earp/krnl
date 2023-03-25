@@ -3,7 +3,7 @@
 
 pub use anyhow;
 pub use krnl_core;
-pub use krnl_macros;
+pub use krnl_macros as macros;
 #[doc(hidden)]
 pub use once_cell;
 

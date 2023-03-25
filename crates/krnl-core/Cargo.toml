@@ -12,7 +12,7 @@ publish = false
 
 [dependencies]
 krnl-macros = { path = "../krnl-macros" }
-spirv-std = "0.6.0"
+spirv-std = "=0.6.0"
 paste.workspace = true
 dry.workspace = true
 
@@ -24,6 +24,7 @@ bytemuck = "1.4.1"
 serde = { version = "1.0.143", features = ["derive"] }
 thiserror = "1.0.32"
 derive_more = { version = "0.99.11", default-features = false, features = ["display", "is_variant"] }
+paste.workspace = true
 
 [target.'cfg(target_arch = "spirv")'.dependencies]
 glam = { version = "0.22.0", default-features = false, features = ["libm"] }

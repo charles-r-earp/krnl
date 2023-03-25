@@ -2,6 +2,8 @@ use crate::{
     device::{Device, DeviceInner},
     scalar::{Scalar, ScalarType},
 };
+use krnl_macros::module;
+use half::{f16, bf16};
 use anyhow::Result;
 use dry::macro_for;
 use std::{
@@ -615,6 +617,9 @@ impl<T: Scalar, S: Data<Elem = T>> BufferBase<S> {
     pub fn device(&self) -> Device {
         self.data.device()
     }
+    pub fn scalar_type(&self) -> ScalarType {
+        self.data.scalar_type()
+    }
     pub fn len(&self) -> usize {
         self.data.len()
     }
@@ -637,6 +642,29 @@ impl<T: Scalar, S: Data<Elem = T>> BufferBase<S> {
         self.data.as_slice().to_vec()
     }
 }
+
+/*
+#[cfg(feature = "cast")]        
+#[module]
+#[krnl(crate=crate)]
+mod cast_kernels {
+    #[cfg(not(target_arch = "spirv"))]
+    use krnl_core;
+    use krnl_core::{scalar::Scalar, dry::macro_for, paste::paste, half::{f16, bf16}};
+    use krnl_core::krnl_macros::kernel;
+            
+    macro_for!($X in [u8, i8, u16, i16, f16, bf16, u32, i32, f32, u64, i64, f64] {
+        macro_for!($Y in [u8, i8, u16, i16, f16, bf16, u32, i32, f32, u64, i64, f64] {
+            paste! {
+                #[kernel(threads(128))]
+                pub fn [<cast_ $X _ $Y>](#[item] x: &$X, #[item] y: &mut $Y) {
+                    *y = x.cast();
+                }
+            }
+        });     
+    });   
+} */  
+
 
 /*
 #[cfg(feature = "device")]

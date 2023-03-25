@@ -1,9 +1,7 @@
 ```rust
 
 #[module]
-mod foo {
-    struct Kernel<const N: usize> {}
-    
+mod foo {    
     #[kernel]
     pub fn saxpy(
         #[item] x: f32,
@@ -53,6 +51,38 @@ mod foo {
         }
     }
     
+    #[kernel]
+    pub fn saxpy(
+        #[global] x: Slice<f32>,
+        alpha: f32,
+        #[global] y: UnsafeSliceMut<f32>,
+        #[group] y_group: UnsafeArrayMut<f32>,
+        #[group] z_group: UnsafeArrayMut<f32, 100>,
+    ) {
+        let idx = kernel.global_id() as usize;
+        if idx < x.len().min(y.len()) {
+            unsafe {
+                *y.unsafe_index_mut(idx) = alpha * x[idx];
+            }
+        }
+    }
+    
+    #[kernel]
+    pub fn foo<
+        #[spec] const M: u32, 
+        #[spec] const N: u32,
+        #[spec] const (MxN, Q) = { (M * N, 2 * N) },
+    >(
+        #[group]
+        x_group: UnsafeSliceMut<f32, {}>,
+    ) {
+       const MxN: u32 = M * N;
+       
+       __krnl_kernel_data[0] = MxN;
+    }
+    
+    
+    
     struct KernelBase<T> {
         
     }
@@ -101,6 +131,34 @@ mod foo {
                 *output.unsafe_index_mut(output_idx) = input[input_idx];
             }
         } 
+    }
+    
+    #[kernel(threads(128))]
+    pub fn sum(
+        #[global] x: &[u32],
+        #[group] x_group: &mut [u32; 128],
+        #[global] y: &mut [u32],
+    ) {
+        use krnl_core::spirv_std::workgroup_memory_barrier;
+        
+        let global_id = kernel.global_id() as usize;
+        let group_id = kernel.group_id() as usize;
+        let thread_id = kernel.thread_id() as usize;
+        if global_id < x.len() {
+            unsafe { 
+                *x_group.unsafe_index_mut(group_id) = x[global_id];
+            }
+        }
+        unsafe {
+            workgroup_memory_barrier();
+        }
+        if thread_id == 0 {
+            for i in 0 .. x.len() % x_group.len() {
+                unsafe {
+                    *y.unsafe_index_mut(group_id) += *x_group.unsafe_index_mut(i); 
+                }
+            }
+        }
     }
     
     

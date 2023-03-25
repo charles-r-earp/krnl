@@ -37,7 +37,7 @@ use sealed::Sealed;
 /// Numerical types supported in krnl.
 #[allow(missing_docs)]
 #[non_exhaustive]
-#[derive(Clone, Copy, Eq, PartialEq)]
+#[derive(Clone, Copy, Eq, PartialEq, Hash)]
 #[cfg_attr(not(target_arch = "spirv"), derive(Debug, Display))]
 #[cfg_attr(target_arch = "spirv", repr(u32))]
 pub enum ScalarType {
