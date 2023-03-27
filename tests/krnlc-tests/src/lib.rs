@@ -73,18 +73,17 @@ pub mod bar {
 mod tests {
     use super::*;
 
-    /*
     #[test]
     fn foo_host() {
-        use krnl::krnl_core::arch::{Length, UnsafeSliceMut};
+        use krnl::krnl_core::buffer::UnsafeSlice;
         use rayon::iter::{IntoParallelIterator, ParallelIterator};
         let mut y_vec = vec![0; 100];
-        let y = UnsafeSliceMut::from(y_vec.as_mut_slice());
+        let y = UnsafeSlice::from(y_vec.as_mut_slice());
         (0..y.len())
             .into_par_iter()
-            .for_each(|idx| foo::foo_impl(idx, &y));
+            .for_each(|idx| foo::foo_impl(idx, y));
         assert!(y_vec.iter().all(|x| *x == 1));
-    }*/
+    }
 
     #[test]
     fn foo_device() {

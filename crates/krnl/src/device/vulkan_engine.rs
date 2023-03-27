@@ -238,7 +238,7 @@ impl DeviceEngine for Engine {
             name,
             compute_queues: compute_families.len(),
             transfer_queues: transfer_family.is_some() as usize,
-            features: Features::empty(),
+            features,
         });
         Ok(Arc::new(Self {
             info,

@@ -2,9 +2,9 @@ use crate::{
     buffer::{ScalarSlice, ScalarSliceMut, Slice, SliceMut},
     scalar::{Scalar, ScalarElem, ScalarType},
 };
-use anyhow::Result;
 #[cfg(feature = "device")]
-use anyhow::{bail, format_err};
+use anyhow::format_err;
+use anyhow::{bail, Result};
 #[cfg(feature = "device")]
 use rspirv::{
     binary::{Assemble, Disassemble},
@@ -420,6 +420,12 @@ pub struct DeviceInfo {
     features: Features,
 }
 
+impl DeviceInfo {
+    pub fn features(&self) -> Features {
+        self.features
+    }
+}
+
 /*
 #[derive(Clone, Copy, Debug)]
 struct TransferMetrics {
@@ -496,9 +502,7 @@ impl KernelDesc {
         while size % 4 != 0 {
             size += 1;
         }
-        for slice_desc in self.slice_descs.iter() {
-            size += slice_desc.scalar_type.size();
-        }
+        size += self.slice_descs.len() * 2 * 4;
         size.try_into().unwrap()
     }
     fn specialize(&self, threads: Vec<u32>, spec_consts: &[ScalarElem]) -> Result<Self> {
@@ -618,7 +622,9 @@ impl KernelBuilder {
     }
     pub fn build(&self, device: Device) -> Result<Kernel> {
         match device.inner {
-            DeviceInner::Host => todo!(),
+            DeviceInner::Host => {
+                bail!("Kernel `{}` expected device, found host!", self.desc.name);
+            }
             #[cfg(feature = "device")]
             DeviceInner::Device(device) => {
                 let desc = &self.desc;

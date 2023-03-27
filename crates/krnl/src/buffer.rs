@@ -1,11 +1,12 @@
 use crate::{
     device::{Device, DeviceInner},
-    scalar::{Scalar, ScalarType},
+    scalar::{Scalar, ScalarType, ScalarElem},
 };
 use krnl_macros::module;
 use half::{f16, bf16};
 use anyhow::Result;
-use dry::macro_for;
+use dry::{macro_wrap, macro_for};
+use paste::paste;
 use std::{
     marker::PhantomData,
     mem::{forget, size_of},
@@ -169,6 +170,10 @@ pub trait ScalarData: Sealed {
     }
 }
 
+pub trait ScalarDataMut: ScalarData {
+    fn as_scalar_slice_mut(&mut self) -> ScalarSliceMutRepr;
+}
+
 pub trait ScalarDataOwned: ScalarData + From<ScalarBufferRepr> {}
 
 pub struct ScalarBufferRepr {
@@ -176,22 +181,17 @@ pub struct ScalarBufferRepr {
     scalar_type: ScalarType,
 }
 
+/*
 impl ScalarBufferRepr {
-    fn from_buffer_repr<T: Scalar>(buffer: BufferRepr<T>) -> Self {
-        Self {
-            raw: buffer.raw,
-            scalar_type: T::scalar_type(),
-        }
-    }
     fn zeros(device: Device, len: usize, scalar_type: ScalarType) -> Result<Self> {
         let buffer = match device.inner() {
             DeviceInner::Host => {
                 let width = scalar_type.size();
                 match width {
-                    1 => Self::from_buffer_repr(BufferRepr::from_vec(vec![0u8; len])),
-                    2 => Self::from_buffer_repr(BufferRepr::from_vec(vec![0u16; len])),
-                    4 => Self::from_buffer_repr(BufferRepr::from_vec(vec![0u32; len])),
-                    8 => Self::from_buffer_repr(BufferRepr::from_vec(vec![0u64; len])),
+                    1 => BufferRepr::from_vec(vec![0u8; len]).into(),
+                    2 => BufferRepr::from_vec(vec![0u16; len]).into(),
+                    4 => BufferRepr::from_vec(vec![0u32; len]).into(),
+                    8 => BufferRepr::from_vec(vec![0u64; len]).into(),
                     _ => unreachable!(),
                 }
             }
@@ -200,11 +200,30 @@ impl ScalarBufferRepr {
         };
         Ok(buffer)
     }
+}*/
+
+impl<T: Scalar> From<BufferRepr<T>> for ScalarBufferRepr {
+    fn from(buffer: BufferRepr<T>) -> Self {
+        Self {
+            raw: buffer.raw,
+            scalar_type: T::scalar_type(),
+        }
+    }
 }
 
 impl ScalarData for ScalarBufferRepr {
     fn as_scalar_slice(&self) -> ScalarSliceRepr {
         ScalarSliceRepr {
+            raw: self.raw.slice.clone(),
+            scalar_type: self.scalar_type,
+            _m: PhantomData::default(),
+        }
+    }
+}
+
+impl ScalarDataMut for ScalarBufferRepr {
+    fn as_scalar_slice_mut(&mut self) -> ScalarSliceMutRepr {
+        ScalarSliceMutRepr {
             raw: self.raw.slice.clone(),
             scalar_type: self.scalar_type,
             _m: PhantomData::default(),
@@ -248,6 +267,16 @@ impl ScalarData for ScalarSliceMutRepr<'_> {
     }
 }
 
+impl ScalarDataMut for ScalarSliceMutRepr<'_> {
+    fn as_scalar_slice_mut(&mut self) -> ScalarSliceMutRepr {
+        ScalarSliceMutRepr {
+            raw: self.raw.clone(),
+            scalar_type: self.scalar_type,
+            _m: PhantomData::default(),
+        }
+    }
+}
+
 pub struct ScalarBufferBase<S: ScalarData> {
     data: S,
 }
@@ -257,9 +286,39 @@ pub type ScalarSlice<'a> = ScalarBufferBase<ScalarSliceRepr<'a>>;
 pub type ScalarSliceMut<'a> = ScalarBufferBase<ScalarSliceMutRepr<'a>>;
 
 impl<S: ScalarDataOwned> ScalarBufferBase<S> {
+    unsafe fn uninit(device: Device, len: usize, scalar_type: ScalarType) -> Result<Self> {
+        macro_wrap!(paste! { 
+            match scalar_type {
+                macro_for!($T in [u8, i8, u16, i16, f16, bf16, u32, i32, f32, u64, i64, f64] {
+                    ScalarType::[<$T:upper>] => {
+                        unsafe {
+                            Ok(unsafe { Buffer::<$T>::uninit(device, len)? }.into())
+                        } 
+                    }
+                    _ => unreachable!(),  
+                })
+            }
+        })
+    }
+    pub fn from_elem(device: Device, len: usize, elem: ScalarElem) -> Result<Self> {
+        macro_wrap!(paste! { 
+            match elem {
+                macro_for!($T in [u8, i8, u16, i16, f16, bf16, u32, i32, f32, u64, i64, f64] {
+                  ScalarElem::[<$T:upper>](elem) => {
+                      unsafe {
+                          Ok(Buffer::from_elem(device, len, elem)?.into())
+                      }
+                  }
+                })
+                _ => unreachable!(),
+            }
+        })
+    }
     pub fn zeros(device: Device, len: usize, scalar_type: ScalarType) -> Result<Self> {
-        let data = ScalarBufferRepr::zeros(device, len, scalar_type)?.into();
-        Ok(Self { data })
+        Self::from_elem(device, len, ScalarElem::zero(scalar_type))
+    }
+    pub fn ones(device: Device, len: usize, scalar_type: ScalarType) -> Result<Self> {
+        Self::from_elem(device, len, ScalarElem::one(scalar_type))
     }
 }
 
@@ -272,6 +331,30 @@ impl<S: ScalarData> ScalarBufferBase<S> {
     }
     pub fn len(&self) -> usize {
         self.data.len()
+    }
+    pub fn as_scalar_slice(&self) -> ScalarSlice {
+        let data = self.data.as_scalar_slice();
+        ScalarSlice {
+            data
+        }
+    }
+    pub fn as_scalar_slice_mut(&mut self) -> ScalarSliceMut where S: ScalarDataMut {
+        let data = self.data.as_scalar_slice_mut();
+        ScalarSliceMut {
+            data
+        }
+    }
+}
+
+impl<S: ScalarData> ScalarBufferBase<S> {
+    pub fn fill(&mut self, elem: ScalarElem) -> Result<()> where S: ScalarDataMut {
+        let slice = self.as_scalar_slice_mut();
+        macro_wrap!(paste! { match elem {
+            macro_for!($T in [u8, i8, u16, i16, f16, bf16, u32, i32, f32, u64, i64, f64] {
+                ScalarElem::[<$T:upper>](elem) => SliceMut::<$T>::try_from(slice).ok().unwrap().fill(elem),
+            })
+            _ => unreachable!(),
+        }})
     }
 }
 
@@ -293,6 +376,15 @@ impl ScalarSliceMut<'_> {
             Some(buffer)
         } else {
             None
+        }
+    }
+}
+
+impl<T: Scalar, S: ScalarDataOwned> From<Buffer<T>> for ScalarBufferBase<S> {
+    fn from(buffer: Buffer<T>) -> Self {
+        let data = ScalarBufferRepr::from(buffer.data).into();
+        Self {
+            data
         }
     }
 }
@@ -338,10 +430,16 @@ macro_for!($S in [SliceRepr, SliceMutRepr] {
 pub trait Data: ScalarData {
     type Elem: Scalar;
     fn as_slice(&self) -> SliceRepr<Self::Elem>;
+    fn as_host_slice(&self) -> Option<&[Self::Elem]> {
+        self.as_slice().into_host_slice()
+    }
 }
 
-pub trait DataMut: Data {
+pub trait DataMut: Data + ScalarDataMut {
     fn as_slice_mut(&mut self) -> SliceMutRepr<Self::Elem>;
+    fn as_host_slice_mut(&mut self) -> Option<&mut [Self::Elem]> {
+        self.as_slice_mut().into_host_slice_mut()
+    }
 }
 
 pub trait DataOwned: Data + From<BufferRepr<Self::Elem>> {}
@@ -434,6 +532,16 @@ impl<T: Scalar> ScalarData for BufferRepr<T> {
     }
 }
 
+impl<T: Scalar> ScalarDataMut for BufferRepr<T> {
+    fn as_scalar_slice_mut(&mut self) -> ScalarSliceMutRepr {
+        ScalarSliceMutRepr {
+            raw: self.raw.clone(),
+            scalar_type: T::scalar_type(),
+            _m: PhantomData::default(),
+        }
+    }
+}
+
 impl<T: Scalar> Data for BufferRepr<T> {
     type Elem = T;
     fn as_slice(&self) -> SliceRepr<Self::Elem> {
@@ -474,7 +582,7 @@ impl<'a, T: Scalar> SliceRepr<'a, T> {
             _m: PhantomData::default(),
         }
     }
-    fn as_host_slice(&self) -> Option<&'a [T]> {
+    fn into_host_slice(self) -> Option<&'a [T]> {
         match &self.raw.inner {
             RawSliceInner::Host(raw) => {
                 let slice =
@@ -542,7 +650,7 @@ impl<'a, T: Scalar> SliceRepr<'a, T> {
     }
 }
 
-impl<T: Scalar> ScalarData for SliceRepr<'_, T> {
+impl<'a, T: Scalar> ScalarData for SliceRepr<'a, T> {
     fn as_scalar_slice(&self) -> ScalarSliceRepr {
         ScalarSliceRepr {
             raw: self.raw.clone(),
@@ -559,14 +667,53 @@ impl<T: Scalar> Data for SliceRepr<'_, T> {
     }
 }
 
+
+impl<'a, T: Scalar> TryFrom<ScalarSliceRepr<'a>> for SliceRepr<'a, T> {
+    type Error = ScalarSliceRepr<'a>;
+    fn try_from(slice: ScalarSliceRepr<'a>) -> Result<Self, Self::Error> {
+        if slice.scalar_type() == T::scalar_type() {
+            Ok(Self {
+                raw: slice.raw,
+                _m: Default::default()
+            })
+        } else {
+            Err(slice)
+        }
+    }
+}
+
 pub struct SliceMutRepr<'a, T> {
     raw: RawSlice,
     _m: PhantomData<&'a T>,
 }
 
+impl<'a, T: Scalar> SliceMutRepr<'a, T> {
+    fn into_host_slice_mut(self) -> Option<&'a mut [T]> {
+        match &self.raw.inner {
+            RawSliceInner::Host(raw) => {
+                let slice =
+                    unsafe { std::slice::from_raw_parts_mut(raw.ptr as _, raw.len / size_of::<T>()) };
+                Some(slice)
+            }
+            #[cfg(feature = "device")]
+            _ => None,
+        }
+    }
+}
+
 impl<T: Scalar> ScalarData for SliceMutRepr<'_, T> {
     fn as_scalar_slice(&self) -> ScalarSliceRepr {
         ScalarSliceRepr {
+            raw: self.raw.clone(),
+            scalar_type: T::scalar_type(),
+            _m: PhantomData::default(),
+        }
+    }
+}
+
+impl<T: Scalar> ScalarDataMut for SliceMutRepr<'_, T> {
+    fn as_scalar_slice_mut(&mut self) -> ScalarSliceMutRepr {
+        ScalarSliceMutRepr {
             raw: self.raw.clone(),
             scalar_type: T::scalar_type(),
             _m: PhantomData::default(),
@@ -580,6 +727,30 @@ impl<T: Scalar> Data for SliceMutRepr<'_, T> {
         SliceRepr {
             raw: self.raw.clone(),
             _m: Default::default(),
+        }
+    }
+}
+
+
+impl<T: Scalar> DataMut for SliceMutRepr<'_, T> {
+    fn as_slice_mut(&mut self) -> SliceMutRepr<T> {
+        SliceMutRepr {
+            raw: self.raw.clone(),
+            _m: Default::default(),
+        }
+    }
+}
+
+impl<'a, T: Scalar> TryFrom<ScalarSliceMutRepr<'a>> for SliceMutRepr<'a, T> {
+    type Error = ScalarSliceMutRepr<'a>;
+    fn try_from(slice: ScalarSliceMutRepr<'a>) -> Result<Self, Self::Error> {
+        if slice.scalar_type() == T::scalar_type() {
+            Ok(Self {
+                raw: slice.raw,
+                _m: Default::default()
+            })
+        } else {
+            Err(slice)
         }
     }
 }
@@ -606,10 +777,43 @@ impl<'a, T: Scalar> From<&'a [T]> for Slice<'a, T> {
     }
 }
 
+impl<'a, T: Scalar> TryFrom<ScalarSlice<'a>> for Slice<'a, T> {
+    type Error = ScalarSlice<'a>;
+    fn try_from(slice: ScalarSlice<'a>) -> Result<Self, Self::Error> {
+        match slice.data.try_into() {
+            Ok(data) => Ok(Self { data }),
+            Err(data) => Err(ScalarSlice { data })
+        }
+    }
+}
+
+impl<'a, T: Scalar> TryFrom<ScalarSliceMut<'a>> for SliceMut<'a, T> {
+    type Error = ScalarSliceMut<'a>;
+    fn try_from(slice: ScalarSliceMut<'a>) -> Result<Self, Self::Error> {
+        match slice.data.try_into() {
+            Ok(data) => Ok(Self { data }),
+            Err(data) => Err(ScalarSliceMut { data })
+        }
+    }
+}
+
 impl<T: Scalar, S: DataOwned<Elem = T>> BufferBase<S> {
-    pub unsafe fn uninit(device: Device, len: usize) -> Result<Self> {
+    unsafe fn uninit(device: Device, len: usize) -> Result<Self> {
         let data = unsafe { BufferRepr::uninit(device, len)?.into() };
         Ok(Self { data })
+    }
+    pub fn from_elem(device: Device, len: usize, elem: T) -> Result<Self> {
+        let mut output = unsafe { Buffer::uninit(device, len)? };
+        output.fill(elem)?;
+        Ok(Self {
+            data: output.data.into(),
+        })
+    }
+    pub fn zeros(device: Device, len: usize) -> Result<Self> {
+        Self::from_elem(device, len, T::zero())
+    }
+    pub fn ones(device: Device, len: usize) -> Result<Self> {
+        Self::from_elem(device, len, T::one())
     }
 }
 
@@ -623,6 +827,9 @@ impl<T: Scalar, S: Data<Elem = T>> BufferBase<S> {
     pub fn len(&self) -> usize {
         self.data.len()
     }
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
     pub fn as_slice(&self) -> Slice<T> {
         let data = self.data.as_slice();
         Slice { data }
@@ -634,6 +841,24 @@ impl<T: Scalar, S: Data<Elem = T>> BufferBase<S> {
         let data = self.data.as_slice_mut();
         SliceMut { data }
     }
+    pub fn as_host_slice(&self) -> Option<&[T]> {
+        self.data.as_host_slice()
+    }
+    pub fn as_host_slice_mut(&mut self) -> Option<&mut [T]> where S: DataMut {
+        self.data.as_host_slice_mut()
+    }
+    pub fn as_scalar_slice(&self) -> ScalarSlice
+    {
+        let data = self.data.as_scalar_slice();
+        ScalarSlice { data }
+    }
+    pub fn as_scalar_slice_mut(&mut self) -> ScalarSliceMut
+    where
+        S: DataMut,
+    {
+        let data = self.data.as_scalar_slice_mut();
+        ScalarSliceMut { data }
+    }
     pub fn to_device(&self, device: Device) -> Result<Buffer<T>> {
         let data = self.data.as_slice().to_device(device)?;
         Ok(Buffer { data })
@@ -641,6 +866,104 @@ impl<T: Scalar, S: Data<Elem = T>> BufferBase<S> {
     pub fn to_vec(&self) -> Result<Vec<T>> {
         self.data.as_slice().to_vec()
     }
+}
+
+impl<T: Scalar, S: Data<Elem = T>> BufferBase<S> {
+    pub fn fill(&mut self, elem: T) -> Result<()> where S: DataMut {
+        use dry::macro_wrap;
+        use paste::paste;
+        
+        if self.is_empty() {
+            return Ok(());
+        }
+        if let Some(y) = self.as_host_slice_mut() {
+            for y in y.iter_mut() {
+                *y = elem;
+            }  
+            return Ok(());
+        } 
+        #[cfg(feature = "device")] {
+            let x = ScalarElem::from(elem);
+            let y = self.as_scalar_slice_mut();
+            macro_wrap!(
+                paste! {
+                    match x {
+                        macro_for!($T in [u8, i8, u16, i16, f16, bf16, u32, i32, f32, u64, i64, f64] {
+                            ScalarElem::[<$T:upper>](x) => {
+                                kernels::[<fill_ $T>]::builder()?
+                                .build(y.device())?
+                                .dispatch(x, y.try_into().ok().unwrap())?;
+                            }
+                        })
+                    _ => unreachable!(),
+                }
+            });
+        }
+        Ok(())
+    }
+    pub fn cast<Y: Scalar>(&self) -> Result<Buffer<Y>> {
+        if self.is_empty() {
+            return Buffer::zeros(self.device(), 0);
+        }
+        if let Some(x) = self.as_host_slice() {
+            let y: Vec<Y> = x.iter().map(|x| x.cast()).collect();
+            return Ok(Buffer::from(y));
+        }
+        #[cfg(feature = "device")] {
+            let mut output = unsafe { 
+                Buffer::uninit(self.device(), self.len())?
+            };
+            let x = self.as_scalar_slice();
+            let y = output.as_scalar_slice_mut();
+            
+            macro_for!($X in [u8, i8, u16, i16, f16, bf16, u32, i32, f32, u64, i64, f64] {
+                macro_for!($Y in [u8, i8, u16, i16, f16, bf16, u32, i32, f32, u64, i64, f64] {
+                    if T::scalar_type() == $X::scalar_type() && Y::scalar_type() == $Y::scalar_type() {
+                        paste! {
+                            kernels::[<cast_ $X _ $Y>]::builder()?.build(y.device())?.dispatch(x.try_into().ok().unwrap(), y.try_into().ok().unwrap())?;
+                        }
+                        return Ok(output);
+                    }
+                });
+            });
+        }
+        unreachable!()
+    }
+}
+
+//#[cfg(feature = "device")]
+#[module]
+#[krnl(crate=crate)]
+//#[krnl(no_build)]
+mod kernels {
+    #[cfg(not(target_arch = "spirv"))]
+    use krnl_core; 
+    use krnl_core::{half::{f16, bf16}, macros::kernel};
+    #[cfg(target_arch = "spirv")]
+    use krnl_core::scalar::Scalar;
+    use dry::macro_for;
+    use paste::paste;
+    
+    macro_for!($T in [u8, i8, u16, i16, f16, bf16, u32, i32, f32, u64, i64, f64]  {
+       paste! {
+           #[kernel(threads(128))]
+           pub fn [<fill_ $T>](x: $T, #[item] y: &mut $T) {
+               *y = x;
+           }
+       } 
+    });
+    
+    macro_for!($X in [u8, i8, u16, i16, f16, bf16, u32, i32, f32, u64, i64, f64] {
+        macro_for!($Y in [u8, i8, u16, i16, f16, bf16, u32, i32, f32, u64, i64, f64] {
+            paste! {
+                #[kernel(threads(128))]
+                pub fn [<cast_ $X _ $Y>](#[item] x: $X, #[item] y: &mut $Y) {
+                    *y = Default::default();
+                    *y = x.cast();
+                }
+            }
+        });     
+    });   
 }
 
 /*

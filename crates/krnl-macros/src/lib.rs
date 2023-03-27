@@ -117,6 +117,15 @@ pub fn module(attr: TokenStream, item: TokenStream) -> TokenStream {
             #tokens
         };
     } else {
+        let tokens = item.tokens;
+        item.tokens = quote! {
+            macro_rules! __krnl_kernel {
+                ($k:ident) => {
+                    &[]
+                };
+            }
+            #tokens
+        }
     }
 
     item.into_token_stream().into()
@@ -1544,22 +1553,24 @@ pub fn __krnl_module(input: TokenStream) -> TokenStream {
             "Cached krnlc version {krnlc_version} is not compatible!"
         ));
     }
-    let mut macro_arms = TokenStream2::new();
+    let mut macro_arms = Vec::new();
     if error.is_none() {
         match bincode::deserialize::<KrnlcCache>(&cache_bytes) {
             Ok(cache) => {
                 if let Some(modules) = cache.modules.as_ref() {
+                    let kernel_count = modules.values().map(|kernels| kernels.len()).sum();
+                    macro_arms.reserve(kernel_count);
                     if let Some(module) = modules.get(&input.module.to_string()) {
                         for (kernel, kernel_desc) in module {
                             let ident = format_ident!("{kernel}");
                             let bytes = bincode::serialize(kernel_desc).unwrap();
-                            let bytes: Punctuated<LitInt, Comma> = bytes
-                                .iter()
-                                .map(|x| LitInt::new(&x.to_string(), Span2::call_site()))
-                                .collect();
-                            macro_arms.extend(quote! {
+                            let bytes = bytes.into_iter().map(|x| {
+                                use proc_macro2::{Literal, TokenTree};
+                                TokenTree::Literal(Literal::u8_unsuffixed(x))
+                            });
+                            macro_arms.push(quote! {
                                 (#ident) => {
-                                    &[#bytes]
+                                    &[#(#bytes),*]
                                 };
                             });
                         }
@@ -1584,7 +1595,7 @@ pub fn __krnl_module(input: TokenStream) -> TokenStream {
     };
     quote! {
         macro_rules! __krnl_kernel {
-            #macro_arms
+            #(#macro_arms)*
             ($i:ident) => { &[] };
         }
         #error

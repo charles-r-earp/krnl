@@ -309,6 +309,20 @@ impl<T: Scalar> From<T> for ScalarElem {
     }
 }
 
+macro_for!($T in [u8, i8, u16, i16, f16, bf16, u32, i32, f32, u64, i64, f64] {
+    #[cfg(not(target_arch = "spirv"))]
+    impl TryFrom<ScalarElem> for $T {
+        type Error = ();
+        fn try_from(elem: ScalarElem) -> Result<Self, ()> {
+            if Self::scalar_type() == elem.scalar_type() {
+                Ok(elem.cast())
+            } else {
+                Err(())
+            }
+        }
+    }
+});
+
 trait AsScalar<T>: Scalar {
     fn as_scalar(self) -> T;
 }

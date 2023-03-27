@@ -22,29 +22,39 @@ struct Cli {
     workspace: Workspace,
     #[command(flatten)]
     manifest: Manifest,
-    #[arg(long = "release")]
-    release: bool,
+    #[arg(long = "non-semantic-info")]
+    non_semantic_info: bool,
 }
 
 fn main() -> Result<()> {
     let ctrlc_signal = CtrlcSignal::new()?;
     let cli = Cli::parse();
     let metadata = cli.manifest.metadata().exec()?;
+    if cli.manifest.manifest_path.is_none()
+        && cli.workspace == Workspace::default()
+        && metadata.workspace_members.len() > 1
+    {
+        bail!("Found a workspace. Specify packages with `-p` or use `--workspace` to build all packages.");
+    }
     let (selected, _) = cli.workspace.partition_packages(&metadata);
+    let target_dir = metadata.target_directory.as_str();
     for package in selected {
         ctrlc_signal.check()?;
         let (features, dependencies) = extract_features_dependencies(&metadata, &package)?;
         let cache_guard = CacheGuard::new(&package);
         cache(&package, None)?;
-        //cargo_check(&package, &features)?;
         ctrlc_signal.check()?;
-        let module_datas = cargo_expand(&package, &features)?;
+        let module_datas = cargo_expand(&package, target_dir, &features)?;
         ctrlc_signal.check()?;
-        let modules = compile(&package, &dependencies, module_datas, cli.release)?;
+        let modules = compile(
+            &package,
+            target_dir,
+            &dependencies,
+            module_datas,
+            cli.non_semantic_info,
+        )?;
         cache(&package, Some(modules))?;
         cache_guard.finish();
-        //ctrlc_signal.check()?;
-        //cargo_check(&package, &features)?;
     }
     Ok(())
 }
@@ -94,13 +104,19 @@ impl Drop for CacheGuard<'_> {
     }
 }
 
-fn cargo_expand(package: &Package, features: &str) -> Result<HashMap<String, ModuleData>> {
+fn cargo_expand(
+    package: &Package,
+    target_dir: &str,
+    features: &str,
+) -> Result<HashMap<String, ModuleData>> {
     let mut command = Command::new("cargo");
     command.args([
         "+nightly",
         "rustc",
         "--manifest-path",
         package.manifest_path.as_str(),
+        "--target-dir",
+        target_dir,
     ]);
     if !features.is_empty() {
         command.args(["--features", &features]);
@@ -125,26 +141,6 @@ fn cargo_expand(package: &Package, features: &str) -> Result<HashMap<String, Mod
     result?;
     Ok(modules)
 }
-
-/*fn cargo_check(package: &Package, features: &str) -> Result<()> {
-    let mut command = Command::new("cargo");
-    command.args([
-        "+nightly",
-        "check",
-        "--manifest-path",
-        package.manifest_path.as_str(),
-    ]);
-    if !features.is_empty() {
-        command.args(["--features", &features]);
-    }
-    command.stderr(Stdio::inherit());
-    let status = command.status()?;
-    if status.success() {
-        Ok(())
-    } else {
-        Err(format_err!("cargo check failed!"))
-    }
-}*/
 
 fn extract_features_dependencies(
     metadata: &Metadata,
@@ -238,7 +234,6 @@ fn extract_features_dependencies(
                     let mut default_features = None;
                     let mut features = Vec::new();
                     if let Some(table) = value.as_object() {
-                        dependencies.push_str("{ ");
                         for (key, value) in table.iter() {
                             match key.as_str() {
                                 "default-features" => {
@@ -279,8 +274,11 @@ fn extract_features_dependencies(
                     if features.is_empty() {
                         features = dep_features;
                     }
-                    let features = itertools::join(features, ", ");
-                    writeln!(&mut dependencies, "{dep:?} = {{ {dep_source}, features = [{features:?}], default-features = {default_features} }}").unwrap();
+                    let mut features = itertools::join(features, ", ");
+                    if !features.is_empty() {
+                        features = format!("{features:?}");
+                    }
+                    writeln!(&mut dependencies, "{dep:?} = {{ {dep_source}, features = [{features}], default-features = {default_features} }}").unwrap();
                 }
             } else {
                 bail!(
@@ -405,13 +403,13 @@ fn cache(
 
 fn compile(
     package: &Package,
+    target_dir: &str,
     dependencies: &str,
     module_datas: HashMap<String, ModuleData>,
-    release: bool,
+    non_semantic_info: bool,
 ) -> Result<HashMap<String, HashMap<String, KernelDesc>>> {
     use std::fmt::Write;
-    let manifest_dir = package.manifest_path.parent().unwrap().as_std_path();
-    let target_krnl_dir = manifest_dir.join("target/krnl");
+    let target_krnl_dir = PathBuf::from(target_dir).join("krnlc");
     std::fs::create_dir_all(&target_krnl_dir)?;
     {
         // lib
@@ -460,13 +458,19 @@ fn compile(
         std::env::set_var(path_var, path);
     }
     let crate_name = package.name.as_str();
-    let device_crate_dir = target_krnl_dir.join(&crate_name);
+    let device_crate_dir = target_krnl_dir.join("crates").join(&crate_name);
     let device_crate_manifest_path = device_crate_dir.join("Cargo.toml");
     let mut update = false;
     {
         // device crate
         std::fs::create_dir_all(&device_crate_dir)?;
-        let debug = !release;
+        let config_dir = device_crate_dir.join(".cargo");
+        std::fs::create_dir_all(&config_dir)?;
+        let config = format!(
+            r#"[build]
+target-dir = {target_dir:?}"#
+        );
+        std::fs::write(config_dir.join("config.toml"), config.as_bytes())?;
         let manifest = format!(
             r#"# generated by krnlc 
 [package]
@@ -482,9 +486,6 @@ crate-type = ["dylib"]
 
 [dependencies]
 {dependencies}
-
-[profile.release]
-debug = {debug}
 "#
         );
         if let Ok(old_manifest) = std::fs::read_to_string(&device_crate_manifest_path) {
@@ -539,17 +540,16 @@ extern crate krnl_core;
         }
     }
     let crate_name_ident = crate_name.replace("-", "_");
-    let mut modules =
-        HashMap::<String, HashMap<String, KernelDesc>>::with_capacity(module_datas.len());
-    {
+    let modules = {
         // run spirv-builder
         let mut builder = SpirvBuilder::new(&device_crate_dir, "spirv-unknown-vulkan1.2")
             .multimodule(true)
             .spirv_metadata(SpirvMetadata::NameVariables)
             .print_metadata(MetadataPrintout::None)
-            //.release(release)
-            .deny_warnings(true)
-            .extension("SPV_KHR_non_semantic_info");
+            .deny_warnings(true);
+        if non_semantic_info {
+            builder = builder.extension("SPV_KHR_non_semantic_info");
+        }
         let capabilites = {
             use spirv_builder::Capability::*;
             [Int8, Int16, Int64, Float16, Float64, GroupNonUniform]
@@ -559,403 +559,405 @@ extern crate krnl_core;
         }
         let output = builder.build()?;
         let spirv_modules = output.module.unwrap_multi();
-        for (entry_point, spirv_path) in spirv_modules.iter() {
-            use rspirv::{
-                binary::Assemble,
-                dr::{Instruction, Operand},
-                spirv::{BuiltIn, Decoration, Op, StorageClass},
-            };
-            use spirv_tools::{
-                opt::{Optimizer, Passes},
-                val::Validator,
-                TargetEnv,
-            };
-            let spirv = std::fs::read(spirv_path)?;
-            let mut spirv_module = rspirv::dr::load_bytes(&spirv).unwrap();
-            /*{
-                use rspirv::binary::Disassemble;
-                eprintln!("{}", spirv_module.disassemble());
-            }*/
-            let (module_name_with_hash, kernel_name) = entry_point.split_once("::").unwrap();
-            let module_data = module_datas.get(module_name_with_hash).unwrap();
-            let module_path = &module_data.path;
-            let mut kernel_desc: KernelDesc = {
-                let mut kernel_data_var = None;
-                for inst in spirv_module.annotations.iter() {
-                    let op = inst.class.opcode;
-                    if op == Op::Decorate {
-                        if let [Operand::IdRef(id), Operand::Decoration(Decoration::DescriptorSet), Operand::LiteralInt32(1)] =
-                            inst.operands.as_slice()
-                        {
-                            kernel_data_var.replace(*id);
-                            break;
-                        }
-                    }
+        use rayon::iter::{IntoParallelIterator, ParallelIterator};
+        let kernels: Vec<_> = spirv_modules
+            .into_par_iter()
+            .map(|(entry_point, spirv_path)| {
+                kernel_post_process(&crate_name_ident, entry_point, spirv_path, &module_datas)
+            })
+            .collect();
+        let mut modules =
+            HashMap::<String, HashMap<String, KernelDesc>>::with_capacity(module_datas.len());
+        let mut kernels = kernels.into_iter();
+        while let Some((module_name_with_hash, (kernel_name, kernel_desc))) =
+            kernels.next().transpose()?
+        {
+            modules
+                .entry(module_name_with_hash)
+                .or_default()
+                .insert(kernel_name, kernel_desc);
+        }
+        modules
+    };
+    Ok(modules)
+}
+
+fn kernel_post_process(
+    crate_name_ident: &str,
+    entry_point: &str,
+    spirv_path: &std::path::Path,
+    module_datas: &HashMap<String, ModuleData>,
+) -> Result<(String, (String, KernelDesc))> {
+    use rspirv::{
+        binary::Assemble,
+        dr::{Instruction, Operand},
+        spirv::{BuiltIn, Decoration, Op, StorageClass},
+    };
+    use spirv_tools::{opt::Optimizer, val::Validator, TargetEnv};
+    let spirv = std::fs::read(spirv_path)?;
+    let mut spirv_module = rspirv::dr::load_bytes(&spirv).unwrap();
+    /*{
+        use rspirv::binary::Disassemble;
+        eprintln!("{}", spirv_module.disassemble());
+    }*/
+    let (module_name_with_hash, kernel_name) = entry_point.split_once("::").unwrap();
+    let module_data = module_datas.get(module_name_with_hash).unwrap();
+    let module_path = &module_data.path;
+    let mut kernel_desc: KernelDesc = {
+        let mut kernel_data_var = None;
+        for inst in spirv_module.annotations.iter() {
+            let op = inst.class.opcode;
+            if op == Op::Decorate {
+                if let [Operand::IdRef(id), Operand::Decoration(Decoration::DescriptorSet), Operand::LiteralInt32(1)] =
+                    inst.operands.as_slice()
+                {
+                    kernel_data_var.replace(*id);
+                    break;
                 }
-                let kernel_data_var = if let Some(var) = kernel_data_var {
-                    var
-                } else {
-                    bail!("Unable to decode kernel {module_path}::{kernel_name}!");
-                };
-                spirv_module.annotations.retain(|inst| {
-                    let op = inst.class.opcode;
-                    !(op == Op::Decorate
-                        && inst.operands.first() == Some(&Operand::IdRef(kernel_data_var)))
-                });
-                spirv_module.entry_points[0].operands.retain(|x| {
-                    if let Operand::IdRef(id) = x {
-                        *id != kernel_data_var
-                    } else {
-                        true
-                    }
-                });
-                add_spec_constant_ops(&mut spirv_module);
-                /*{
-                    let spirv = spirv_module.assemble();
-                    let target_env = TargetEnv::Vulkan_1_2;
-                    let mut optimizer = spirv_tools::opt::create(Some(target_env));
-                    optimizer
-                        .register_pass(Passes::StripNonSemanticInfo)
-                        .register_pass(Passes::StripDebugInfo)
-                        .register_performance_passes();
-                    let spirv = optimizer
-                        .optimize(&spirv, &mut |_| (), None)?
-                        .as_words()
-                        .to_vec();
-                    spirv_module = rspirv::dr::load_words(&spirv).unwrap();
-                }*/
-                let mut constants = HashMap::new();
-                for inst in spirv_module.types_global_values.iter() {
-                    if let Some(result_id) = inst.result_id {
-                        let op = inst.class.opcode;
-                        let operands = inst.operands.as_slice();
-                        if let (Op::Constant, [Operand::LiteralInt32(value)]) = (op, operands) {
-                            constants.insert(result_id, *value);
-                        }
-                    }
+            }
+        }
+        let kernel_data_var = if let Some(var) = kernel_data_var {
+            var
+        } else {
+            bail!("Unable to decode kernel {module_path}::{kernel_name}!");
+        };
+        spirv_module.annotations.retain(|inst| {
+            let op = inst.class.opcode;
+            !(op == Op::Decorate && inst.operands.first() == Some(&Operand::IdRef(kernel_data_var)))
+        });
+        spirv_module.entry_points[0].operands.retain(|x| {
+            if let Operand::IdRef(id) = x {
+                *id != kernel_data_var
+            } else {
+                true
+            }
+        });
+        add_spec_constant_ops(&mut spirv_module);
+        /*{
+            let spirv = spirv_module.assemble();
+            let target_env = TargetEnv::Vulkan_1_2;
+            let mut optimizer = spirv_tools::opt::create(Some(target_env));
+            optimizer
+                .register_pass(Passes::StripNonSemanticInfo)
+                .register_pass(Passes::StripDebugInfo)
+                .register_performance_passes();
+            let spirv = optimizer
+                .optimize(&spirv, &mut |_| (), None)?
+                .as_words()
+                .to_vec();
+            spirv_module = rspirv::dr::load_words(&spirv).unwrap();
+        }*/
+        let mut constants = HashMap::new();
+        for inst in spirv_module.types_global_values.iter() {
+            if let Some(result_id) = inst.result_id {
+                let op = inst.class.opcode;
+                let operands = inst.operands.as_slice();
+                if let (Op::Constant, [Operand::LiteralInt32(value)]) = (op, operands) {
+                    constants.insert(result_id, *value);
                 }
-                let mut kernel_data_ptrs = HashMap::new();
-                let mut kernel_data_stores = HashMap::new();
-                for function in spirv_module.functions.iter_mut() {
-                    for block in function.blocks.iter_mut() {
-                        block.instructions.retain(|inst| {
-                            let op = inst.class.opcode;
-                            let operands = inst.operands.as_slice();
-                            match (op, operands) {
-                                (
-                                    Op::AccessChain,
-                                    [Operand::IdRef(var), _, Operand::IdRef(index)],
-                                ) => {
-                                    if *var == kernel_data_var {
-                                        kernel_data_ptrs.insert(inst.result_id.unwrap(), *index);
-                                        return false;
-                                    }
-                                }
-                                (Op::AccessChain, [Operand::IdRef(var), ..]) => {
-                                    if *var == kernel_data_var {
-                                        return false;
-                                    }
-                                }
-                                (Op::Store, [Operand::IdRef(ptr), Operand::IdRef(value)]) => {
-                                    if let Some(index) = kernel_data_ptrs.get(ptr) {
-                                        if let Some(id) = constants.get(index) {
-                                            kernel_data_stores.insert(*id, *value);
-                                        }
-                                        return false;
-                                    }
-                                }
-                                _ => {}
-                            }
-                            true
-                        });
-                    }
-                }
-                let mut kernel_data = None;
-                let mut array_ids = HashMap::with_capacity(
-                    kernel_data_stores.len().checked_sub(1).unwrap_or_default(),
-                );
-                spirv_module.debug_names.retain_mut(|inst| {
+            }
+        }
+        let mut kernel_data_ptrs = HashMap::new();
+        let mut kernel_data_stores = HashMap::new();
+        for function in spirv_module.functions.iter_mut() {
+            for block in function.blocks.iter_mut() {
+                block.instructions.retain(|inst| {
                     let op = inst.class.opcode;
-                    let operands = inst.operands.as_mut_slice();
+                    let operands = inst.operands.as_slice();
                     match (op, operands) {
-                        (Op::Name, [Operand::IdRef(var), Operand::LiteralString(name)]) => {
+                        (Op::AccessChain, [Operand::IdRef(var), _, Operand::IdRef(index)]) => {
                             if *var == kernel_data_var {
-                                kernel_data.replace(std::mem::take(name));
+                                kernel_data_ptrs.insert(inst.result_id.unwrap(), *index);
                                 return false;
-                            } else if name.starts_with("__krnl_group_array_")
-                                || name.starts_with("__krnl_subgroup_array_")
-                            {
-                                if let Some(id) = name
-                                    .rsplit_once("_")
-                                    .map(|x| u32::from_str_radix(x.1, 10).ok())
-                                    .flatten()
-                                {
-                                    array_ids.insert(*var, id);
+                            }
+                        }
+                        (Op::AccessChain, [Operand::IdRef(var), ..]) => {
+                            if *var == kernel_data_var {
+                                return false;
+                            }
+                        }
+                        (Op::Store, [Operand::IdRef(ptr), Operand::IdRef(value)]) => {
+                            if let Some(index) = kernel_data_ptrs.get(ptr) {
+                                if let Some(id) = constants.get(index) {
+                                    kernel_data_stores.insert(*id, *value);
                                 }
+                                return false;
                             }
                         }
                         _ => {}
                     }
                     true
                 });
-                if !array_ids.is_empty() {
-                    let mut array_types = HashMap::new();
-                    let mut pointer_types = HashMap::new();
-                    let mut pointer_lens = HashMap::new();
-                    for inst in spirv_module.types_global_values.iter() {
-                        if let Some(result_id) = inst.result_id {
-                            let op = inst.class.opcode;
-                            let operands = inst.operands.as_slice();
-                            match (op, operands) {
-                                (Op::Constant, [Operand::LiteralInt32(value)]) => {
-                                    constants.insert(result_id, *value);
-                                }
-                                (Op::TypeArray, [Operand::IdRef(ty), Operand::IdRef(_)]) => {
-                                    array_types.insert(result_id, *ty);
-                                }
-                                (
-                                    Op::TypePointer,
-                                    [Operand::StorageClass(storage_class), Operand::IdRef(pointee)],
-                                ) => {
-                                    if *storage_class == StorageClass::Workgroup
-                                        || *storage_class == StorageClass::Private
-                                    {
-                                        if let Some(ty) = array_types.get(pointee) {
-                                            pointer_types.insert(result_id, *ty);
-                                        }
-                                    }
-                                }
-                                (Op::Variable, _) => {
-                                    if let Some((result_type, id)) =
-                                        inst.result_type.zip(array_ids.get(&result_id))
-                                    {
-                                        if let Some(len) = kernel_data_stores.get(id) {
-                                            pointer_lens.insert(result_type, *len);
-                                        }
-                                    }
-                                }
-                                _ => {}
-                            }
+            }
+        }
+        let mut kernel_data = None;
+        let mut array_ids =
+            HashMap::with_capacity(kernel_data_stores.len().checked_sub(1).unwrap_or_default());
+        spirv_module.debug_names.retain_mut(|inst| {
+            let op = inst.class.opcode;
+            let operands = inst.operands.as_mut_slice();
+            match (op, operands) {
+                (Op::Name, [Operand::IdRef(var), Operand::LiteralString(name)]) => {
+                    if *var == kernel_data_var {
+                        kernel_data.replace(std::mem::take(name));
+                        return false;
+                    } else if name.starts_with("__krnl_group_array_")
+                        || name.starts_with("__krnl_subgroup_array_")
+                    {
+                        if let Some(id) = name
+                            .rsplit_once("_")
+                            .map(|x| u32::from_str_radix(x.1, 10).ok())
+                            .flatten()
+                        {
+                            array_ids.insert(*var, id);
                         }
                     }
-                    let mut id_counter = spirv_module.header.as_ref().unwrap().bound;
-                    let mut scalars = Vec::new();
-                    let mut constants = Vec::new();
-                    let mut types_global_values = Vec::with_capacity(
-                        spirv_module.types_global_values.len() + array_ids.len(),
-                    );
-                    for mut inst in spirv_module.types_global_values {
-                        if inst.result_id == Some(kernel_data_var) {
+                }
+                _ => {}
+            }
+            true
+        });
+        if !array_ids.is_empty() {
+            let mut array_types = HashMap::new();
+            let mut pointer_types = HashMap::new();
+            let mut pointer_lens = HashMap::new();
+            for inst in spirv_module.types_global_values.iter() {
+                if let Some(result_id) = inst.result_id {
+                    let op = inst.class.opcode;
+                    let operands = inst.operands.as_slice();
+                    match (op, operands) {
+                        (Op::Constant, [Operand::LiteralInt32(value)]) => {
+                            constants.insert(result_id, *value);
+                        }
+                        (Op::TypeArray, [Operand::IdRef(ty), Operand::IdRef(_)]) => {
+                            array_types.insert(result_id, *ty);
+                        }
+                        (
+                            Op::TypePointer,
+                            [Operand::StorageClass(storage_class), Operand::IdRef(pointee)],
+                        ) => {
+                            if *storage_class == StorageClass::Workgroup
+                                || *storage_class == StorageClass::Private
+                            {
+                                if let Some(ty) = array_types.get(pointee) {
+                                    pointer_types.insert(result_id, *ty);
+                                }
+                            }
+                        }
+                        (Op::Variable, _) => {
+                            if let Some((result_type, id)) =
+                                inst.result_type.zip(array_ids.get(&result_id))
+                            {
+                                if let Some(len) = kernel_data_stores.get(id) {
+                                    pointer_lens.insert(result_type, *len);
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            let mut id_counter = spirv_module.header.as_ref().unwrap().bound;
+            let mut scalars = Vec::new();
+            let mut constants = Vec::new();
+            let mut types_global_values =
+                Vec::with_capacity(spirv_module.types_global_values.len() + array_ids.len());
+            for mut inst in spirv_module.types_global_values {
+                if inst.result_id == Some(kernel_data_var) {
+                    continue;
+                } else if let Some(result_id) = inst.result_id {
+                    let op = inst.class.opcode;
+                    let operands = inst.operands.as_mut_slice();
+                    match (op, operands) {
+                        (Op::TypeInt | Op::TypeFloat | Op::TypeBool, _) => {
+                            scalars.push(inst);
                             continue;
-                        } else if let Some(result_id) = inst.result_id {
-                            let op = inst.class.opcode;
-                            let operands = inst.operands.as_mut_slice();
-                            match (op, operands) {
-                                (Op::TypeInt | Op::TypeFloat | Op::TypeBool, _) => {
-                                    scalars.push(inst);
-                                    continue;
-                                }
-                                (
-                                    Op::Constant
-                                    | Op::ConstantTrue
-                                    | Op::ConstantFalse
-                                    | Op::ConstantNull
-                                    | Op::SpecConstant
-                                    | Op::SpecConstantTrue
-                                    | Op::SpecConstantFalse
-                                    | Op::SpecConstantOp,
-                                    _,
-                                ) => {
-                                    if scalars.iter().any(|x| x.result_id == inst.result_type) {
-                                        constants.push(inst);
-                                    }
-                                    continue;
-                                }
-                                (
-                                    Op::TypePointer,
-                                    [Operand::StorageClass(_), Operand::IdRef(pointee)],
-                                ) => {
-                                    if let Some((ty, len)) = pointer_types
-                                        .get(&result_id)
-                                        .zip(pointer_lens.get(&result_id))
-                                    {
-                                        *pointee = id_counter;
+                        }
+                        (
+                            Op::Constant
+                            | Op::ConstantTrue
+                            | Op::ConstantFalse
+                            | Op::ConstantNull
+                            | Op::SpecConstant
+                            | Op::SpecConstantTrue
+                            | Op::SpecConstantFalse
+                            | Op::SpecConstantOp,
+                            _,
+                        ) => {
+                            if scalars.iter().any(|x| x.result_id == inst.result_type) {
+                                constants.push(inst);
+                            }
+                            continue;
+                        }
+                        (Op::TypePointer, [Operand::StorageClass(_), Operand::IdRef(pointee)]) => {
+                            if let Some((ty, len)) = pointer_types
+                                .get(&result_id)
+                                .zip(pointer_lens.get(&result_id))
+                            {
+                                *pointee = id_counter;
+                                id_counter += 1;
+                                types_global_values.push(Instruction::new(
+                                    Op::TypeArray,
+                                    None,
+                                    Some(*pointee),
+                                    vec![Operand::IdRef(*ty), Operand::IdRef(*len)],
+                                ));
+                            }
+                        }
+                        (Op::Variable, [Operand::StorageClass(storage_class)]) => {
+                            if *storage_class == StorageClass::Private {
+                                if let Some(result_type) = inst.result_type {
+                                    if let Some(ty) = pointer_types.get(&result_type) {
+                                        let null = id_counter;
                                         id_counter += 1;
                                         types_global_values.push(Instruction::new(
-                                            Op::TypeArray,
-                                            None,
-                                            Some(*pointee),
-                                            vec![Operand::IdRef(*ty), Operand::IdRef(*len)],
+                                            Op::ConstantNull,
+                                            Some(*ty),
+                                            Some(null),
+                                            Vec::new(),
                                         ));
+                                        inst.operands.push(Operand::IdRef(null));
                                     }
                                 }
-                                (Op::Variable, [Operand::StorageClass(storage_class)]) => {
-                                    if *storage_class == StorageClass::Private {
-                                        if let Some(result_type) = inst.result_type {
-                                            if let Some(ty) = pointer_types.get(&result_type) {
-                                                let null = id_counter;
-                                                id_counter += 1;
-                                                types_global_values.push(Instruction::new(
-                                                    Op::ConstantNull,
-                                                    Some(*ty),
-                                                    Some(null),
-                                                    Vec::new(),
-                                                ));
-                                                inst.operands.push(Operand::IdRef(null));
-                                            }
-                                        }
-                                    }
-                                }
-                                _ => {}
                             }
                         }
-                        types_global_values.push(inst);
-                    }
-                    spirv_module.types_global_values = scalars
-                        .into_iter()
-                        .chain(constants)
-                        .chain(types_global_values)
-                        .collect();
-                    spirv_module.header.as_mut().unwrap().bound = id_counter;
-                } else {
-                    for (i, inst) in spirv_module.types_global_values.iter().enumerate() {
-                        if inst.result_id == Some(kernel_data_var) {
-                            spirv_module.types_global_values.remove(i);
-                            break;
-                        }
+                        _ => {}
                     }
                 }
-                let kernel_data = if let Some(kernel_data) = kernel_data
-                    .as_ref()
-                    .map(|x| x.strip_prefix("__krnl_kernel_data_"))
-                    .flatten()
-                {
-                    kernel_data
-                } else {
-                    bail!("Unable to decode kernel {module_path}::{kernel_name}, found {kernel_data:?}!");
-                };
-                let mut bytes = Vec::with_capacity(kernel_data.len() / 2);
-                let mut iter = kernel_data.chars();
-                while let Some((a, b)) = iter.next().zip(iter.next()) {
-                    let byte = a
-                        .to_digit(16)
-                        .unwrap()
-                        .checked_mul(16)
-                        .unwrap()
-                        .checked_add(b.to_digit(16).unwrap())
-                        .unwrap()
-                        .try_into()
-                        .unwrap();
-                    bytes.push(byte);
-                }
-                bincode::deserialize(&bytes)?
-            };
-            if kernel_desc
-                .spec_descs
-                .iter()
-                .any(|x| x.thread_dim.is_some())
-            {
-                spirv_module.execution_modes.clear();
-                let mut builder =
-                    rspirv::dr::Builder::new_from_module(std::mem::take(&mut spirv_module));
-                let uint = builder.type_int(32, 0);
-                let one = builder.constant_u32(uint, 1);
-                let mut threads = [one; 3];
-                for (i, spec_desc) in kernel_desc.spec_descs.iter().enumerate() {
-                    if let Some(thread_dim) = spec_desc.thread_dim {
-                        let spec = builder.spec_constant_u32(uint, 1);
-                        builder.decorate(
-                            spec,
-                            Decoration::SpecId,
-                            [Operand::LiteralInt32(i as u32)],
-                        );
-                        threads[thread_dim] = spec;
-                    }
-                }
-                let uvec3 = builder.type_vector(uint, 3);
-                let threads = builder.spec_constant_composite(uvec3, threads);
-                builder.decorate(
-                    threads,
-                    Decoration::BuiltIn,
-                    [Operand::BuiltIn(BuiltIn::WorkgroupSize)],
-                );
-                spirv_module = builder.module();
+                types_global_values.push(inst);
             }
-            spirv_module.entry_points.first_mut().unwrap().operands[2] =
-                Operand::LiteralString("main".to_string());
-            kernel_desc.name = format!("{crate_name_ident}::{module_path}::{kernel_name}");
-            let mut features = Features::default();
-            for inst in spirv_module.types_global_values.iter() {
-                let class = inst.class;
-                let op = class.opcode;
-                match (op, inst.operands.first()) {
-                    (Op::TypeInt, Some(Operand::LiteralInt32(8))) => {
-                        features.shader_int8 = true;
-                    }
-                    (Op::TypeInt, Some(Operand::LiteralInt32(16))) => {
-                        features.shader_int16 = true;
-                    }
-                    (Op::TypeInt, Some(Operand::LiteralInt32(64))) => {
-                        features.shader_int64 = true;
-                    }
-                    (Op::TypeFloat, Some(Operand::LiteralInt32(16))) => {
-                        features.shader_float16 = true;
-                    }
-                    (Op::TypeFloat, Some(Operand::LiteralInt32(64))) => {
-                        features.shader_float64 = true;
-                    }
-                    _ => (),
+            spirv_module.types_global_values = scalars
+                .into_iter()
+                .chain(constants)
+                .chain(types_global_values)
+                .collect();
+            spirv_module.header.as_mut().unwrap().bound = id_counter;
+        } else {
+            for (i, inst) in spirv_module.types_global_values.iter().enumerate() {
+                if inst.result_id == Some(kernel_data_var) {
+                    spirv_module.types_global_values.remove(i);
+                    break;
                 }
             }
-            spirv_module.capabilities.retain(|inst| {
-                use rspirv::spirv::Capability::*;
-                match inst.operands.first().unwrap().unwrap_capability() {
-                    Int8 => features.shader_int8,
-                    Int16 => features.shader_int16,
-                    Int64 => features.shader_int64,
-                    Float16 => features.shader_float16,
-                    Float64 => features.shader_float64,
-                    _ => true,
-                }
-            });
-            /*{
-                use rspirv::binary::Disassemble;
-                eprintln!("{}", spirv_module.disassemble());
-            }*/
-            let spirv = spirv_module.assemble();
-            kernel_desc.spirv = {
-                let target_env = TargetEnv::Vulkan_1_2;
-                let validator = spirv_tools::val::create(None);
-                validator.validate(&spirv, None)?;
-                let mut optimizer = spirv_tools::opt::create(Some(target_env));
-                if release {
-                    optimizer
-                        .register_pass(Passes::StripNonSemanticInfo)
-                        .register_pass(Passes::StripDebugInfo);
-                }
-                optimizer.register_performance_passes();
-                let spirv = optimizer
-                    .optimize(&spirv, &mut |_| (), None)?
-                    .as_words()
-                    .to_vec();
-                spirv
-            };
-            /*{
-                use rspirv::binary::Disassemble;
-                eprintln!(
-                    "{}",
-                    rspirv::dr::load_words(&kernel_desc.spirv)
-                        .unwrap()
-                        .disassemble()
-                );
-            }*/
-            modules
-                .entry(module_data.name_with_hash.clone())
-                .or_default()
-                .insert(kernel_name.to_string(), kernel_desc);
+        }
+        let kernel_data = if let Some(kernel_data) = kernel_data
+            .as_ref()
+            .map(|x| x.strip_prefix("__krnl_kernel_data_"))
+            .flatten()
+        {
+            kernel_data
+        } else {
+            bail!("Unable to decode kernel {module_path}::{kernel_name}, found {kernel_data:?}!");
+        };
+        let mut bytes = Vec::with_capacity(kernel_data.len() / 2);
+        let mut iter = kernel_data.chars();
+        while let Some((a, b)) = iter.next().zip(iter.next()) {
+            let byte = a
+                .to_digit(16)
+                .unwrap()
+                .checked_mul(16)
+                .unwrap()
+                .checked_add(b.to_digit(16).unwrap())
+                .unwrap()
+                .try_into()
+                .unwrap();
+            bytes.push(byte);
+        }
+        bincode::deserialize(&bytes)?
+    };
+    if kernel_desc
+        .spec_descs
+        .iter()
+        .any(|x| x.thread_dim.is_some())
+    {
+        spirv_module.execution_modes.clear();
+        let mut builder = rspirv::dr::Builder::new_from_module(std::mem::take(&mut spirv_module));
+        let uint = builder.type_int(32, 0);
+        let one = builder.constant_u32(uint, 1);
+        let mut threads = [one; 3];
+        for (i, spec_desc) in kernel_desc.spec_descs.iter().enumerate() {
+            if let Some(thread_dim) = spec_desc.thread_dim {
+                let spec = builder.spec_constant_u32(uint, 1);
+                builder.decorate(spec, Decoration::SpecId, [Operand::LiteralInt32(i as u32)]);
+                threads[thread_dim] = spec;
+            }
+        }
+        let uvec3 = builder.type_vector(uint, 3);
+        let threads = builder.spec_constant_composite(uvec3, threads);
+        builder.decorate(
+            threads,
+            Decoration::BuiltIn,
+            [Operand::BuiltIn(BuiltIn::WorkgroupSize)],
+        );
+        spirv_module = builder.module();
+    }
+    spirv_module.entry_points.first_mut().unwrap().operands[2] =
+        Operand::LiteralString("main".to_string());
+    kernel_desc.name = format!("{crate_name_ident}::{module_path}::{kernel_name}");
+    let mut features = Features::default();
+    for inst in spirv_module.types_global_values.iter() {
+        let class = inst.class;
+        let op = class.opcode;
+        match (op, inst.operands.first()) {
+            (Op::TypeInt, Some(Operand::LiteralInt32(8))) => {
+                features.shader_int8 = true;
+            }
+            (Op::TypeInt, Some(Operand::LiteralInt32(16))) => {
+                features.shader_int16 = true;
+            }
+            (Op::TypeInt, Some(Operand::LiteralInt32(64))) => {
+                features.shader_int64 = true;
+            }
+            (Op::TypeFloat, Some(Operand::LiteralInt32(16))) => {
+                features.shader_float16 = true;
+            }
+            (Op::TypeFloat, Some(Operand::LiteralInt32(64))) => {
+                features.shader_float64 = true;
+            }
+            _ => (),
         }
     }
-    Ok(modules)
+    spirv_module.capabilities.retain(|inst| {
+        use rspirv::spirv::Capability::*;
+        match inst.operands.first().unwrap().unwrap_capability() {
+            Int8 => features.shader_int8,
+            Int16 => features.shader_int16,
+            Int64 => features.shader_int64,
+            Float16 => features.shader_float16,
+            Float64 => features.shader_float64,
+            _ => true,
+        }
+    });
+    /*{
+        use rspirv::binary::Disassemble;
+        eprintln!("{}", spirv_module.disassemble());
+    }*/
+    let spirv = spirv_module.assemble();
+    kernel_desc.spirv = {
+        let target_env = TargetEnv::Vulkan_1_2;
+        let validator = spirv_tools::val::create(None);
+        validator.validate(&spirv, None)?;
+        let mut optimizer = spirv_tools::opt::create(Some(target_env));
+        optimizer.register_performance_passes();
+        let spirv = optimizer
+            .optimize(&spirv, &mut |_| (), None)?
+            .as_words()
+            .to_vec();
+        spirv
+    };
+    /*{
+        use rspirv::binary::Disassemble;
+        eprintln!(
+            "{}",
+            rspirv::dr::load_words(&kernel_desc.spirv)
+                .unwrap()
+                .disassemble()
+        );
+    }*/
+    Ok((
+        module_name_with_hash.to_string(),
+        (kernel_name.to_string(), kernel_desc),
+    ))
 }
 
 fn add_spec_constant_ops(module: &mut rspirv::dr::Module) {

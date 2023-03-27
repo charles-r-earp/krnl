@@ -7,7 +7,7 @@ use core::ops::Index;
 #[cfg(target_arch = "spirv")]
 use spirv_std::arch::IndexUnchecked;
 
-#[cfg(target_arch = "spirv")]
+#[cfg(all(target_arch = "spirv", feature = "ext:SPV_KHR_non_semantic_info"))]
 fn debug_index_out_of_bounds(index: usize, len: usize) {
     unsafe {
         spirv_std::macros::debug_printfln!(
@@ -78,7 +78,7 @@ pub trait DataBase: Sealed {
 pub trait Data: DataBase + Index<usize, Output = Self::Elem> {}
 pub trait UnsafeData: DataBase + UnsafeIndex<usize, Output = Self::Elem> {}
 
-#[allow(unused)]
+#[derive(Clone, Copy)]
 pub struct SliceRepr<'a, T> {
     #[cfg(not(target_arch = "spirv"))]
     inner: &'a [T],
@@ -115,6 +115,7 @@ impl<T: Scalar> Index<usize> for SliceRepr<'_, T> {
         if index < self.len {
             unsafe { self.inner.index_unchecked(self.offset + index) }
         } else {
+            #[cfg(feature = "ext:SPV_KHR_non_semantic_info")]
             debug_index_out_of_bounds(index, self.len);
             panic!();
         }
@@ -123,6 +124,7 @@ impl<T: Scalar> Index<usize> for SliceRepr<'_, T> {
 
 impl<T: Scalar> Data for SliceRepr<'_, T> {}
 
+#[cfg_attr(not(target_arch = "spirv"), derive(Clone, Copy))]
 pub struct UnsafeSliceRepr<'a, T> {
     #[cfg(not(target_arch = "spirv"))]
     ptr: *mut T,
@@ -164,6 +166,7 @@ impl<T: Scalar> UnsafeIndex<usize> for UnsafeSliceRepr<'_, T> {
         if index < self.len {
             unsafe { self.inner.index_unchecked(self.offset + index) }
         } else {
+            #[cfg(feature = "ext:SPV_KHR_non_semantic_info")]
             debug_index_out_of_bounds(index, self.len);
             panic!();
         }
@@ -184,6 +187,7 @@ impl<T: Scalar> UnsafeIndex<usize> for UnsafeSliceRepr<'_, T> {
         if index < self.len {
             unsafe { self.inner.index_unchecked_mut_ext(self.offset + index) }
         } else {
+            #[cfg(feature = "ext:SPV_KHR_non_semantic_info")]
             debug_index_out_of_bounds(index, self.len);
             panic!();
         }
@@ -192,6 +196,10 @@ impl<T: Scalar> UnsafeIndex<usize> for UnsafeSliceRepr<'_, T> {
 
 impl<T: Scalar> UnsafeData for UnsafeSliceRepr<'_, T> {}
 
+unsafe impl<T: Send> Send for UnsafeSliceRepr<'_, T> {}
+unsafe impl<T: Sync> Sync for UnsafeSliceRepr<'_, T> {}
+
+#[derive(Clone, Copy)]
 pub struct BufferBase<S> {
     data: S,
 }
@@ -237,6 +245,26 @@ impl<'a, T: Scalar> UnsafeSlice<'a, T> {
     #[cfg(target_arch = "spirv")]
     pub unsafe fn from_unsafe_raw_parts(inner: &'a mut [T; 1], offset: usize, len: usize) -> Self {
         let data = UnsafeSliceRepr { inner, offset, len };
+        Self { data }
+    }
+}
+
+#[cfg(not(target_arch = "spirv"))]
+impl<'a, T: Scalar> From<&'a [T]> for Slice<'a, T> {
+    fn from(slice: &'a [T]) -> Self {
+        let data = SliceRepr { inner: slice };
+        Self { data }
+    }
+}
+
+#[cfg(not(target_arch = "spirv"))]
+impl<'a, T: Scalar> From<&'a mut [T]> for UnsafeSlice<'a, T> {
+    fn from(slice: &'a mut [T]) -> Self {
+        let data = UnsafeSliceRepr {
+            ptr: slice.as_mut_ptr(),
+            len: slice.len(),
+            _m: PhantomData::default(),
+        };
         Self { data }
     }
 }

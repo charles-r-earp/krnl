@@ -41,7 +41,18 @@ ash-molten = { version = "0.12.0", features = ["pre-built"], optional = true }
 
 [features]
 device = ["dep:vulkano", "dep:ash", "dep:ash-molten", "dep:crossbeam-channel", "dep:dashmap", "dep:rspirv"]
-cast = []
 
 [package.metadata.krnlc]
 features = ["device"]
+
+[package.metadata.krnlc.dependencies]
+dry = {}
+paste = {}
+
+[[test]]
+name = "integration_tests"
+path = "tests/integration_tests.rs"
+harness = false
+
+[dev-dependencies]
+libtest-mimic = "0.6.0"
