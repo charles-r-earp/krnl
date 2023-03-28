@@ -72,7 +72,7 @@ pub struct Engine {
     transfer_op_sender: Sender<Op>,
     worker_states: Vec<WorkerState>,
     exited: Arc<AtomicBool>,
-    kernels: DashMap<KernelKey, Arc<Kernel>>,
+    kernels: DashMap<KernelKey, KernelInner>,
     memory_allocator: Arc<StandardMemoryAllocator>,
     device: Arc<Device>,
     instance: Arc<Instance>,
@@ -341,7 +341,6 @@ struct Worker {
     state: WorkerState,
     fence: Fence,
     command_pool: CommandPool,
-    //command_pool_alloc: CommandPoolAlloc,
     descriptor_pool: Option<DescriptorPool>,
     host_buffer: Option<Arc<CpuAccessibleBuffer<[u8]>>>,
     queue: Arc<Queue>,
@@ -415,7 +414,6 @@ impl Worker {
             state,
             fence,
             command_pool,
-            //command_pool_alloc,
             descriptor_pool,
             host_buffer,
             queue,
@@ -453,7 +451,6 @@ impl Worker {
                 })?
                 .next()
                 .unwrap();
-            //let command_pool_alloc = &self.command_pool_alloc;
             let mut builder = unsafe {
                 UnsafeCommandBufferBuilder::new(
                     &command_pool_alloc,
@@ -671,6 +668,46 @@ impl DeviceBuffer {
         }
         false
     }
+    fn write(&mut self, data: &[u8]) -> Result<()> {
+        let engine = &self.engine;
+        let device = &engine.device;
+        if let Some(buffer) = self.inner.as_ref() {
+            if let Ok(mut mapped) = buffer.inner().buffer.write(0..data.len() as _) {
+                mapped[..data.len()].copy_from_slice(data);
+            } else {
+                let mut offset = 0;
+                let device_lost = DeviceLost {
+                    index: engine.info.index,
+                    handle: engine.handle(),
+                };
+                let mut future_guard = self.future.write();
+                for data in data.chunks(Self::HOST_BUFFER_SIZE) {
+                    let (src_sender, src_receiver) = crossbeam_channel::bounded(0);
+                    let dst = buffer
+                        .slice(offset as _..(offset + data.len()) as _)
+                        .unwrap();
+                    let (submit_sender, submit_receiver) = crossbeam_channel::bounded(0);
+                    let (future_sender, future_receiver) = crossbeam_channel::bounded(0);
+                    let op = Op::Upload {
+                        src_sender,
+                        dst,
+                        submit_receiver,
+                        future_sender,
+                    };
+                    engine
+                        .transfer_op_sender
+                        .send(op)
+                        .map_err(|_| device_lost)?;
+                    let src = src_receiver.recv().map_err(|_| device_lost)?;
+                    src.write().unwrap()[..data.len()].copy_from_slice(data);
+                    submit_sender.send(()).map_err(|_| device_lost)?;
+                    *future_guard = future_receiver.recv().map_err(|_| device_lost)?;
+                    offset += data.len();
+                }
+            }
+        }
+        Ok(())
+    }
 }
 
 impl DeviceEngineBuffer for DeviceBuffer {
@@ -678,7 +715,7 @@ impl DeviceEngineBuffer for DeviceBuffer {
     fn engine(&self) -> &Arc<Self::Engine> {
         &self.engine
     }
-    unsafe fn uninit(engine: Arc<Engine>, len: usize) -> Result<Arc<Self>> {
+    unsafe fn uninit(engine: Arc<Engine>, len: usize) -> Result<Self> {
         let inner = if len > 0 {
             let len = aligned_ceil(len, Self::ALIGN);
             let usage = BufferUsage {
@@ -697,54 +734,18 @@ impl DeviceEngineBuffer for DeviceBuffer {
         } else {
             None
         };
-        Ok(Arc::new(Self {
+        Ok(Self {
             inner,
             engine,
             offset: 0,
             len,
             future: Arc::default(),
-        }))
+        })
     }
-    fn upload(engine: Arc<Self::Engine>, data: &[u8]) -> Result<Arc<Self>> {
-        let device = &engine.device;
-        let mut device_buffer = unsafe { Self::uninit(engine.clone(), data.len())? };
-        if let Some(buffer) = device_buffer.inner.as_ref() {
-            if let Ok(mut mapped) = buffer.inner().buffer.write(0..data.len() as _) {
-                mapped[..data.len()].copy_from_slice(data);
-            } else {
-                let mut offset = 0;
-                let device_lost = DeviceLost {
-                    index: engine.info.index,
-                    handle: engine.handle(),
-                };
-                let mut future_guard = device_buffer.future.write();
-                for data in data.chunks(Self::HOST_BUFFER_SIZE) {
-                    let (src_sender, src_receiver) = crossbeam_channel::bounded(0);
-                    let dst = buffer
-                        .slice(offset as _..(offset + data.len()) as _)
-                        .unwrap();
-                    let (submit_sender, submit_receiver) = crossbeam_channel::bounded(0);
-                    let (future_sender, future_receiver) = crossbeam_channel::bounded(0);
-                    let op = Op::Upload {
-                        src_sender,
-                        dst,
-                        submit_receiver,
-                        future_sender,
-                    };
-                    let send = Instant::now();
-                    engine
-                        .transfer_op_sender
-                        .send(op)
-                        .map_err(|_| device_lost)?;
-                    let src = src_receiver.recv().map_err(|_| device_lost)?;
-                    src.write().unwrap()[..data.len()].copy_from_slice(data);
-                    submit_sender.send(()).map_err(|_| device_lost)?;
-                    *future_guard = future_receiver.recv().map_err(|_| device_lost)?;
-                    offset += data.len();
-                }
-            }
-        }
-        Ok(device_buffer)
+    fn upload(engine: Arc<Self::Engine>, data: &[u8]) -> Result<Self> {
+        let mut buffer = unsafe { Self::uninit(engine.clone(), data.len())? };
+        buffer.write(data)?;
+        Ok(buffer)
     }
     fn download(&self, data: &mut [u8]) -> Result<()> {
         if let Some(buffer) = self.inner.as_ref() {
@@ -833,11 +834,150 @@ impl DeviceEngineBuffer for DeviceBuffer {
         }
         Ok(())
     }
-    fn transfer(&self, engine: Arc<Self::Engine>) -> Result<Arc<Self>> {
-        // TODO: Implement this
-        let mut data = vec![0u8; self.len()];
-        self.download(&mut data)?;
-        Self::upload(engine, &data)
+    fn transfer(&self, engine: Arc<Self::Engine>) -> Result<Self> {
+        let mut output = unsafe { Self::uninit(engine, self.len)? };
+        if output.len == 0 {
+            return Ok(output);
+        }
+        let buffer1 = self.inner.as_ref().unwrap();
+        let engine1 = &self.engine;
+        let device1 = &engine1.device;
+        let device_lost1 = DeviceLost {
+            index: engine1.info.index,
+            handle: engine1.handle(),
+        };
+        let buffer2 = output.inner.as_ref().unwrap();
+        let engine2 = &output.engine;
+        let device2 = &engine2.device;
+        let device_lost2 = DeviceLost {
+            index: engine2.info.index,
+            handle: engine2.handle(),
+        };
+        let prev_future = self.future.read();
+        let buffer_inner1 = buffer1.inner();
+        let buffer_inner2 = buffer2.inner();
+        /*if self.host_visible() {
+            while !prev_future.ready() {
+                if engine1.exited.load(Ordering::SeqCst) {
+                    return Err(device_lost1.into());
+                }
+                std::thread::sleep(Duration::from_micros(1));
+            }
+            loop {
+                if let Ok(mapped1) = buffer_inner1
+                    .buffer
+                    .read(buffer_inner1.offset..buffer_inner1.offset + self.len() as u64)
+                {
+                    if output.host_visible() {
+                        let mut mapped2 =
+                            buffer_inner2.buffer.write(0..output.len() as u64).unwrap();
+                        mapped2.copy_from_slice(&mapped1[..output.len()]);
+                    } else {
+                        output.write(&mapped1)?;
+                    }
+                    return Ok(output);
+                } else {
+                    std::thread::sleep(Duration::from_micros(1));
+                }
+            }
+        } else if output.host_visible() {
+            {
+                let mut mapped2 = buffer_inner2.buffer.write(0..output.len() as u64).unwrap();
+                self.download(&mut mapped2)?;
+            }
+            return Ok(output);
+        }*/
+        let mut prev_future = Some(prev_future.clone());
+        let mut offset1 = self.offset;
+        let mut offset2 = 0;
+        struct HostCopy {
+            chunk_size: usize,
+            src_receiver: Receiver<Arc<CpuAccessibleBuffer<[u8]>>>,
+            dst_receiver: Receiver<Arc<CpuAccessibleBuffer<[u8]>>>,
+            finished_sender: Sender<()>,
+            submit_sender: Sender<()>,
+            future_receiver: Receiver<WorkerFuture>,
+        }
+        let mut host_copy = None;
+        while offset2 < output.len() {
+            let chunk_size = output
+                .len()
+                .checked_sub(offset2)
+                .unwrap()
+                .min(Self::HOST_BUFFER_SIZE);
+            let src = buffer1
+                .slice(offset1 as _..(offset1 + chunk_size) as _)
+                .unwrap();
+            let dst = buffer2
+                .slice(offset2 as _..(offset2 + chunk_size) as _)
+                .unwrap();
+            offset1 += chunk_size;
+            offset2 += chunk_size;
+            let (dst_sender, dst_receiver) = crossbeam_channel::bounded(1);
+            let (submit_sender, submit_receiver) = crossbeam_channel::bounded(1);
+            let (finished_sender, finished_receiver) = crossbeam_channel::bounded(0);
+            let op = Op::Download {
+                src,
+                dst_sender,
+                submit_receiver,
+                finished_receiver,
+            };
+            engine1
+                .transfer_op_sender
+                .send(op)
+                .map_err(|_| device_lost2)?;
+            if let Some(future) = prev_future.take() {
+                while !future.ready() {
+                    if engine1.exited.load(Ordering::SeqCst) {
+                        return Err(device_lost2.into());
+                    }
+                    std::thread::sleep(Duration::from_micros(1));
+                }
+            }
+            submit_sender.send(()).map_err(|_| device_lost1)?;
+            let (src_sender, src_receiver) = crossbeam_channel::bounded(0);
+            let (submit_sender, submit_receiver) = crossbeam_channel::bounded(0);
+            let (future_sender, future_receiver) = crossbeam_channel::bounded(0);
+            let op = Op::Upload {
+                src_sender,
+                dst,
+                submit_receiver,
+                future_sender,
+            };
+            engine2
+                .transfer_op_sender
+                .send(op)
+                .map_err(|_| device_lost2)?;
+            let host_copy = host_copy.replace(HostCopy {
+                chunk_size,
+                src_receiver,
+                dst_receiver,
+                finished_sender,
+                submit_sender,
+                future_receiver,
+            });
+            if let Some(host_copy) = host_copy {
+                let dst = host_copy.dst_receiver.recv().map_err(|_| device_lost1)?;
+                let src = host_copy.src_receiver.recv().map_err(|_| device_lost2)?;
+                src.write().unwrap()[..host_copy.chunk_size]
+                    .copy_from_slice(&dst.read().unwrap()[..host_copy.chunk_size]);
+                let _ = host_copy.finished_sender.send(());
+                let _ = host_copy.submit_sender.send(());
+            }
+        }
+        if let Some(host_copy) = host_copy {
+            let dst = host_copy.dst_receiver.recv().map_err(|_| device_lost1)?;
+            let src = host_copy.src_receiver.recv().map_err(|_| device_lost2)?;
+            src.write().unwrap()[..host_copy.chunk_size]
+                .copy_from_slice(&dst.read().unwrap()[..host_copy.chunk_size]);
+            let _ = host_copy.finished_sender.send(());
+            let _ = host_copy.submit_sender.send(());
+            *output.future.write() = host_copy.future_receiver.recv().map_err(|_| device_lost2)?;
+        }
+        Ok(output)
+    }
+    fn offset(&self) -> usize {
+        self.offset
     }
     fn len(&self) -> usize {
         self.len
@@ -847,48 +987,14 @@ impl DeviceEngineBuffer for DeviceBuffer {
     }
 }
 
-/*
 #[derive(Clone)]
-struct KernelKey {
-    spirv: Arc<[u32]>,
-    spec_consts: Option<Arc<[ScalarElem]>>,
-}
-
-impl PartialEq for KernelKey {
-    fn eq(&self, other: &Self) -> bool {
-        Arc::ptr_eq(&self.spirv, &other.spirv) && self.spec_consts == other.spec_consts
-    }
-}
-
-impl Eq for KernelKey {}
-
-impl Hash for KernelKey {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        Arc::as_ptr(&self.spirv).hash(state);
-        if let Some(spec_consts) = self.spec_consts.as_ref() {
-            for spec in spec_consts.iter() {
-                (spec.scalar_type() as u32).hash(state);
-                use ScalarElem::*;
-                match sgpec.to_scalar_bits() {
-                    U8(x) => x.hash(state),
-                    U16(x) => x.hash(state),
-                    U32(x) => x.hash(state),
-                    U64(x) => x.hash(state),
-                    _ => unreachable!(),
-                }
-            }
-        }
-    }
-}*/
-
-pub(super) struct Kernel {
-    engine: Arc<Engine>,
+struct KernelInner {
     desc: Arc<KernelDesc>,
     compute_pipeline: Arc<ComputePipeline>,
 }
 
-impl Kernel {
-    fn new(engine: Arc<Engine>, desc: Arc<KernelDesc>) -> Result<Arc<Self>> {
+impl KernelInner {
+    fn new(engine: &Arc<Engine>, desc: Arc<KernelDesc>) -> Result<Self> {
         use vulkano::{
             descriptor_set::layout::{DescriptorSetLayoutBinding, DescriptorSetLayoutCreateInfo},
             pipeline::layout::{PipelineLayout, PipelineLayoutCreateInfo, PushConstantRange},
@@ -982,153 +1088,41 @@ impl Kernel {
             pipeline_layout,
             cache,
         )?;
-        Ok(Arc::new(Self {
-            engine,
+        Ok(Self {
             desc,
             compute_pipeline,
-        }))
+        })
     }
 }
 
-/*
-impl Kernel {
-    fn from_key(engine: Arc<Engine>, key: KernelKey) -> Result<Arc<Self>> {
-        use vulkano::{
-            descriptor_set::layout::{DescriptorSetLayoutBinding, DescriptorSetLayoutCreateInfo},
-            pipeline::layout::{PipelineLayout, PipelineLayoutCreateInfo, PushConstantRange},
-            shader::{spirv::ExecutionModel, EntryPointInfo},
-        };
-        let device = &engine.device;
-        let desc = KernelDesc::new(&key.spirv, key.spec_consts.as_deref().unwrap_or(&[]))?;
-        let stages = ShaderStages {
-            compute: true,
-            ..ShaderStages::none()
-        };
-        let descriptor_requirements = desc
-            .buffer_descs
-            .iter()
-            .enumerate()
-            .map(|(i, desc)| {
-                let set = 0u32;
-                let binding = i as u32;
-                let storage_write = if desc.mutable { Some(binding) } else { None };
-                let descriptor_requirements = DescriptorRequirements {
-                    descriptor_types: vec![DescriptorType::StorageBuffer],
-                    descriptor_count: Some(1),
-                    stages,
-                    storage_write: storage_write.into_iter().collect(),
-                    ..DescriptorRequirements::default()
-                };
-                ((set, binding), descriptor_requirements)
-            })
-            .collect();
-        let push_constant_range = if desc.push_consts_size > 0 {
-            Some(PushConstantRange {
-                stages,
-                offset: 0,
-                size: desc.push_consts_size,
-            })
-        } else {
-            None
-        };
-        let entry_point_info = EntryPointInfo {
-            execution: ShaderExecution::Compute,
-            descriptor_requirements,
-            push_constant_requirements: push_constant_range,
-            specialization_constant_requirements: Default::default(),
-            input_interface: ShaderInterface::empty(),
-            output_interface: ShaderInterface::empty(),
-        };
-        let version = Version::major_minor(desc.spirv_version.0, desc.spirv_version.1);
-        let entry_point = "main";
-        let shader_module = unsafe {
-            ShaderModule::from_words_with_data(
-                device.clone(),
-                &desc.spirv,
-                version,
-                [],
-                [],
-                [(
-                    entry_point.to_string(),
-                    ExecutionModel::GLCompute,
-                    entry_point_info,
-                )],
-            )?
-        };
-        let bindings = (0..desc.buffer_descs.len())
-            .map(|(binding)| {
-                let descriptor_set_layout_binding = DescriptorSetLayoutBinding {
-                    descriptor_count: 1,
-                    stages,
-                    ..DescriptorSetLayoutBinding::descriptor_type(DescriptorType::StorageBuffer)
-                };
-                (binding as u32, descriptor_set_layout_binding)
-            })
-            .collect();
-        let descriptor_set_layout_create_info = DescriptorSetLayoutCreateInfo {
-            bindings,
-            ..DescriptorSetLayoutCreateInfo::default()
-        };
-        let descriptor_set_layout =
-            DescriptorSetLayout::new(device.clone(), descriptor_set_layout_create_info)?;
-        let pipeline_layout_create_info = PipelineLayoutCreateInfo {
-            set_layouts: vec![descriptor_set_layout],
-            push_constant_ranges: push_constant_range.into_iter().collect(),
-            ..PipelineLayoutCreateInfo::default()
-        };
-        let pipeline_layout = PipelineLayout::new(device.clone(), pipeline_layout_create_info)?;
-        let cache = None;
-        let specialization_constants = ();
-        let compute_pipeline = ComputePipeline::with_pipeline_layout(
-            device.clone(),
-            shader_module.entry_point(entry_point).unwrap(),
-            &specialization_constants,
-            pipeline_layout,
-            cache,
-        )?;
-        let features = desc.features;
-        let threads = desc.threads;
-        let buffer_descs = desc.buffer_descs;
-        Ok(Arc::new(Self {
-            engine,
-            compute_pipeline,
-            features,
-            threads,
-            buffer_descs,
-        }))
-    }
-}*/
+pub(super) struct Kernel {
+    engine: Arc<Engine>,
+    desc: Arc<KernelDesc>,
+    compute_pipeline: Arc<ComputePipeline>,
+}
 
 impl DeviceEngineKernel for Kernel {
     type Engine = Engine;
     type DeviceBuffer = DeviceBuffer;
     fn cached(
-        engine: &Arc<Self::Engine>,
+        engine: Arc<Self::Engine>,
         key: KernelKey,
         desc_fn: impl FnOnce() -> Result<Arc<KernelDesc>>,
     ) -> Result<Arc<Self>> {
-        let kernel = engine
+        let KernelInner {
+            desc,
+            compute_pipeline,
+        } = engine
             .kernels
             .entry(key)
-            .or_try_insert_with(move || Kernel::new(engine.clone(), desc_fn()?))?
+            .or_try_insert_with(|| KernelInner::new(&engine, desc_fn()?))?
             .clone();
-        Ok(kernel)
+        Ok(Arc::new(Kernel {
+            engine,
+            desc,
+            compute_pipeline,
+        }))
     }
-    /*fn new(engine: Arc<Self::Engine>, id: KernelId, desc: KernelDesc) -> Result<Arc<Self>> {
-        /*let engine = &engine;
-        let spec_consts = if !spec_consts.is_empty() {
-            Some(Arc::from(spec_consts))
-        } else {
-            None
-        };
-        let key = KernelKey { spirv, spec_consts };
-        let kernel = engine
-            .kernels
-            .entry(key.clone())
-            .or_try_insert_with(move || Kernel::from_key(engine.clone(), key))?
-            .clone();*/
-        Ok(kernel)
-    }*/
     fn engine(&self) -> &Arc<Self::Engine> {
         &self.engine
     }

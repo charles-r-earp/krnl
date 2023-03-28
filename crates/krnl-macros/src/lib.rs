@@ -403,27 +403,21 @@ impl KernelSpecMeta {
         } else {
             format!("%ty = OpTypeInt {bits} {signed}")
         };
-        let values = if bits == 64 {
-            "0 0"
-        } else if float {
-            "0"
-        } else {
-            "1"
-        };
-        let spec_string = format!("%spec = OpSpecConstant %ty {values}");
         let spec_id_string = format!("OpDecorate %spec SpecId {}", self.id);
         let ident = &self.ident;
         quote! {
             #[allow(non_snake_case)]
-            let #ident = (|| unsafe {
+            let #ident = unsafe {
+                let mut spec = Default::default();
                 ::core::arch::asm! {
                     #ty_string,
-                    #spec_string,
+                    "%spec = OpSpecConstant %ty 0",
                     #spec_id_string,
-                    "OpReturnValue %spec",
-                    options(noreturn),
+                    "OpStore {spec} %spec",
+                    spec = in(reg) &mut spec,
                 }
-            })();
+                spec
+            };
         }
     }
 }
@@ -633,7 +627,7 @@ impl KernelArgMeta {
                         unsafe {
                             use ::krnl_core::buffer::UnsafeIndex;
                             #ident.unsafe_index_mut(kernel.item_id() as usize)
-                        },
+                        }
                     }
                 } else {
                     quote! {
@@ -961,7 +955,7 @@ impl KernelMeta {
                     let #len = #offset;
                     unsafe {
                         use ::krnl_core::spirv_std::arch::IndexUnchecked;
-                        *__krnl_kernel_data.index_unchecked_mut(#id_lit) = #len as u32;
+                        *__krnl_kernel_data.index_unchecked_mut(#id_lit) = if #len > 0 { #len as u32 } else { 1 };
                     }
                     #group_init
                 }
@@ -1521,7 +1515,7 @@ fn kernel_impl(attr: KernelAttr, item: KernelItem) -> Result<TokenStream2> {
         #host_tokens
         #device_tokens
     };
-    /*{
+    /*if ident == "unary_u8" {
         let file = syn::parse2(tokens.clone()).map_err(|e| {
             let mut err = Error::new_spanned(
                 &tokens,
@@ -1575,7 +1569,7 @@ pub fn __krnl_module(input: TokenStream) -> TokenStream {
                             });
                         }
                     } else {
-                        error.replace("Cache modified, recompile with krnlc".to_string());
+                        error.replace("cache modified, recompile with krnlc".to_string());
                     }
                 }
             }

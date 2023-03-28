@@ -5,7 +5,13 @@ edition = "2021"
 publish = false
 
 [dependencies]
-krnl = { path = "../../crates/krnl", features = ["device"] }
+krnl = { path = "../../crates/krnl" }
+paste.workspace = true
+dry.workspace = true
 
-[dev-dependencies]
-rayon = "1.7.0"
+[features]
+krnlc = []
+
+[package.metadata.krnlc.dependencies]
+paste = {}
+dry = {}

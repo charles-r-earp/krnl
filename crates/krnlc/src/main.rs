@@ -22,6 +22,8 @@ struct Cli {
     workspace: Workspace,
     #[command(flatten)]
     manifest: Manifest,
+    #[arg(long = "target-dir")]
+    target_dir: Option<PathBuf>,
     #[arg(long = "non-semantic-info")]
     non_semantic_info: bool,
 }
@@ -37,18 +39,22 @@ fn main() -> Result<()> {
         bail!("Found a workspace. Specify packages with `-p` or use `--workspace` to build all packages.");
     }
     let (selected, _) = cli.workspace.partition_packages(&metadata);
-    let target_dir = metadata.target_directory.as_str();
+    let target_dir = cli
+        .target_dir
+        .as_ref()
+        .map(|x| x.to_string_lossy())
+        .unwrap_or(metadata.target_directory.as_str().into());
     for package in selected {
         ctrlc_signal.check()?;
         let (features, dependencies) = extract_features_dependencies(&metadata, &package)?;
         let cache_guard = CacheGuard::new(&package);
         cache(&package, None)?;
         ctrlc_signal.check()?;
-        let module_datas = cargo_expand(&package, target_dir, &features)?;
+        let module_datas = cargo_expand(&package, &target_dir, &features)?;
         ctrlc_signal.check()?;
         let modules = compile(
             &package,
-            target_dir,
+            &target_dir,
             &dependencies,
             module_datas,
             cli.non_semantic_info,
@@ -934,9 +940,24 @@ fn kernel_post_process(
     }*/
     let spirv = spirv_module.assemble();
     kernel_desc.spirv = {
+        use spirv_tools::assembler::{Assembler, DisassembleOptions};
         let target_env = TargetEnv::Vulkan_1_2;
-        let validator = spirv_tools::val::create(None);
-        validator.validate(&spirv, None)?;
+        let assembler = spirv_tools::assembler::create(Some(target_env));
+        let validator = spirv_tools::val::create(Some(target_env));
+        let dump_asm = || {
+            let options = DisassembleOptions {
+                color: true,
+                indent: true,
+                use_friendly_names: true,
+                ..Default::default()
+            };
+            let asm = assembler.disassemble(&spirv, options).unwrap().unwrap();
+            eprintln!("{asm}");
+        };
+        validator.validate(&spirv, None).map_err(|e| {
+            dump_asm();
+            e
+        })?;
         let mut optimizer = spirv_tools::opt::create(Some(target_env));
         optimizer.register_performance_passes();
         let spirv = optimizer

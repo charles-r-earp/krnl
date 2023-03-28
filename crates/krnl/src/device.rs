@@ -141,11 +141,12 @@ struct DeviceOptions {
 #[cfg(feature = "device")]
 trait DeviceEngineBuffer: Sized {
     type Engine;
-    unsafe fn uninit(engine: Arc<Self::Engine>, len: usize) -> Result<Arc<Self>>;
-    fn upload(engine: Arc<Self::Engine>, data: &[u8]) -> Result<Arc<Self>>;
+    unsafe fn uninit(engine: Arc<Self::Engine>, len: usize) -> Result<Self>;
+    fn upload(engine: Arc<Self::Engine>, data: &[u8]) -> Result<Self>;
     fn download(&self, data: &mut [u8]) -> Result<()>;
-    fn transfer(&self, engine: Arc<Self::Engine>) -> Result<Arc<Self>>;
+    fn transfer(&self, engine: Arc<Self::Engine>) -> Result<Self>;
     fn engine(&self) -> &Arc<Self::Engine>;
+    fn offset(&self) -> usize;
     fn len(&self) -> usize;
     fn slice(self: &Arc<Self>, bounds: impl RangeBounds<usize>) -> Option<Arc<Self>>;
 }
@@ -155,7 +156,7 @@ trait DeviceEngineKernel: Sized {
     type Engine;
     type DeviceBuffer;
     fn cached(
-        engine: &Arc<Self::Engine>,
+        engine: Arc<Self::Engine>,
         key: KernelKey,
         desc_fn: impl FnOnce() -> Result<Arc<KernelDesc>>,
     ) -> Result<Arc<Self>>;
@@ -316,19 +317,23 @@ pub(crate) struct DeviceBuffer {
 #[cfg(feature = "device")]
 impl DeviceBuffer {
     pub(crate) unsafe fn uninit(device: RawDevice, len: usize) -> Result<Self> {
-        let inner = unsafe { <Engine as DeviceEngine>::DeviceBuffer::uninit(device.engine, len)? };
+        let inner =
+            unsafe { <Engine as DeviceEngine>::DeviceBuffer::uninit(device.engine, len)?.into() };
         Ok(Self { inner })
     }
     pub(crate) fn upload(device: RawDevice, data: &[u8]) -> Result<Self> {
-        let inner = <Engine as DeviceEngine>::DeviceBuffer::upload(device.engine, data)?;
+        let inner = <Engine as DeviceEngine>::DeviceBuffer::upload(device.engine, data)?.into();
         Ok(Self { inner })
     }
     pub(crate) fn download(&self, data: &mut [u8]) -> Result<()> {
         self.inner.download(data)
     }
     pub(crate) fn transfer(&self, device: RawDevice) -> Result<Self> {
-        let inner = self.inner.transfer(device.engine)?;
+        let inner = self.inner.transfer(device.engine)?.into();
         Ok(Self { inner })
+    }
+    pub(crate) fn offset(&self) -> usize {
+        self.inner.offset()
     }
     pub(crate) fn len(&self) -> usize {
         self.inner.len()
@@ -645,12 +650,12 @@ impl KernelBuilder {
                     spec_bytes,
                 };
                 let inner = if !desc.spec_descs.is_empty() || self.threads != desc.threads {
-                    <<Engine as DeviceEngine>::Kernel>::cached(&device.engine, key, || {
+                    <<Engine as DeviceEngine>::Kernel>::cached(device.engine, key, || {
                         desc.specialize(self.threads.clone(), &self.spec_consts)
                             .map(Arc::new)
                     })?
                 } else {
-                    <<Engine as DeviceEngine>::Kernel>::cached(&device.engine, key, || {
+                    <<Engine as DeviceEngine>::Kernel>::cached(device.engine, key, || {
                         Ok(desc.clone())
                     })?
                 };
@@ -840,225 +845,3 @@ impl<'a, T: Scalar> From<SliceMut<'a, T>> for KernelSliceArg<'a> {
         Self::SliceMut(slice.into())
     }
 }
-
-/*
-#[derive(Clone)]
-pub(crate) struct BufferDesc {
-    name: String,
-    mutable: bool,
-}
-
-impl BufferDesc {
-    pub(crate) fn name(&self) -> &str {
-        &self.name
-    }
-    pub(crate) fn mutable(&self) -> bool {
-        self.mutable
-    }
-}*/
-
-/*
-#[cfg(feature = "device")]
-struct KernelDesc {
-    name: String,
-    spirv: Vec<u32>,
-    spirv_version: (u32, u32),
-    threads: [u32; 3],
-    features: Features,
-    buffer_descs: Vec<BufferDesc>,
-    push_consts_size: u32,
-}
-
-#[cfg(feature = "device")]
-impl KernelDesc {
-    fn new(spirv: &[u32], spec_consts: &[ScalarElem]) -> Result<Self> {
-        use rspirv::{
-            binary::Assemble,
-            dr::{Instruction, Operand},
-            spirv::{Decoration, ExecutionMode, Op, StorageClass},
-        };
-        /*let spirv = {
-            use spirv_tools::opt::{Optimizer, Passes};
-            let mut optimizer = spirv_tools::opt::compiled::CompiledOptimizer::default();
-            // optimizer.register_pass(Passes::UpgradeMemoryModel);
-            optimizer.register_performance_passes();
-            optimizer
-                .optimize(&spirv, &mut |_| (), None)
-                .unwrap()
-                .as_words()
-                .to_vec()
-        };*/
-        let mut module = rspirv::dr::load_words(&spirv).map_err(|e| format_err!("{e}"))?;
-        let mut name = {
-            let entry_point = &mut module.entry_points.first_mut().unwrap().operands[2];
-            let name = entry_point.unwrap_literal_string().to_string();
-            *entry_point = Operand::LiteralString("main".to_string());
-            name
-        };
-        let mut features = Features::empty();
-        for inst in module.types_global_values.iter() {
-            let class = inst.class;
-            let op = class.opcode;
-            match (op, inst.operands.first()) {
-                (Op::TypeInt, Some(Operand::LiteralInt32(8))) => {
-                    features.shader_int8 = true;
-                }
-                (Op::TypeInt, Some(Operand::LiteralInt32(16))) => {
-                    features.shader_int16 = true;
-                }
-                (Op::TypeInt, Some(Operand::LiteralInt32(64))) => {
-                    features.shader_int64 = true;
-                }
-                (Op::TypeFloat, Some(Operand::LiteralInt32(16))) => {
-                    features.shader_float16 = true;
-                }
-                (Op::TypeFloat, Some(Operand::LiteralInt32(64))) => {
-                    features.shader_float64 = true;
-                }
-                _ => (),
-            }
-        }
-        let mut threads = [1u32; 3];
-        match module.execution_modes.first().unwrap().operands.as_slice() {
-            [Operand::IdRef(_), Operand::ExecutionMode(ExecutionMode::LocalSize), Operand::LiteralInt32(x), Operand::LiteralInt32(y), Operand::LiteralInt32(z)] =>
-            {
-                threads = [*x, *y, *z];
-            }
-            x => unreachable!("{x:#?}"),
-        }
-        let bindings: HashMap<_, _> = module.annotations.iter().filter(|x| x.class.opcode == Op::Decorate)
-                .filter_map(|x| {
-                    match x.operands.as_slice() {
-                        [Operand::IdRef(id), Operand::Decoration(Decoration::Binding), Operand::LiteralInt32(binding)] => Some((*id, *binding)),
-                        _ => None,
-                    }
-                }).collect();
-        let num_buffers = bindings
-            .values()
-            .copied()
-            .max()
-            .map(|x| x as usize + 1)
-            .unwrap_or_default();
-        let mut buffer_descs = vec![
-            BufferDesc {
-                name: String::new(),
-                mutable: true,
-            };
-            num_buffers
-        ];
-        for inst in module.debug_names.iter() {
-            let op = inst.class.opcode;
-            let operands = inst.operands.as_slice();
-            if op == Op::Name {
-                match operands {
-                    [Operand::IdRef(id), Operand::LiteralString(name)] => {
-                        if let Some(binding) = bindings.get(id) {
-                            buffer_descs[*binding as usize].name = name.to_string();
-                        }
-                    }
-                    _ => (),
-                }
-            }
-        }
-        for inst in module.annotations.iter() {
-            let op = inst.class.opcode;
-            let operands = inst.operands.as_slice();
-            if op == Op::Decorate {
-                match operands {
-                    [Operand::IdRef(id), Operand::Decoration(Decoration::NonWritable)] => {
-                        buffer_descs[bindings[id] as usize].mutable = false;
-                    }
-                    _ => (),
-                }
-            }
-        }
-        let push_consts_size = {
-            let push_consts_ptr = module
-                .types_global_values
-                .iter()
-                .filter(|x| x.class.opcode == Op::Variable)
-                .find_map(|inst| {
-                    if let [Operand::StorageClass(StorageClass::PushConstant)] =
-                        inst.operands.as_slice()
-                    {
-                        inst.result_type
-                    } else {
-                        None
-                    }
-                });
-            if let Some(push_consts_ptr) = push_consts_ptr {
-                let push_consts_struct = module
-                        .types_global_values
-                        .iter()
-                        .filter(|x| x.class.opcode == Op::TypePointer)
-                        .filter(|x| x.result_id == Some(push_consts_ptr))
-                        .find_map(|inst| {
-                            if let [Operand::StorageClass(StorageClass::PushConstant), Operand::IdRef(push_consts_struct)] = inst.operands.as_slice() {
-                                Some(*push_consts_struct)
-                            } else {
-                                None
-                            }
-                        })
-                        .unwrap();
-                let push_const_field = module
-                    .types_global_values
-                    .iter()
-                    .filter(|x| x.class.opcode == Op::TypeStruct)
-                    .find(|x| x.result_id == Some(push_consts_struct))
-                    .unwrap()
-                    .operands
-                    .last()
-                    .unwrap()
-                    .unwrap_id_ref();
-                let mut push_const_size = module
-                    .types_global_values
-                    .iter()
-                    .find(|inst| inst.result_id == Some(push_const_field))
-                    .map(|inst| match (inst.class.opcode, inst.operands.as_slice()) {
-                        (
-                            Op::TypeInt,
-                            [Operand::LiteralInt32(width), Operand::LiteralInt32(_sign)],
-                        ) => *width / 8,
-                        (Op::TypeFloat, [Operand::LiteralInt32(width)]) => *width / 8,
-                        _ => unreachable!("{inst:?}"),
-                    })
-                    .unwrap();
-                let mut push_const_offset = 0;
-                for inst in module.annotations.iter() {
-                    if inst.class.opcode == Op::MemberDecorate {
-                        if let [Operand::IdRef(id), Operand::LiteralInt32(member), Operand::Decoration(Decoration::Offset), Operand::LiteralInt32(offset)] =
-                            inst.operands.as_slice()
-                        {
-                            if *id == push_consts_struct {
-                                push_const_offset = push_const_offset.max(*offset);
-                            }
-                        }
-                    }
-                }
-                push_const_offset + push_const_size
-            } else {
-                0
-            }
-        };
-        if !spec_consts.is_empty() {
-            name.push('<');
-            todo!();
-            name.push('>');
-        }
-        module.debug_names.clear();
-        let spirv_version = module.header.as_ref().unwrap().version();
-        let spirv_version = (spirv_version.0 as _, spirv_version.1 as _);
-        //println!("{}", module.disassemble());
-        let spirv = module.assemble();
-        Ok(Self {
-            name,
-            spirv,
-            spirv_version,
-            threads,
-            features,
-            buffer_descs,
-            push_consts_size,
-        })
-    }
-}
-*/

@@ -1,9 +1,9 @@
 use crate::scalar::{Scalar, ScalarType};
-#[cfg(target_arch = "spirv")]
-use core::arch::asm;
 #[cfg(not(target_arch = "spirv"))]
 use core::marker::PhantomData;
 use core::ops::Index;
+#[cfg(target_arch = "spirv")]
+use core::{arch::asm, mem::MaybeUninit};
 #[cfg(target_arch = "spirv")]
 use spirv_std::arch::IndexUnchecked;
 
@@ -29,38 +29,19 @@ trait IndexUncheckedMutExt<T> {
     unsafe fn index_unchecked_mut_ext(&self, index: usize) -> &mut T;
 }
 
-/*
-#[cfg(target_arch = "spirv")]
-impl<T> IndexUncheckedMutExt<T> for [T] {
-    unsafe fn index_unchecked_mut_ext(&self, index: usize) -> &mut T {
-        // https://docs.rs/spirv-std/0.5.0/src/spirv_std/arch.rs.html#237-248
-        unsafe {
-            asm!(
-                "%slice_ptr = OpLoad _ {slice_ptr_ptr}",
-                "%data_ptr = OpCompositeExtract _ %slice_ptr 0",
-                "%val_ptr = OpAccessChain _ %data_ptr {index}",
-                "OpReturnValue %val_ptr",
-                slice_ptr_ptr = in(reg) &self,
-                index = in(reg) index,
-                options(noreturn)
-            )
-        }
-    }
-}
-*/
-
 #[cfg(target_arch = "spirv")]
 impl<T, const N: usize> IndexUncheckedMutExt<T> for [T; N] {
     unsafe fn index_unchecked_mut_ext(&self, index: usize) -> &mut T {
-        // https://github.com/EmbarkStudios/rust-gpu/blob/main/crates/spirv-std/src/arch.rs
+        let mut output = MaybeUninit::uninit();
         unsafe {
             asm!(
                 "%val_ptr = OpAccessChain _ {array_ptr} {index}",
-                "OpReturnValue %val_ptr",
+                "OpStore {output} %val_ptr",
                 array_ptr = in(reg) self,
                 index = in(reg) index,
-                options(noreturn)
-            )
+                output = in(reg) output.as_mut_ptr(),
+            );
+            output.assume_init()
         }
     }
 }
@@ -124,13 +105,13 @@ impl<T: Scalar> Index<usize> for SliceRepr<'_, T> {
 
 impl<T: Scalar> Data for SliceRepr<'_, T> {}
 
-#[cfg_attr(not(target_arch = "spirv"), derive(Clone, Copy))]
+#[derive(Clone, Copy)]
 pub struct UnsafeSliceRepr<'a, T> {
     #[cfg(not(target_arch = "spirv"))]
     ptr: *mut T,
     #[cfg(target_arch = "spirv")]
     #[allow(unused)]
-    inner: &'a mut [T; 1],
+    inner: &'a [T; 1],
     #[cfg(target_arch = "spirv")]
     #[allow(unused)]
     offset: usize,
@@ -244,7 +225,11 @@ impl<'a, T: Scalar> Slice<'a, T> {
 impl<'a, T: Scalar> UnsafeSlice<'a, T> {
     #[cfg(target_arch = "spirv")]
     pub unsafe fn from_unsafe_raw_parts(inner: &'a mut [T; 1], offset: usize, len: usize) -> Self {
-        let data = UnsafeSliceRepr { inner, offset, len };
+        let data = UnsafeSliceRepr {
+            inner: &*inner,
+            offset,
+            len,
+        };
         Self { data }
     }
 }

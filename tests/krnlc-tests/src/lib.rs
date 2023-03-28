@@ -1,147 +1,64 @@
 use krnl::macros::module;
 
 #[module]
-pub mod foo {
+pub mod kernels {
+    use dry::macro_for;
     #[cfg(not(target_arch = "spirv"))]
     use krnl::krnl_core;
-    use krnl_core::buffer::{UnsafeIndex, UnsafeSlice};
     use krnl_core::macros::kernel;
-
-    pub fn foo_impl(idx: usize, y: UnsafeSlice<u32>) {
-        if idx < y.len() {
-            unsafe {
-                *y.unsafe_index_mut(idx) = 1;
-            }
-        }
-    }
-
-    #[kernel(threads(256))]
-    pub fn foo(#[global] y: UnsafeSlice<u32>) {
-        foo_impl(kernel.global_id() as usize, y);
-    }
-
-    #[kernel(threads(256))]
-    pub fn foo_itemwise(#[item] y: &mut u32) {
-        *y = 1;
-    }
-}
-
-#[module]
-pub mod bar {
-    #[cfg(not(target_arch = "spirv"))]
-    use krnl::krnl_core;
     #[cfg(target_arch = "spirv")]
-    use krnl_core::buffer::UnsafeIndex;
-    use krnl_core::macros::kernel;
+    use krnl_core::{
+        buffer::UnsafeIndex,
+        half::{bf16, f16},
+    };
+    use paste::paste;
 
-    #[kernel(threads(TS))]
-    pub fn bar<#[spec] const TS: u32>(
-        #[global] x: Slice<u32>,
-        #[group] x_group: UnsafeSlice<u32, { (2 * TS) as usize }>,
-        #[global] y: UnsafeSlice<u32>,
-    ) {
-        use krnl_core::spirv_std::{self, arch::workgroup_memory_barrier, macros::debug_printfln};
+    #[kernel(threads(X))]
+    fn spec_threads_1d<#[spec] const X: u32>() {}
 
-        let mut global_id = kernel.global_id() as usize;
-        let thread_id = kernel.thread_id() as usize;
-        let group_id = kernel.group_id() as usize;
+    #[kernel(threads(X, Y))]
+    fn spec_threads_2d<#[spec] const X: u32, #[spec] const Y: u32>() {}
 
-        while global_id < x.len() {
-            unsafe {
-                *x_group.unsafe_index_mut(thread_id) += x[global_id];
+    #[kernel(threads(X, Y, Z))]
+    fn spec_threads_3d<#[spec] const X: u32, #[spec] const Y: u32, #[spec] const Z: u32>() {}
+
+    macro_for!($A in [u8, i8, u16, i16, f16, bf16, u32, i32, f32, u64, i64, f64] {
+        paste! {
+            #[kernel(threads(256))]
+            fn [<basic_ $A>]<#[spec] const A: $A>(
+                #[item] a: &mut $A,
+                a_push: $A
+            ) {
+                *a = a_push + A;
             }
-            global_id += kernel.global_threads() as usize;
         }
-        unsafe {
-            workgroup_memory_barrier();
-        }
-        if group_id < y.len() && thread_id == 0 {
-            let mut acc = 0;
-            for i in 0..x_group.len() {
-                unsafe {
-                    acc += *x_group.unsafe_index(i);
+    });
+
+    macro_rules! impl_group_kernel {
+        ($($k:ident(|$n:ident| $e:expr)),* $(,)?) => {
+            $(
+                paste! {
+                    #[kernel(threads(1))]
+                    unsafe fn [<group_$k>]<#[spec] const N: u32>(
+                        #[global] x: Slice<f32>,
+                        #[group] x_group: UnsafeSlice<f32, { let $n = N; $e }>,
+                        #[global] y: UnsafeSlice<f32>,
+                    ) {
+                        use krnl_core::spirv_std::arch::workgroup_memory_barrier;
+                        unsafe {
+                            *x_group.unsafe_index_mut(0) = x[0];
+                            workgroup_memory_barrier();
+                            *y.unsafe_index_mut(0) = *x_group.unsafe_index(0);
+                        }
+                    }
                 }
-            }
-            unsafe {
-                *y.unsafe_index_mut(group_id) = acc;
-            }
-        }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn foo_host() {
-        use krnl::krnl_core::buffer::UnsafeSlice;
-        use rayon::iter::{IntoParallelIterator, ParallelIterator};
-        let mut y_vec = vec![0; 100];
-        let y = UnsafeSlice::from(y_vec.as_mut_slice());
-        (0..y.len())
-            .into_par_iter()
-            .for_each(|idx| foo::foo_impl(idx, y));
-        assert!(y_vec.iter().all(|x| *x == 1));
-    }
-
-    #[test]
-    fn foo_device() {
-        use krnl::{buffer::Buffer, device::Device};
-        let device = Device::builder().build().unwrap();
-        let y_vec = vec![0; 100];
-        let mut y = Buffer::from(y_vec).to_device(device.clone()).unwrap();
-        let kernel = foo::foo::builder().unwrap().build(device.clone()).unwrap();
-        kernel
-            .with_global_threads([y.len() as u32])
-            .dispatch(y.as_slice_mut())
-            .unwrap();
-        device.wait().unwrap();
-        let y_vec = y.to_vec().unwrap();
-        assert!(y_vec.iter().all(|x| *x == 1));
-    }
-
-    #[test]
-    fn foo_itemwise_device() {
-        use krnl::{buffer::Buffer, device::Device};
-        let device = Device::builder().build().unwrap();
-        let y_vec = vec![0; 100];
-        let mut y = Buffer::from(y_vec).to_device(device.clone()).unwrap();
-        let kernel = foo::foo_itemwise::builder()
-            .unwrap()
-            .build(device.clone())
-            .unwrap();
-        kernel.dispatch(y.as_slice_mut()).unwrap();
-        device.wait().unwrap();
-        let y_vec = y.to_vec().unwrap();
-        assert!(y_vec.iter().all(|x| *x == 1));
-    }
-
-    #[test]
-    fn bar_device() {
-        use krnl::{
-            buffer::{Buffer, Slice},
-            device::Device,
+            )*
         };
-        let device = Device::builder().build().unwrap();
-        let x_vec = vec![1, 2, 3, 4, 5, 6, 7, 8];
-        let y_vec = vec![0];
-        let x = Slice::from(x_vec.as_slice())
-            .to_device(device.clone())
-            .unwrap();
-        let mut y = Buffer::from(y_vec).to_device(device.clone()).unwrap();
-        let kernel = bar::bar::builder()
-            .unwrap()
-            .specialize((x.len() / 2) as u32)
-            .unwrap()
-            .build(device.clone())
-            .unwrap();
-        kernel
-            .with_groups([1])
-            .dispatch(x.as_slice(), y.as_slice_mut())
-            .unwrap();
-        device.wait().unwrap();
-        let y_vec = y.to_vec().unwrap();
-        assert_eq!(y_vec[0], x_vec.iter().copied().sum());
     }
+
+    impl_group_kernel!(
+        n(|n| n as usize),
+        n_times_4_plus_1(|n| (n * 4 + 1) as usize),
+        n_div_2(|n| (n / 2) as usize),
+    );
 }
