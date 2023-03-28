@@ -856,7 +856,7 @@ impl DeviceEngineBuffer for DeviceBuffer {
         let prev_future = self.future.read();
         let buffer_inner1 = buffer1.inner();
         let buffer_inner2 = buffer2.inner();
-        /*if self.host_visible() {
+        if self.host_visible() {
             while !prev_future.ready() {
                 if engine1.exited.load(Ordering::SeqCst) {
                     return Err(device_lost1.into());
@@ -886,7 +886,7 @@ impl DeviceEngineBuffer for DeviceBuffer {
                 self.download(&mut mapped2)?;
             }
             return Ok(output);
-        }*/
+        }
         let mut prev_future = Some(prev_future.clone());
         let mut offset1 = self.offset;
         let mut offset2 = 0;
