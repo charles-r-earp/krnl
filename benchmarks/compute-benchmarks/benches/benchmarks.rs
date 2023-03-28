@@ -27,6 +27,7 @@ pub fn criterion_benchmark(c: &mut Criterion) {
     } else {
         256_000_000
     };
+    let alloc_n = 256_000;
     let saxpy_x: Rc<Vec<f32>> = Rc::new(
         thread_rng()
             .sample_iter(OpenClosed01)
@@ -43,6 +44,20 @@ pub fn criterion_benchmark(c: &mut Criterion) {
     {
         let index = index_from_env("KRNL_DEVICE");
         let krnl = KrnlBackend::new(index).unwrap();
+        {
+            c.bench_function("alloc_krnl", |b| {
+                let krnl = krnl.clone();
+                b.iter_custom(move |i| {
+                    let mut duration = Duration::default();
+                    for _ in 0..i {
+                        let start = Instant::now();
+                        let _alloc = krnl.alloc(alloc_n).unwrap();
+                        duration += start.elapsed();
+                    }
+                    duration
+                });
+            });
+        }
         {
             let krnl = krnl.clone();
             let x = saxpy_x.clone();
@@ -99,6 +114,20 @@ pub fn criterion_benchmark(c: &mut Criterion) {
         let index = index_from_env("CUDA_DEVICE");
         let cuda = CudaBackend::new(index).unwrap();
         {
+            c.bench_function("alloc_cuda", |b| {
+                let cuda = cuda.clone();
+                b.iter_custom(move |i| {
+                    let mut duration = Duration::default();
+                    for _ in 0..i {
+                        let start = Instant::now();
+                        let _alloc = cuda.alloc(alloc_n).unwrap();
+                        duration += start.elapsed();
+                    }
+                    duration
+                });
+            });
+        }
+        {
             let cuda = cuda.clone();
             let x = saxpy_x.clone();
             c.bench_function("upload_cuda", move |b| {
@@ -154,6 +183,20 @@ pub fn criterion_benchmark(c: &mut Criterion) {
         let platform_index = index_from_env("OCL_PLATFORM");
         let device_index = index_from_env("OCL_DEVICE");
         let ocl = OclBackend::new(platform_index, device_index).unwrap();
+        {
+            c.bench_function("alloc_ocl", |b| {
+                let ocl = ocl.clone();
+                b.iter_custom(move |i| {
+                    let mut duration = Duration::default();
+                    for _ in 0..i {
+                        let start = Instant::now();
+                        let _alloc = ocl.alloc(alloc_n).unwrap();
+                        duration += start.elapsed();
+                    }
+                    duration
+                });
+            });
+        }
         {
             let ocl = ocl.clone();
             let x = saxpy_x.clone();

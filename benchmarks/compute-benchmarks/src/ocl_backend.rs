@@ -17,6 +17,14 @@ impl OclBackend {
             .build()?;
         Ok(Self { pro_que })
     }
+    pub fn alloc(&self, len: usize) -> Result<Alloc> {
+        let x_device = Buffer::builder()
+            .queue(self.pro_que.queue().clone())
+            .len(len)
+            .flags(MemFlags::READ_WRITE | MemFlags::HOST_NO_ACCESS)
+            .build()?;
+        Ok(Alloc { x_device })
+    }
     pub fn upload(&self, x: &[f32]) -> Result<Upload> {
         let x_host = Buffer::builder()
             .queue(self.pro_que.queue().clone())
@@ -103,6 +111,11 @@ impl OclBackend {
             y_host,
         })
     }
+}
+
+pub struct Alloc {
+    #[allow(dead_code)]
+    x_device: Buffer<f32>,
 }
 
 pub struct Upload {

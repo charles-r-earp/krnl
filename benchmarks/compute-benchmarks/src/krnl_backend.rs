@@ -22,6 +22,10 @@ impl KrnlBackend {
             device: Device::builder().index(index).build()?,
         })
     }
+    pub fn alloc(&self, len: usize) -> Result<Alloc> {
+        let x_device = unsafe { Buffer::uninit(self.device.clone(), len)? };
+        Ok(Alloc { x_device })
+    }
     pub fn upload(&self, x: &[f32]) -> Result<Upload> {
         let x_device = Slice::from(x).to_device(self.device.clone())?;
         self.device.wait()?;
@@ -61,6 +65,10 @@ impl KrnlBackend {
             y_host,
         })
     }
+}
+
+pub struct Alloc {
+    x_device: Buffer<f32>,
 }
 
 pub struct Upload {

@@ -55,6 +55,10 @@ impl CudaBackend {
             cuda: Arc::new(Cuda::new(index)?),
         })
     }
+    pub fn alloc(&self, len: usize) -> Result<Alloc> {
+        let x_device = unsafe { DeviceBuffer::<f32>::uninitialized(len)? };
+        Ok(Alloc { x_device })
+    }
     pub fn upload(&self, x: &[f32]) -> Result<Upload> {
         #[allow(unused)]
         let x_device = DeviceBuffer::from_slice(x)?;
@@ -93,6 +97,11 @@ impl CudaBackend {
             y_host,
         })
     }
+}
+
+pub struct Alloc {
+    #[allow(dead_code)]
+    x_device: DeviceBuffer<f32>,
 }
 
 pub struct Upload {

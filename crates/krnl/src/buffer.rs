@@ -947,7 +947,7 @@ impl<'a, T: Scalar> TryFrom<ScalarSliceMut<'a>> for SliceMut<'a, T> {
 }
 
 impl<T: Scalar, S: DataOwned<Elem = T>> BufferBase<S> {
-    unsafe fn uninit(device: Device, len: usize) -> Result<Self> {
+    pub unsafe fn uninit(device: Device, len: usize) -> Result<Self> {
         let data = unsafe { BufferRepr::uninit(device, len)?.into() };
         Ok(Self { data })
     }
