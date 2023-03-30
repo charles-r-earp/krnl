@@ -36,6 +36,7 @@ impl OclBackend {
             .len(x.len())
             .flags(MemFlags::READ_WRITE | MemFlags::HOST_NO_ACCESS)
             .build()?;
+        assert_eq!(x_device.len(), x.len());
         x_host.copy(&x_device, None, None).enq()?;
         self.pro_que.finish()?;
         #[cfg(debug_assertions)]

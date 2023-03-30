@@ -181,7 +181,10 @@ impl DeviceEngine for Engine {
         let memory_allocator = Arc::new(StandardMemoryAllocator::new(
             device.clone(),
             GenericMemoryAllocatorCreateInfo {
-                block_sizes: &[(0, 64_000_000), (i32::MAX as _, i32::MAX as _)],
+                block_sizes: &[
+                    (0, (DeviceBuffer::HOST_BUFFER_SIZE * 2) as _),
+                    (DeviceBuffer::MAX_SIZE as _, DeviceBuffer::MAX_SIZE as _),
+                ],
                 dedicated_allocation: false,
                 ..Default::default()
             },
@@ -463,44 +466,48 @@ impl Worker {
             self.fence.reset()?;
             let op = self.op_receiver.lock().recv()?;
             match op {
-                Op::Upload {
-                    src_sender,
-                    dst,
-                    submit_receiver,
-                    future_sender,
-                } => {
+                Op::Upload { sender, dst } => {
                     let buffer = self.host_buffer.as_ref().unwrap();
-                    src_sender.send(buffer.clone()).unwrap();
+                    while Arc::strong_count(buffer) > 1 {
+                        std::thread::sleep(Duration::from_micros(1));
+                    }
+                    sender.send((buffer.clone(), self.state.next())).unwrap();
                     unsafe {
                         builder.copy_buffer(&CopyBufferInfo::buffers(buffer.clone(), dst.clone()));
                     }
                     let command_buffer = builder.build()?;
-                    let _ = submit_receiver.recv();
+                    while Arc::strong_count(buffer) > 2 {
+                        std::thread::sleep(Duration::from_micros(1));
+                    }
                     unsafe {
                         self.submit(&command_buffer)?;
                     }
-                    let _ = future_sender.send(self.state.next());
                     self.fence.wait(None)?;
                     self.state.finish();
                 }
                 Op::Download {
                     src,
                     dst_sender,
-                    submit_receiver,
-                    finished_receiver,
+                    future,
                 } => {
                     let buffer = self.host_buffer.as_ref().unwrap();
                     unsafe {
                         builder.copy_buffer(&CopyBufferInfo::buffers(src, buffer.clone()));
                     }
                     let command_buffer = builder.build()?;
-                    submit_receiver.recv()?;
+                    if let Some(future) = future {
+                        while !future.ready() {
+                            if self.guard.exited.load(Ordering::Relaxed) {
+                                return Ok(());
+                            }
+                            std::thread::sleep(Duration::from_micros(1));
+                        }
+                    }
                     unsafe {
                         self.submit(&command_buffer)?;
                     }
                     self.fence.wait(None)?;
                     let _ = dst_sender.send(buffer.clone());
-                    let _ = finished_receiver.recv();
                 }
                 Op::Compute {
                     futures,
@@ -596,16 +603,13 @@ impl Drop for WorkerDropGuard {
 
 enum Op {
     Upload {
-        src_sender: Sender<Arc<CpuAccessibleBuffer<[u8]>>>,
+        sender: Sender<(Arc<CpuAccessibleBuffer<[u8]>>, WorkerFuture)>,
         dst: Arc<BufferSlice<[u8], DeviceLocalBuffer<[u8]>>>,
-        submit_receiver: Receiver<()>,
-        future_sender: Sender<WorkerFuture>,
     },
     Download {
         src: Arc<BufferSlice<[u8], DeviceLocalBuffer<[u8]>>>,
         dst_sender: Sender<Arc<CpuAccessibleBuffer<[u8]>>>,
-        submit_receiver: Receiver<()>,
-        finished_receiver: Receiver<()>,
+        future: Option<WorkerFuture>,
     },
     Compute {
         futures: Vec<WorkerFuture>,
@@ -617,7 +621,7 @@ enum Op {
     },
 }
 
-fn aligned_floor(x: usize, align: usize) -> usize {
+const fn aligned_floor(x: usize, align: usize) -> usize {
     if x % align != 0 {
         align * (x / align)
     } else {
@@ -625,7 +629,7 @@ fn aligned_floor(x: usize, align: usize) -> usize {
     }
 }
 
-fn aligned_ceil(x: usize, align: usize) -> usize {
+const fn aligned_ceil(x: usize, align: usize) -> usize {
     if x % align != 0 {
         aligned_floor(x, align) + align
     } else {
@@ -657,8 +661,13 @@ pub(super) struct DeviceBuffer {
 }
 
 impl DeviceBuffer {
+    const MAX_LEN: usize = i32::MAX as usize;
+    const MAX_SIZE: usize = aligned_ceil(Self::MAX_LEN, Self::ALIGN);
     const ALIGN: usize = 256;
-    const HOST_BUFFER_SIZE: usize = 32_000_000;
+    const HOST_BUFFER_SIZE: usize = 128_000_000; // 32_000_000;
+    fn chunk_size(size: usize) -> usize {
+        Self::HOST_BUFFER_SIZE
+    }
     fn host_visible(&self) -> bool {
         use vulkano::buffer::sys::BufferMemory;
         if let Some(inner) = self.inner.as_ref() {
@@ -681,27 +690,20 @@ impl DeviceBuffer {
                     handle: engine.handle(),
                 };
                 let mut future_guard = self.future.write();
-                for data in data.chunks(Self::HOST_BUFFER_SIZE) {
-                    let (src_sender, src_receiver) = crossbeam_channel::bounded(0);
+                for data in data.chunks(Self::chunk_size(data.len())) {
+                    let (sender, receiver) = crossbeam_channel::bounded(1);
                     let dst = buffer
                         .slice(offset as _..(offset + data.len()) as _)
                         .unwrap();
-                    let (submit_sender, submit_receiver) = crossbeam_channel::bounded(0);
-                    let (future_sender, future_receiver) = crossbeam_channel::bounded(0);
-                    let op = Op::Upload {
-                        src_sender,
-                        dst,
-                        submit_receiver,
-                        future_sender,
-                    };
+                    let op = Op::Upload { sender, dst };
                     engine
                         .transfer_op_sender
                         .send(op)
                         .map_err(|_| device_lost)?;
-                    let src = src_receiver.recv().map_err(|_| device_lost)?;
+                    let (src, future) = receiver.recv().map_err(|_| device_lost)?;
                     src.write().unwrap()[..data.len()].copy_from_slice(data);
-                    submit_sender.send(()).map_err(|_| device_lost)?;
-                    *future_guard = future_receiver.recv().map_err(|_| device_lost)?;
+                    std::mem::drop(src);
+                    *future_guard = future;
                     offset += data.len();
                 }
             }
@@ -781,22 +783,19 @@ impl DeviceEngineBuffer for DeviceBuffer {
             struct HostCopy<'a> {
                 data: &'a mut [u8],
                 dst_receiver: Receiver<Arc<CpuAccessibleBuffer<[u8]>>>,
-                finished_sender: Sender<()>,
             }
             let mut host_copy: Option<HostCopy> = None;
-            for data in data.chunks_mut(Self::HOST_BUFFER_SIZE) {
+            for data in data.chunks_mut(Self::chunk_size(data.len())) {
                 let src = buffer
                     .slice(offset as _..(offset + data.len()) as _)
                     .unwrap();
                 offset += data.len();
-                let (dst_sender, dst_receiver) = crossbeam_channel::bounded(0);
-                let (submit_sender, submit_receiver) = crossbeam_channel::bounded(1);
-                let (finished_sender, finished_receiver) = crossbeam_channel::bounded(0);
+                let (dst_sender, dst_receiver) = crossbeam_channel::bounded(1);
+                let future = prev_future.take();
                 let op = Op::Download {
                     src,
                     dst_sender,
-                    submit_receiver,
-                    finished_receiver,
+                    future: future.clone(),
                 };
                 engine
                     .transfer_op_sender
@@ -810,18 +809,12 @@ impl DeviceEngineBuffer for DeviceBuffer {
                         std::thread::sleep(Duration::from_micros(1));
                     }
                 }
-                submit_sender.send(()).map_err(|_| device_lost)?;
-                let host_copy = host_copy.replace(HostCopy {
-                    data,
-                    dst_receiver,
-                    finished_sender,
-                });
+                let host_copy = host_copy.replace(HostCopy { data, dst_receiver });
                 if let Some(host_copy) = host_copy {
                     let dst = host_copy.dst_receiver.recv().map_err(|_| device_lost)?;
                     host_copy
                         .data
                         .copy_from_slice(&dst.read().unwrap()[..host_copy.data.len()]);
-                    let _ = host_copy.finished_sender.send(());
                 }
             }
             if let Some(host_copy) = host_copy {
@@ -829,7 +822,6 @@ impl DeviceEngineBuffer for DeviceBuffer {
                 host_copy
                     .data
                     .copy_from_slice(&dst.read().unwrap()[..host_copy.data.len()]);
-                let _ = host_copy.finished_sender.send(());
             }
         }
         Ok(())
@@ -892,11 +884,8 @@ impl DeviceEngineBuffer for DeviceBuffer {
         let mut offset2 = 0;
         struct HostCopy {
             chunk_size: usize,
-            src_receiver: Receiver<Arc<CpuAccessibleBuffer<[u8]>>>,
+            receiver: Receiver<(Arc<CpuAccessibleBuffer<[u8]>>, WorkerFuture)>,
             dst_receiver: Receiver<Arc<CpuAccessibleBuffer<[u8]>>>,
-            finished_sender: Sender<()>,
-            submit_sender: Sender<()>,
-            future_receiver: Receiver<WorkerFuture>,
         }
         let mut host_copy = None;
         while offset2 < output.len() {
@@ -914,19 +903,17 @@ impl DeviceEngineBuffer for DeviceBuffer {
             offset1 += chunk_size;
             offset2 += chunk_size;
             let (dst_sender, dst_receiver) = crossbeam_channel::bounded(1);
-            let (submit_sender, submit_receiver) = crossbeam_channel::bounded(1);
-            let (finished_sender, finished_receiver) = crossbeam_channel::bounded(0);
+            let future = prev_future.take();
             let op = Op::Download {
                 src,
                 dst_sender,
-                submit_receiver,
-                finished_receiver,
+                future: future.clone(),
             };
             engine1
                 .transfer_op_sender
                 .send(op)
                 .map_err(|_| device_lost2)?;
-            if let Some(future) = prev_future.take() {
+            if let Some(future) = future {
                 while !future.ready() {
                     if engine1.exited.load(Ordering::SeqCst) {
                         return Err(device_lost2.into());
@@ -934,45 +921,30 @@ impl DeviceEngineBuffer for DeviceBuffer {
                     std::thread::sleep(Duration::from_micros(1));
                 }
             }
-            submit_sender.send(()).map_err(|_| device_lost1)?;
-            let (src_sender, src_receiver) = crossbeam_channel::bounded(0);
-            let (submit_sender, submit_receiver) = crossbeam_channel::bounded(0);
-            let (future_sender, future_receiver) = crossbeam_channel::bounded(0);
-            let op = Op::Upload {
-                src_sender,
-                dst,
-                submit_receiver,
-                future_sender,
-            };
+            let (sender, receiver) = crossbeam_channel::bounded(0);
+            let op = Op::Upload { sender, dst };
             engine2
                 .transfer_op_sender
                 .send(op)
                 .map_err(|_| device_lost2)?;
             let host_copy = host_copy.replace(HostCopy {
                 chunk_size,
-                src_receiver,
+                receiver,
                 dst_receiver,
-                finished_sender,
-                submit_sender,
-                future_receiver,
             });
             if let Some(host_copy) = host_copy {
                 let dst = host_copy.dst_receiver.recv().map_err(|_| device_lost1)?;
-                let src = host_copy.src_receiver.recv().map_err(|_| device_lost2)?;
+                let (src, _future) = host_copy.receiver.recv().map_err(|_| device_lost2)?;
                 src.write().unwrap()[..host_copy.chunk_size]
                     .copy_from_slice(&dst.read().unwrap()[..host_copy.chunk_size]);
-                let _ = host_copy.finished_sender.send(());
-                let _ = host_copy.submit_sender.send(());
             }
         }
         if let Some(host_copy) = host_copy {
             let dst = host_copy.dst_receiver.recv().map_err(|_| device_lost1)?;
-            let src = host_copy.src_receiver.recv().map_err(|_| device_lost2)?;
+            let (src, future) = host_copy.receiver.recv().map_err(|_| device_lost2)?;
             src.write().unwrap()[..host_copy.chunk_size]
                 .copy_from_slice(&dst.read().unwrap()[..host_copy.chunk_size]);
-            let _ = host_copy.finished_sender.send(());
-            let _ = host_copy.submit_sender.send(());
-            *output.future.write() = host_copy.future_receiver.recv().map_err(|_| device_lost2)?;
+            *output.future.write() = future;
         }
         Ok(output)
     }
