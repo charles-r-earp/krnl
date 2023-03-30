@@ -466,7 +466,11 @@ impl Worker {
             self.fence.reset()?;
             let op = self.op_receiver.lock().recv()?;
             match op {
-                Op::Upload { sender, dst } => {
+                Op::Upload {
+                    sender,
+                    dst,
+                    submit,
+                } => {
                     let buffer = self.host_buffer.as_ref().unwrap();
                     while Arc::strong_count(buffer) > 1 {
                         std::thread::sleep(Duration::from_micros(1));
@@ -476,7 +480,10 @@ impl Worker {
                         builder.copy_buffer(&CopyBufferInfo::buffers(buffer.clone(), dst.clone()));
                     }
                     let command_buffer = builder.build()?;
-                    while Arc::strong_count(buffer) > 2 {
+                    while !submit.load(Ordering::Relaxed) {
+                        if Arc::strong_count(&submit) == 1 {
+                            return Ok(());
+                        }
                         std::thread::sleep(Duration::from_micros(1));
                     }
                     unsafe {
@@ -508,6 +515,9 @@ impl Worker {
                     }
                     self.fence.wait(None)?;
                     let _ = dst_sender.send(buffer.clone());
+                    while Arc::strong_count(buffer) > 1 {
+                        std::thread::sleep(Duration::from_micros(1));
+                    }
                 }
                 Op::Compute {
                     futures,
@@ -605,6 +615,7 @@ enum Op {
     Upload {
         sender: Sender<(Arc<CpuAccessibleBuffer<[u8]>>, WorkerFuture)>,
         dst: Arc<BufferSlice<[u8], DeviceLocalBuffer<[u8]>>>,
+        submit: Arc<AtomicBool>,
     },
     Download {
         src: Arc<BufferSlice<[u8], DeviceLocalBuffer<[u8]>>>,
@@ -695,13 +706,19 @@ impl DeviceBuffer {
                     let dst = buffer
                         .slice(offset as _..(offset + data.len()) as _)
                         .unwrap();
-                    let op = Op::Upload { sender, dst };
+                    let submit = Arc::new(AtomicBool::default());
+                    let op = Op::Upload {
+                        sender,
+                        dst,
+                        submit: submit.clone(),
+                    };
                     engine
                         .transfer_op_sender
                         .send(op)
                         .map_err(|_| device_lost)?;
                     let (src, future) = receiver.recv().map_err(|_| device_lost)?;
                     src.write().unwrap()[..data.len()].copy_from_slice(data);
+                    submit.store(true, Ordering::Relaxed);
                     std::mem::drop(src);
                     *future_guard = future;
                     offset += data.len();
@@ -886,6 +903,7 @@ impl DeviceEngineBuffer for DeviceBuffer {
             chunk_size: usize,
             receiver: Receiver<(Arc<CpuAccessibleBuffer<[u8]>>, WorkerFuture)>,
             dst_receiver: Receiver<Arc<CpuAccessibleBuffer<[u8]>>>,
+            submit: Arc<AtomicBool>,
         }
         let mut host_copy = None;
         while offset2 < output.len() {
@@ -922,7 +940,12 @@ impl DeviceEngineBuffer for DeviceBuffer {
                 }
             }
             let (sender, receiver) = crossbeam_channel::bounded(0);
-            let op = Op::Upload { sender, dst };
+            let submit = Arc::new(AtomicBool::default());
+            let op = Op::Upload {
+                sender,
+                dst,
+                submit: submit.clone(),
+            };
             engine2
                 .transfer_op_sender
                 .send(op)
@@ -931,12 +954,14 @@ impl DeviceEngineBuffer for DeviceBuffer {
                 chunk_size,
                 receiver,
                 dst_receiver,
+                submit,
             });
             if let Some(host_copy) = host_copy {
                 let dst = host_copy.dst_receiver.recv().map_err(|_| device_lost1)?;
                 let (src, _future) = host_copy.receiver.recv().map_err(|_| device_lost2)?;
                 src.write().unwrap()[..host_copy.chunk_size]
                     .copy_from_slice(&dst.read().unwrap()[..host_copy.chunk_size]);
+                host_copy.submit.store(true, Ordering::Relaxed);
             }
         }
         if let Some(host_copy) = host_copy {
@@ -944,6 +969,7 @@ impl DeviceEngineBuffer for DeviceBuffer {
             let (src, future) = host_copy.receiver.recv().map_err(|_| device_lost2)?;
             src.write().unwrap()[..host_copy.chunk_size]
                 .copy_from_slice(&dst.read().unwrap()[..host_copy.chunk_size]);
+            host_copy.submit.store(true, Ordering::Relaxed);
             *output.future.write() = future;
         }
         Ok(output)

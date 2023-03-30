@@ -65,7 +65,12 @@ fn buffer_tests(device: &Device, device2: Option<&Device>) -> impl IntoIterator<
                 .unwrap()
                 .into_vec()
                 .unwrap();
-            assert_eq!(y.as_slice(), x);
+            assert_eq!(y.len(), n);
+            if x != y.as_slice() {
+                for (x, y) in x.iter().zip(y) {
+                    assert_eq!(&y, x);
+                }
+            }
         }
     }
     tests.push(device_test(device, "buffer_from_vec", buffer_from_vec));
