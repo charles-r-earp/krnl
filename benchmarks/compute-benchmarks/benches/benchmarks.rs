@@ -33,7 +33,6 @@ pub fn criterion_benchmark(c: &mut Criterion) {
         ("64M", 64_000_000.min(n_max)),
         ("256M", 256_000_000.min(n_max)),
     ];
-    let saxpy_lens = [("1", 1), ("64M", 64_000_000.min(n_max))];
     let x: Rc<Vec<f32>> = Rc::new(thread_rng().sample_iter(OpenClosed01).take(n_max).collect());
     let alpha = 0.5;
     let y: Vec<f32> = thread_rng().sample_iter(OpenClosed01).take(n_max).collect();
@@ -229,6 +228,9 @@ pub fn criterion_benchmark(c: &mut Criterion) {
         }
 
         for (s, n) in lens {
+            if n > 64_000_000 {
+                break;
+            }
             let x = Rc::new(x[..n].to_vec());
             let y = Rc::new(y[..n].to_vec());
             let saxpy = Rc::new(RefCell::new(ocl.saxpy(&x, alpha, &y).unwrap()));
