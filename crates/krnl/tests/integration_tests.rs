@@ -7,6 +7,7 @@ use krnl::{
 };
 use libtest_mimic::{Arguments, Trial};
 use paste::paste;
+use std::str::FromStr;
 
 fn main() {
     let args = Arguments::from_args();
@@ -15,10 +16,25 @@ fn main() {
             .into_iter()
             .chain((1..).map_while(|i| Device::builder().index(i).build().ok()))
             .collect();
+        if devices.is_empty() {
+            panic!("No device!");
+        }
         let device_infos: Vec<_> = devices.iter().map(|x| x.info().unwrap()).collect();
         println!("devices: {device_infos:#?}");
+        let krnl_device = std::env::var("KRNL_DEVICE");
+        let device_index = if let Ok(krnl_device) = krnl_device.as_ref() {
+            usize::from_str(&krnl_device).unwrap()
+        } else {
+            0
+        };
+        let device_index2 = if device_index == 0 { 1 } else { 0 };
+        println!("KRNL_DEVICE = {krnl_device:?}");
+        println!("testing device {device_index}");
         let device = devices.get(0).unwrap();
         let device2 = devices.get(1);
+        if device2.is_some() {
+            println!("using device {device_index2} for `buffer_device_to_device`");
+        }
         tests(&Device::host(), None)
             .into_iter()
             .chain(tests(device, device2))

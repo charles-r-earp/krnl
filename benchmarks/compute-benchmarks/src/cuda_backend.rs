@@ -6,7 +6,7 @@ use cust::{
     context::Context,
     device::Device,
     launch,
-    memory::{DeviceBuffer, DeviceSlice},
+    memory::{CopyDestination, DeviceBuffer, DeviceSlice},
     module::Module,
     stream::{Stream, StreamFlags},
 };
@@ -60,22 +60,20 @@ impl CudaBackend {
         Ok(Alloc { x_device })
     }
     pub fn upload(&self, x: &[f32]) -> Result<Upload> {
-        #[allow(unused)]
-        let x_device = DeviceBuffer::from_slice(x)?;
+        let y_device = DeviceBuffer::zeroed(x.len())?;
         self.cuda.sync()?;
-        #[cfg(debug_assertions)]
-        {
-            let x_device = x_device.as_host_vec()?;
-            assert_eq!(x, x_device.as_slice());
-        }
-        Ok(Upload { x_device })
+        Ok(Upload {
+            x_host: x.to_vec(),
+            y_device,
+        })
     }
     pub fn download(&self, x: &[f32]) -> Result<Download> {
         let x_device = DeviceBuffer::from_slice(x)?;
         Ok(Download {
-            x_device,
             #[cfg(debug_assertions)]
             x_host: x.to_vec(),
+            x_device,
+            y_host: vec![0f32; x.len()],
         })
     }
     pub fn saxpy(&self, x: &[f32], alpha: f32, y: &[f32]) -> Result<Saxpy> {
@@ -105,23 +103,36 @@ pub struct Alloc {
 }
 
 pub struct Upload {
+    x_host: Vec<f32>,
     #[allow(dead_code)]
-    x_device: DeviceBuffer<f32>,
+    y_device: DeviceBuffer<f32>,
+}
+
+impl Upload {
+    pub fn run(&mut self) -> Result<()> {
+        self.y_device.copy_from(&self.x_host)?;
+        #[cfg(debug_assertions)]
+        {
+            let y_host = self.y_device.as_host_vec()?;
+            assert_eq!(self.x_host, y_host);
+        }
+        Ok(())
+    }
 }
 
 pub struct Download {
-    x_device: DeviceBuffer<f32>,
     #[cfg(debug_assertions)]
     x_host: Vec<f32>,
+    x_device: DeviceBuffer<f32>,
+    y_host: Vec<f32>,
 }
 
 impl Download {
-    pub fn run(&self) -> Result<()> {
-        #[allow(unused)]
-        let x_device = self.x_device.as_host_vec()?;
+    pub fn run(&mut self) -> Result<()> {
+        self.x_device.copy_to(&mut self.y_host)?;
         #[cfg(debug_assertions)]
         {
-            assert_eq!(x_device, self.x_host);
+            assert_eq!(self.y_host, self.x_host);
         }
         Ok(())
     }

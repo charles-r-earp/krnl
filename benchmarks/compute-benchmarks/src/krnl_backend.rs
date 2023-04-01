@@ -6,7 +6,7 @@ use crate::saxpy_host;
 use approx::assert_relative_eq;
 use krnl::{
     anyhow::Result,
-    buffer::{Buffer, Slice},
+    buffer::{Buffer, Slice, SliceMut},
     device::Device,
     macros::module,
 };
@@ -27,21 +27,20 @@ impl KrnlBackend {
         Ok(Alloc { x_device })
     }
     pub fn upload(&self, x: &[f32]) -> Result<Upload> {
-        let x_device = Slice::from(x).to_device(self.device.clone())?;
+        let y_device = Buffer::zeros(self.device.clone(), x.len())?;
         self.device.wait()?;
-        #[cfg(debug_assertions)]
-        {
-            let x_device = x_device.to_vec()?;
-            assert_eq!(x, x_device.as_slice());
-        }
-        Ok(Upload { x_device })
+        Ok(Upload {
+            x_host: x.to_vec(),
+            y_device,
+        })
     }
     pub fn download(&self, x: &[f32]) -> Result<Download> {
         let x_device = Slice::from(x).to_device(self.device.clone())?;
         Ok(Download {
-            x_device,
             #[cfg(debug_assertions)]
             x_host: x.to_vec(),
+            x_device,
+            y_host: vec![0f32; x.len()],
         })
     }
     pub fn saxpy(&self, x: &[f32], alpha: f32, y: &[f32]) -> Result<Saxpy> {
@@ -72,22 +71,37 @@ pub struct Alloc {
 }
 
 pub struct Upload {
-    x_device: Buffer<f32>,
+    x_host: Vec<f32>,
+    y_device: Buffer<f32>,
+}
+
+impl Upload {
+    pub fn run(&mut self) -> Result<()> {
+        self.y_device
+            .copy_from_slice(&self.x_host.as_slice().into())?;
+        #[cfg(debug_assertions)]
+        {
+            let y_host = self.y_device.to_vec()?;
+            assert_eq!(self.x_host, y_host);
+        }
+        Ok(())
+    }
 }
 
 pub struct Download {
-    x_device: Buffer<f32>,
     #[cfg(debug_assertions)]
     x_host: Vec<f32>,
+    x_device: Buffer<f32>,
+    y_host: Vec<f32>,
 }
 
 impl Download {
-    pub fn run(&self) -> Result<()> {
-        #[allow(unused)]
-        let x_device = self.x_device.to_vec()?;
+    pub fn run(&mut self) -> Result<()> {
+        SliceMut::from_host_slice_mut(&mut self.y_host)
+            .copy_from_slice(&self.x_device.as_slice())?;
         #[cfg(debug_assertions)]
         {
-            assert_eq!(x_device, self.x_host);
+            assert_eq!(self.y_host, self.x_host);
         }
         Ok(())
     }

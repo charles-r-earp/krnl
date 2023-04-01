@@ -23,6 +23,15 @@ struct RawHostSlice {
     len: usize,
 }
 
+impl RawHostSlice {
+    unsafe fn as_bytes<'a>(&self) -> &'a [u8] {
+        unsafe { std::slice::from_raw_parts(self.ptr, self.len) }
+    }
+    unsafe fn as_bytes_mut<'a>(&mut self) -> &'a mut [u8] {
+        unsafe { std::slice::from_raw_parts_mut(self.ptr, self.len) }
+    }
+}
+
 #[derive(Clone)]
 pub struct RawSlice {
     inner: RawSliceInner,
@@ -734,8 +743,15 @@ impl<'a, T: Scalar> SliceRepr<'a, T> {
             self.to_device(Device::host())?.into_vec()
         }
     }
+    fn to_buffer(&self) -> Result<BufferRepr<T>> {
+        self.to_device(self.device())
+    }
     fn to_device(&self, device: Device) -> Result<BufferRepr<T>> {
-        match (&self.raw.inner, device.inner()) {
+        let mut output = unsafe { BufferRepr::uninit(device, self.len())? };
+        output.as_slice_mut().copy_from_slice(self)?;
+        Ok(output)
+
+        /*match (&self.raw.inner, device.inner()) {
             (RawSliceInner::Host(raw), DeviceInner::Host) => {
                 Ok(BufferRepr::from_vec(self.to_vec()?))
             }
@@ -779,7 +795,7 @@ impl<'a, T: Scalar> SliceRepr<'a, T> {
                     _m: PhantomData::default(),
                 })
             }
-        }
+        }*/
     }
     pub fn bitcast<Y: Scalar>(self) -> Result<SliceRepr<'a, Y>, bytemuck::PodCastError> {
         let raw = self.raw.bitcast(Y::scalar_type())?;
@@ -827,6 +843,18 @@ pub struct SliceMutRepr<'a, T> {
 }
 
 impl<'a, T: Scalar> SliceMutRepr<'a, T> {
+    fn from_host_slice_mut(host_slice: &'a mut [T]) -> Self {
+        let width = std::mem::size_of::<T>();
+        let ptr = host_slice.as_ptr() as *mut u8;
+        let len = host_slice.len() * width;
+        let raw = RawSlice {
+            inner: RawSliceInner::Host(RawHostSlice { ptr, len }),
+        };
+        Self {
+            raw,
+            _m: PhantomData::default(),
+        }
+    }
     fn into_host_slice_mut(self) -> Option<&'a mut [T]> {
         match &self.raw.inner {
             RawSliceInner::Host(raw) => {
@@ -837,6 +865,38 @@ impl<'a, T: Scalar> SliceMutRepr<'a, T> {
             }
             #[cfg(feature = "device")]
             _ => None,
+        }
+    }
+    fn copy_from_slice(&mut self, src: &SliceRepr<T>) -> Result<()> {
+        let src_device = src.device();
+        let dst_device = self.device();
+        match (&mut self.raw.inner, &src.raw.inner) {
+            (RawSliceInner::Host(dst), RawSliceInner::Host(src)) => {
+                unsafe {
+                    dst.as_bytes_mut().copy_from_slice(src.as_bytes());
+                }
+                Ok(())
+            }
+            #[cfg(feature = "device")]
+            (RawSliceInner::Host(dst), RawSliceInner::Device(src)) => {
+                src.download(unsafe { dst.as_bytes_mut() })
+            }
+            #[cfg(feature = "device")]
+            (RawSliceInner::Device(dst), RawSliceInner::Host(src)) => {
+                dst.upload(unsafe { src.as_bytes() })
+            }
+            #[cfg(feature = "device")]
+            (RawSliceInner::Device(dst), RawSliceInner::Device(src_buffer)) => {
+                if dst.device() != src_buffer.device() {
+                    return src_buffer.transfer(dst);
+                }
+                Slice { data: src.clone() }.cast_impl(&mut SliceMut::<T> {
+                    data: SliceMutRepr {
+                        raw: self.raw.clone(),
+                        _m: PhantomData::default(),
+                    },
+                })
+            }
         }
     }
 }
@@ -904,15 +964,19 @@ pub type SliceMut<'a, T> = BufferBase<SliceMutRepr<'a, T>>;
 
 impl<T: Scalar, S: DataOwned<Elem = T>> From<Vec<T>> for BufferBase<S> {
     fn from(vec: Vec<T>) -> Self {
-        let data = BufferRepr::from_vec(vec).into();
-        Self { data }
+        Self::from_vec(vec)
     }
 }
 
 impl<'a, T: Scalar> From<&'a [T]> for Slice<'a, T> {
     fn from(host_slice: &'a [T]) -> Self {
-        let data = SliceRepr::from_host_slice(host_slice);
-        Self { data }
+        Self::from_host_slice(host_slice)
+    }
+}
+
+impl<'a, T: Scalar> From<&'a mut [T]> for SliceMut<'a, T> {
+    fn from(host_slice: &'a mut [T]) -> Self {
+        Self::from_host_slice_mut(host_slice)
     }
 }
 
@@ -963,6 +1027,24 @@ impl<T: Scalar, S: DataOwned<Elem = T>> BufferBase<S> {
     }
     pub fn ones(device: Device, len: usize) -> Result<Self> {
         Self::from_elem(device, len, T::one())
+    }
+    pub fn from_vec(vec: Vec<T>) -> Self {
+        let data = BufferRepr::from_vec(vec).into();
+        Self { data }
+    }
+}
+
+impl<'a, T: Scalar> Slice<'a, T> {
+    pub fn from_host_slice(host_slice: &'a [T]) -> Self {
+        let data = SliceRepr::from_host_slice(host_slice);
+        Self { data }
+    }
+}
+
+impl<'a, T: Scalar> SliceMut<'a, T> {
+    pub fn from_host_slice_mut(host_slice: &'a mut [T]) -> Self {
+        let data = SliceMutRepr::from_host_slice_mut(host_slice);
+        Self { data }
     }
 }
 
@@ -1039,9 +1121,6 @@ impl<T: Scalar, S: Data<Elem = T>> BufferBase<S> {
     pub fn to_vec(&self) -> Result<Vec<T>> {
         self.data.as_slice().to_vec()
     }
-}
-
-impl<T: Scalar, S: Data<Elem = T>> BufferBase<S> {
     pub fn fill(&mut self, elem: T) -> Result<()>
     where
         S: DataMut,
@@ -1077,32 +1156,38 @@ impl<T: Scalar, S: Data<Elem = T>> BufferBase<S> {
         }
         Ok(())
     }
-    pub fn cast<Y: Scalar>(&self) -> Result<Buffer<Y>> {
-        if self.is_empty() {
-            return Buffer::zeros(self.device(), 0);
+    fn cast_impl<Y: Scalar>(&self, output: &mut SliceMut<Y>) -> Result<()> {
+        debug_assert_eq!(self.len(), output.len());
+        if output.is_empty() {
+            return Ok(());
         }
-        if let Some(x) = self.as_host_slice() {
-            let y: Vec<Y> = x.iter().map(|x| x.cast()).collect();
-            return Ok(Buffer::from(y));
+        if let Some((x, y)) = self.as_host_slice().zip(output.as_host_slice_mut()) {
+            for (x, y) in x.iter().zip(y.iter_mut()) {
+                *y = x.cast();
+            }
+            return Ok(());
         }
         #[cfg(feature = "device")]
         {
-            let mut output = unsafe { Buffer::uninit(self.device(), self.len())? };
             let x = self.as_scalar_slice();
             let y = output.as_scalar_slice_mut();
-
             macro_for!($X in [u8, i8, u16, i16, f16, bf16, u32, i32, f32, u64, i64, f64] {
                 macro_for!($Y in [u8, i8, u16, i16, f16, bf16, u32, i32, f32, u64, i64, f64] {
                     if T::scalar_type() == $X::scalar_type() && Y::scalar_type() == $Y::scalar_type() {
                         paste! {
                             kernels::[<cast_ $X _ $Y>]::builder()?.build(y.device())?.dispatch(x.try_into().ok().unwrap(), y.try_into().ok().unwrap())?;
                         }
-                        return Ok(output);
+                        return Ok(());
                     }
                 });
             });
         }
         unreachable!()
+    }
+    pub fn cast<Y: Scalar>(&self) -> Result<Buffer<Y>> {
+        let mut output = unsafe { Buffer::uninit(self.device(), self.len())? };
+        self.cast_impl(&mut output.as_slice_mut())?;
+        Ok(output)
     }
     pub fn cast_into<Y: Scalar>(self) -> Result<Buffer<Y>> {
         if T::scalar_type() == Y::scalar_type() {
@@ -1118,6 +1203,12 @@ impl<T: Scalar, S: Data<Elem = T>> BufferBase<S> {
     }
     pub fn bitcast_mut<Y: Scalar>(&mut self) -> Result<SliceMut<Y>, bytemuck::PodCastError> {
         todo!()
+    }
+    pub fn copy_from_slice(&mut self, src: &Slice<T>) -> Result<()>
+    where
+        S: DataMut,
+    {
+        self.data.as_slice_mut().copy_from_slice(&src.data)
     }
 }
 

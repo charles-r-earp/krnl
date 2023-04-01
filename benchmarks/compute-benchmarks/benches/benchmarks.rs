@@ -6,22 +6,54 @@ use compute_benchmarks::ocl_backend::OclBackend;
 use criterion::{criterion_group, criterion_main, Criterion};
 use rand::{distributions::OpenClosed01, thread_rng, Rng};
 use std::{
-    cell::RefCell,
-    env::var,
-    rc::Rc,
     str::FromStr,
     time::{Duration, Instant},
 };
 
-fn index_from_env(name: &str) -> usize {
-    if let Ok(value) = var(name) {
-        usize::from_str(&value).unwrap()
+pub fn criterion_benchmark(c: &mut Criterion) {
+    let krnl_device = std::env::var("KRNL_DEVICE");
+    println!("KRNL_DEVICE = {krnl_device:?}");
+    let device_index = if let Ok(krnl_device) = krnl_device.as_ref() {
+        usize::from_str(krnl_device).unwrap()
     } else {
         0
-    }
-}
+    };
+    println!("testing device {device_index}");
+    #[cfg_attr(not(feature = "cuda"), allow(unused))]
+    let cuda_device_index = if cfg!(feature = "cuda") {
+        let cuda_device = std::env::var("CUDA_DEVICE");
+        println!("CUDA_DEVICE = {cuda_device:?}");
+        let cuda_device_index = if let Ok(cuda_device) = cuda_device.as_ref() {
+            usize::from_str(cuda_device).unwrap()
+        } else {
+            0
+        };
+        println!("testing cuda device {cuda_device_index}");
+        device_index
+    } else {
+        0
+    };
+    #[cfg_attr(not(feature = "ocl"), allow(unused))]
+    let (ocl_platform_index, ocl_device_index) = if cfg!(feature = "ocl") {
+        let ocl_platform = std::env::var("OCL_PLATFORM");
+        let ocl_device = std::env::var("OCL_DEVICE");
+        println!("OCL_PLATFORM = {ocl_platform:?} OCL_DEVICE = {ocl_device:?}");
+        let ocl_platform_index = if let Ok(ocl_platform) = ocl_platform.as_ref() {
+            usize::from_str(ocl_platform).unwrap()
+        } else {
+            0
+        };
+        let ocl_device_index = if let Ok(ocl_device) = ocl_device.as_ref() {
+            usize::from_str(ocl_device).unwrap()
+        } else {
+            0
+        };
+        println!("testing ocl platform {ocl_platform_index} device {ocl_device_index}");
+        (ocl_platform_index, ocl_device_index)
+    } else {
+        (0, 0)
+    };
 
-pub fn criterion_benchmark(c: &mut Criterion) {
     let n_max = if cfg!(debug_assertions) {
         1000
     } else {
@@ -33,11 +65,11 @@ pub fn criterion_benchmark(c: &mut Criterion) {
         ("64M", 64_000_000.min(n_max)),
         ("256M", 256_000_000.min(n_max)),
     ];
-    let x: Rc<Vec<f32>> = Rc::new(thread_rng().sample_iter(OpenClosed01).take(n_max).collect());
+    let x: Vec<f32> = thread_rng().sample_iter(OpenClosed01).take(n_max).collect();
     let alpha = 0.5;
     let y: Vec<f32> = thread_rng().sample_iter(OpenClosed01).take(n_max).collect();
-    let index = index_from_env("KRNL_DEVICE");
-    let krnl = KrnlBackend::new(index).unwrap();
+
+    let krnl = KrnlBackend::new(device_index).unwrap();
     for (s, n) in lens {
         c.bench_function(&format!("alloc_{s}_krnl"), |b| {
             let krnl = krnl.clone();
@@ -55,15 +87,13 @@ pub fn criterion_benchmark(c: &mut Criterion) {
     for (s, n) in lens {
         let krnl = krnl.clone();
         let x = x.clone();
+        let mut upload = krnl.upload(&x[..n]).unwrap();
         c.bench_function(&format!("upload_{s}_krnl"), move |b| {
-            let krnl = krnl.clone();
-            let x = x.clone();
-            b.iter_custom(move |i| {
-                let x = &x[..n];
+            b.iter_custom(|i| {
                 let mut duration = Duration::default();
                 for _ in 0..i {
                     let start = Instant::now();
-                    let _upload = krnl.upload(x).unwrap();
+                    upload.run().unwrap();
                     duration += start.elapsed();
                 }
                 duration
@@ -72,10 +102,9 @@ pub fn criterion_benchmark(c: &mut Criterion) {
     }
     for (s, n) in lens {
         let krnl = krnl.clone();
-        let x = x.clone();
+        let mut download = krnl.download(&x[..n]).unwrap();
         c.bench_function(&format!("download_{s}_krnl"), move |b| {
-            let download = krnl.download(&x[..n]).unwrap();
-            b.iter_custom(move |i| {
+            b.iter_custom(|i| {
                 let mut duration = Duration::default();
                 for _ in 0..i {
                     let start = Instant::now();
@@ -87,16 +116,13 @@ pub fn criterion_benchmark(c: &mut Criterion) {
         });
     }
     for (s, n) in lens {
-        let x = Rc::new(x[..n].to_vec());
-        let y = Rc::new(y[..n].to_vec());
-        let saxpy = Rc::new(RefCell::new(krnl.saxpy(&x, alpha, &y).unwrap()));
+        let mut saxpy = krnl.saxpy(&x[..n], alpha, &y[..n]).unwrap();
         c.bench_function(&format!("saxpy_{s}_krnl"), move |b| {
-            let saxpy = saxpy.clone();
-            b.iter_custom(move |i| {
+            b.iter_custom(|i| {
                 let mut duration = Duration::default();
                 for _ in 0..i {
                     let start = Instant::now();
-                    saxpy.borrow_mut().run().unwrap();
+                    saxpy.run().unwrap();
                     duration += start.elapsed();
                 }
                 duration
@@ -105,8 +131,7 @@ pub fn criterion_benchmark(c: &mut Criterion) {
     }
     #[cfg(feature = "cuda")]
     {
-        let index = index_from_env("CUDA_DEVICE");
-        let cuda = CudaBackend::new(index).unwrap();
+        let cuda = CudaBackend::new(cuda_device_index).unwrap();
         for (s, n) in lens {
             c.bench_function(&format!("alloc_{s}_cuda"), |b| {
                 let cuda = cuda.clone();
@@ -122,17 +147,13 @@ pub fn criterion_benchmark(c: &mut Criterion) {
             });
         }
         for (s, n) in lens {
-            let cuda = cuda.clone();
-            let x = x.clone();
+            let mut upload = cuda.upload(&x[..n]).unwrap();
             c.bench_function(&format!("upload_{s}_cuda"), move |b| {
-                let cuda = cuda.clone();
-                let x = x.clone();
-                b.iter_custom(move |i| {
-                    let x = &x[..n];
+                b.iter_custom(|i| {
                     let mut duration = Duration::default();
                     for _ in 0..i {
                         let start = Instant::now();
-                        let _upload = cuda.upload(x).unwrap();
+                        upload.run().unwrap();
                         duration += start.elapsed();
                     }
                     duration
@@ -140,11 +161,9 @@ pub fn criterion_benchmark(c: &mut Criterion) {
             });
         }
         for (s, n) in lens {
-            let cuda = cuda.clone();
-            let x = x.clone();
+            let mut download = cuda.download(&x[..n]).unwrap();
             c.bench_function(&format!("download_{s}_cuda"), move |b| {
-                let download = cuda.download(&x[..n]).unwrap();
-                b.iter_custom(move |i| {
+                b.iter_custom(|i| {
                     let mut duration = Duration::default();
                     for _ in 0..i {
                         let start = Instant::now();
@@ -156,16 +175,13 @@ pub fn criterion_benchmark(c: &mut Criterion) {
             });
         }
         for (s, n) in lens {
-            let x = Rc::new(x[..n].to_vec());
-            let y = Rc::new(y[..n].to_vec());
-            let saxpy = Rc::new(RefCell::new(cuda.saxpy(&x, alpha, &y).unwrap()));
+            let mut saxpy = cuda.saxpy(&x[..n], alpha, &y[..n]).unwrap();
             c.bench_function(&format!("saxpy_{s}_cuda"), move |b| {
-                let saxpy = saxpy.clone();
-                b.iter_custom(move |i| {
+                b.iter_custom(|i| {
                     let mut duration = Duration::default();
                     for _ in 0..i {
                         let start = Instant::now();
-                        saxpy.borrow_mut().run().unwrap();
+                        saxpy.run().unwrap();
                         duration += start.elapsed();
                     }
                     duration
@@ -175,9 +191,7 @@ pub fn criterion_benchmark(c: &mut Criterion) {
     }
     #[cfg(feature = "ocl")]
     {
-        let platform_index = index_from_env("OCL_PLATFORM");
-        let device_index = index_from_env("OCL_DEVICE");
-        let ocl = OclBackend::new(platform_index, device_index).unwrap();
+        let ocl = OclBackend::new(ocl_platform_index, ocl_device_index).unwrap();
         for (s, n) in lens {
             c.bench_function(&format!("alloc_{s}_ocl"), |b| {
                 let ocl = ocl.clone();
@@ -211,11 +225,9 @@ pub fn criterion_benchmark(c: &mut Criterion) {
             });
         }
         for (s, n) in lens {
-            let ocl = ocl.clone();
-            let x = x.clone();
+            let mut download = ocl.download(&x[..n]).unwrap();
             c.bench_function(&format!("download_{s}_ocl"), move |b| {
-                let download = ocl.download(&x[..n]).unwrap();
-                b.iter_custom(move |i| {
+                b.iter_custom(|i| {
                     let mut duration = Duration::default();
                     for _ in 0..i {
                         let start = Instant::now();
@@ -226,21 +238,17 @@ pub fn criterion_benchmark(c: &mut Criterion) {
                 });
             });
         }
-
         for (s, n) in lens {
             if n > 64_000_000 {
                 break;
             }
-            let x = Rc::new(x[..n].to_vec());
-            let y = Rc::new(y[..n].to_vec());
-            let saxpy = Rc::new(RefCell::new(ocl.saxpy(&x, alpha, &y).unwrap()));
+            let mut saxpy = ocl.saxpy(&x[..n], alpha, &y[..n]).unwrap();
             c.bench_function(&format!("saxpy_{s}_ocl"), move |b| {
-                let saxpy = saxpy.clone();
-                b.iter_custom(move |i| {
+                b.iter_custom(|i| {
                     let mut duration = Duration::default();
                     for _ in 0..i {
                         let start = Instant::now();
-                        saxpy.borrow_mut().run().unwrap();
+                        saxpy.run().unwrap();
                         duration += start.elapsed();
                     }
                     duration

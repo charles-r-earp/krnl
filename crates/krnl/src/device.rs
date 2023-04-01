@@ -142,9 +142,9 @@ struct DeviceOptions {
 trait DeviceEngineBuffer: Sized {
     type Engine;
     unsafe fn uninit(engine: Arc<Self::Engine>, len: usize) -> Result<Self>;
-    fn upload(engine: Arc<Self::Engine>, data: &[u8]) -> Result<Self>;
+    fn upload(&self, data: &[u8]) -> Result<()>;
     fn download(&self, data: &mut [u8]) -> Result<()>;
-    fn transfer(&self, engine: Arc<Self::Engine>) -> Result<Self>;
+    fn transfer(&self, dst: &Self) -> Result<()>;
     fn engine(&self) -> &Arc<Self::Engine>;
     fn offset(&self) -> usize;
     fn len(&self) -> usize;
@@ -321,16 +321,14 @@ impl DeviceBuffer {
             unsafe { <Engine as DeviceEngine>::DeviceBuffer::uninit(device.engine, len)?.into() };
         Ok(Self { inner })
     }
-    pub(crate) fn upload(device: RawDevice, data: &[u8]) -> Result<Self> {
-        let inner = <Engine as DeviceEngine>::DeviceBuffer::upload(device.engine, data)?.into();
-        Ok(Self { inner })
+    pub(crate) fn upload(&self, data: &[u8]) -> Result<()> {
+        self.inner.upload(data)
     }
     pub(crate) fn download(&self, data: &mut [u8]) -> Result<()> {
         self.inner.download(data)
     }
-    pub(crate) fn transfer(&self, device: RawDevice) -> Result<Self> {
-        let inner = self.inner.transfer(device.engine)?.into();
-        Ok(Self { inner })
+    pub(crate) fn transfer(&self, dst: &Self) -> Result<()> {
+        self.inner.transfer(&dst.inner)
     }
     pub(crate) fn offset(&self) -> usize {
         self.inner.offset()

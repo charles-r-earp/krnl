@@ -5,9 +5,9 @@ use super::{
 use crate::{device, scalar::ScalarElem};
 use anyhow::{format_err, Result};
 use ash::vk::{Handle, PipelineStageFlags};
-use crossbeam_channel::{Receiver, Sender};
+use atomicbox::AtomicOptionBox;
 use dashmap::DashMap;
-use parking_lot::{Mutex, RwLock, RwLockReadGuard, RwLockUpgradableReadGuard};
+use parking_lot::{Mutex, MutexGuard, RwLock, RwLockReadGuard, RwLockUpgradableReadGuard};
 use std::{
     borrow::Cow,
     collections::HashMap,
@@ -18,6 +18,7 @@ use std::{
         atomic::{AtomicBool, AtomicUsize, Ordering},
         Arc, Weak,
     },
+    thread::Thread,
     time::{Duration, Instant},
 };
 use vulkano::{
@@ -68,9 +69,9 @@ use vulkano::{
 pub struct Engine {
     info: Arc<DeviceInfo>,
     compute_families: Vec<u32>,
-    compute_op_sender: Sender<Op>,
-    transfer_op_sender: Sender<Op>,
-    worker_states: Vec<WorkerState>,
+    compute: Mutex<()>,
+    transfer: Mutex<()>,
+    workers: Vec<[Worker; 2]>,
     exited: Arc<AtomicBool>,
     kernels: DashMap<KernelKey, KernelInner>,
     memory_allocator: Arc<StandardMemoryAllocator>,
@@ -78,13 +79,28 @@ pub struct Engine {
     instance: Arc<Instance>,
 }
 
-impl Drop for Engine {
-    fn drop(&mut self) {
-        self.compute_op_sender = crossbeam_channel::bounded(0).0;
-        self.transfer_op_sender = crossbeam_channel::bounded(0).0;
-        while Arc::strong_count(&self.exited) > 1 {
-            std::thread::sleep(Duration::from_micros(10));
+impl Engine {
+    fn wait_for_future(&self, future: &WorkerFuture) -> Result<(), DeviceLost> {
+        while !future.ready() {
+            if self.exited.load(Ordering::SeqCst) {
+                return Err(DeviceLost {
+                    index: self.info.index,
+                    handle: self.handle(),
+                });
+            }
+            std::thread::yield_now();
         }
+        Ok(())
+    }
+    fn transfer_workers(&self) -> (MutexGuard<()>, [&Worker; 2]) {
+        let transfer = self.transfer.lock();
+        let [worker1, worker2] = self.workers.last().unwrap();
+        let workers = if worker1.ready() {
+            [worker1, worker2]
+        } else {
+            [worker2, worker1]
+        };
+        (transfer, workers)
     }
 }
 
@@ -182,54 +198,33 @@ impl DeviceEngine for Engine {
             device.clone(),
             GenericMemoryAllocatorCreateInfo {
                 block_sizes: &[
-                    (0, (DeviceBuffer::HOST_BUFFER_SIZE * 2) as _),
+                    (0, 64_000_000),
                     (DeviceBuffer::MAX_SIZE as _, DeviceBuffer::MAX_SIZE as _),
                 ],
                 dedicated_allocation: false,
                 ..Default::default()
             },
         )?);
-        let mut worker_states = Vec::with_capacity(queues.len());
         let exited = Arc::new(AtomicBool::default());
         let compute_queues: Vec<_> = queues.by_ref().take(compute_families.len()).collect();
-        let (compute_op_sender, compute_op_receiver) = crossbeam_channel::bounded(0);
+        let mut workers = Vec::with_capacity(queues.len());
         for queue in compute_queues {
-            let op_receiver = Arc::new(Mutex::new(compute_op_receiver.clone()));
             let memory_allocator = if transfer_family.is_none() {
                 Some(&memory_allocator)
             } else {
                 None
             };
-            for _ in 0..2 {
-                let worker = Worker::new(
-                    op_receiver.clone(),
-                    memory_allocator,
-                    true,
-                    queue.clone(),
-                    exited.clone(),
-                )?;
-                worker_states.push(worker.state.clone());
-                std::thread::spawn(move || worker.run());
-            }
+            let worker1 = Worker::new(memory_allocator, true, queue.clone(), exited.clone())?;
+            let worker2 = Worker::new(memory_allocator, true, queue.clone(), exited.clone())?;
+            workers.push([worker1, worker2]);
         }
         let transfer_queue = queues.next();
-        let transfer_op_sender = if let Some(queue) = transfer_queue {
-            let (op_sender, op_receiver) = crossbeam_channel::bounded(0);
-            for _ in 0..2 {
-                let worker = Worker::new(
-                    Arc::new(Mutex::new(op_receiver.clone())),
-                    Some(&memory_allocator),
-                    false,
-                    queue.clone(),
-                    exited.clone(),
-                )?;
-                worker_states.push(worker.state.clone());
-                std::thread::spawn(move || worker.run());
-            }
-            op_sender
-        } else {
-            compute_op_sender.clone()
-        };
+        if let Some(queue) = transfer_queue {
+            let worker1 =
+                Worker::new(Some(&memory_allocator), true, queue.clone(), exited.clone())?;
+            let worker2 = Worker::new(Some(&memory_allocator), true, queue, exited.clone())?;
+            workers.push([worker1, worker2]);
+        }
         let queue_family_indices: Vec<u32> = compute_families
             .iter()
             .copied()
@@ -243,12 +238,14 @@ impl DeviceEngine for Engine {
             transfer_queues: transfer_family.is_some() as usize,
             features,
         });
+        let compute = Mutex::default();
+        let transfer = Mutex::default();
         Ok(Arc::new(Self {
             info,
             compute_families,
-            compute_op_sender,
-            transfer_op_sender,
-            worker_states,
+            compute,
+            transfer,
+            workers,
             exited,
             kernels,
             memory_allocator,
@@ -264,9 +261,10 @@ impl DeviceEngine for Engine {
     }
     fn wait(&self) -> Result<(), DeviceLost> {
         let pending: Vec<usize> = self
-            .worker_states
+            .workers
             .iter()
-            .map(|x| x.pending.load(Ordering::SeqCst))
+            .flat_map(|[w1, w2]| [&w1.state, &w2.state])
+            .map(|state| state.pending.load(Ordering::SeqCst))
             .collect();
         loop {
             if self.exited.load(Ordering::SeqCst) {
@@ -274,16 +272,17 @@ impl DeviceEngine for Engine {
                     index: self.info.index,
                     handle: self.handle(),
                 });
-            } else if self
-                .worker_states
+            }
+            if self
+                .workers
                 .iter()
+                .flat_map(|[w1, w2]| [&w1.state, &w2.state])
                 .zip(pending.iter().copied())
-                .any(|(state, pending)| state.completed.load(Ordering::SeqCst) < pending)
+                .all(|(state, pending)| state.completed.load(Ordering::SeqCst) >= pending)
             {
-                std::thread::sleep(Duration::from_micros(1));
-            } else {
                 return Ok(());
             }
+            std::thread::yield_now();
         }
     }
 }
@@ -325,6 +324,9 @@ impl WorkerState {
     fn finish(&self) {
         self.completed.fetch_add(1, Ordering::SeqCst);
     }
+    fn ready(&self) -> bool {
+        self.pending.load(Ordering::SeqCst) == self.completed.load(Ordering::SeqCst)
+    }
 }
 
 #[derive(Default, Clone, Debug)]
@@ -340,19 +342,15 @@ impl WorkerFuture {
 }
 
 struct Worker {
-    op_receiver: Arc<Mutex<Receiver<Op>>>,
+    op_slot: Arc<AtomicOptionBox<Op>>,
+    ready: Arc<AtomicBool>,
     state: WorkerState,
-    fence: Fence,
-    command_pool: CommandPool,
-    descriptor_pool: Option<DescriptorPool>,
     host_buffer: Option<Arc<CpuAccessibleBuffer<[u8]>>>,
-    queue: Arc<Queue>,
-    guard: WorkerDropGuard,
+    thread: Thread,
 }
 
 impl Worker {
     fn new(
-        op_receiver: Arc<Mutex<Receiver<Op>>>,
         memory_allocator: Option<&Arc<StandardMemoryAllocator>>,
         compute: bool,
         queue: Arc<Queue>,
@@ -379,11 +377,11 @@ impl Worker {
             CommandPoolCreateInfo {
                 queue_family_index: queue.queue_family_index(),
                 transient: true,
-                reset_command_buffer: false,
+                reset_command_buffer: true,
                 ..Default::default()
             },
         )?;
-        let command_pool_alloc = command_pool
+        /*let command_pool_alloc = command_pool
             .allocate_command_buffers(CommandBufferAllocateInfo {
                 level: CommandBufferLevel::Primary,
                 command_buffer_count: 1,
@@ -391,6 +389,7 @@ impl Worker {
             })?
             .next()
             .unwrap();
+        */
         let descriptor_pool = if compute {
             Some(DescriptorPool::new(
                 device.clone(),
@@ -410,21 +409,197 @@ impl Worker {
                 ..Default::default()
             },
         )?;
-        let state = Default::default();
+        let ready = Arc::new(AtomicBool::default());
+        let state = WorkerState::default();
         let guard = WorkerDropGuard { exited };
+        let op_slot = Arc::new(AtomicOptionBox::<Op>::none());
+        let thread = {
+            let completed = state.completed.clone();
+            let ready = ready.clone();
+            let op_slot = op_slot.clone();
+            let queue = queue.clone();
+            let state = state.clone();
+            let host_buffer = host_buffer.clone();
+            std::thread::spawn(move || {
+                let _guard = guard;
+                let command_pool_alloc = command_pool
+                    .allocate_command_buffers(CommandBufferAllocateInfo {
+                        level: CommandBufferLevel::Primary,
+                        command_buffer_count: 1,
+                        ..Default::default()
+                    })
+                    .unwrap()
+                    .next()
+                    .unwrap();
+                let mut last_msg = Instant::now();
+                'outer: loop {
+                    let device = queue.device();
+                    unsafe {
+                        (device.fns().v1_0.reset_command_buffer)(
+                            command_pool_alloc.handle(),
+                            Default::default(),
+                        )
+                        .result()
+                        .unwrap();
+                    }
+                    let mut builder = unsafe {
+                        UnsafeCommandBufferBuilder::new(
+                            &command_pool_alloc,
+                            CommandBufferBeginInfo {
+                                usage: CommandBufferUsage::OneTimeSubmit,
+                                ..Default::default()
+                            },
+                        )
+                        .unwrap()
+                    };
+                    fence.reset().unwrap();
+                    ready.store(true, Ordering::SeqCst);
+                    let op = loop {
+                        if Arc::strong_count(&op_slot) == 1 {
+                            return;
+                        }
+                        if let Some(op) = op_slot.take(Ordering::SeqCst) {
+                            last_msg = Instant::now();
+                            break *op;
+                        } else if last_msg.elapsed().as_millis() > 400 {
+                            std::thread::park();
+                        }
+                    };
+                    match op {
+                        Op::Upload { dst, submit } => {
+                            let buffer = host_buffer.as_ref().unwrap();
+                            unsafe {
+                                builder.copy_buffer(&CopyBufferInfo::buffers(
+                                    buffer.clone(),
+                                    dst.clone(),
+                                ));
+                            }
+                            let command_buffer = builder.build().unwrap();
+                            while !submit.load(Ordering::Relaxed) {
+                                if Arc::strong_count(&submit) == 1 && !submit.load(Ordering::SeqCst)
+                                {
+                                    return;
+                                }
+                            }
+                            unsafe {
+                                Worker::submit(&queue, &command_buffer, &fence).unwrap();
+                            }
+                            fence.wait(None).unwrap();
+                            state.finish();
+                        }
+                        Op::Download { src, submit } => {
+                            let buffer = host_buffer.as_ref().unwrap();
+                            unsafe {
+                                builder.copy_buffer(&CopyBufferInfo::buffers(src, buffer.clone()));
+                            }
+                            let command_buffer = builder.build().unwrap();
+                            while !submit.load(Ordering::Relaxed) {
+                                if Arc::strong_count(&submit) == 1 && !submit.load(Ordering::SeqCst)
+                                {
+                                    return;
+                                }
+                            }
+                            unsafe {
+                                Worker::submit(&queue, &command_buffer, &fence).unwrap();
+                            }
+                            fence.wait(None).unwrap();
+                            state.finish();
+                        }
+                        Op::Compute {
+                            compute_pipeline,
+                            buffers,
+                            push_consts,
+                            groups,
+                            submit,
+                        } => {
+                            let descriptor_pool = descriptor_pool.as_ref().unwrap();
+                            unsafe {
+                                builder.bind_pipeline_compute(&compute_pipeline);
+                            }
+                            let pipeline_layout = compute_pipeline.layout();
+                            if !buffers.is_empty() {
+                                let descriptor_set_layout =
+                                    pipeline_layout.set_layouts().first().unwrap();
+                                // TODO Push descriptor
+                                let mut descriptor_set = unsafe {
+                                    descriptor_pool
+                                        .allocate_descriptor_sets([DescriptorSetAllocateInfo {
+                                            layout: descriptor_set_layout,
+                                            variable_descriptor_count: 0,
+                                        }])
+                                        .unwrap()
+                                        .next()
+                                        .unwrap()
+                                };
+                                let buffer_iter = buffers
+                                    .iter()
+                                    .map(|x| -> Arc<dyn BufferAccess> { x.clone() });
+                                unsafe {
+                                    descriptor_set.write(
+                                        descriptor_set_layout,
+                                        &[WriteDescriptorSet::buffer_array(0, 0, buffer_iter)],
+                                    );
+                                }
+                                unsafe {
+                                    builder.bind_descriptor_sets(
+                                        PipelineBindPoint::Compute,
+                                        pipeline_layout,
+                                        0,
+                                        &[descriptor_set],
+                                        [],
+                                    );
+                                }
+                            }
+                            if !push_consts.is_empty() {
+                                unsafe {
+                                    builder.push_constants(
+                                        pipeline_layout,
+                                        ShaderStages::compute(),
+                                        0,
+                                        push_consts.len() as u32,
+                                        push_consts.as_slice(),
+                                    );
+                                }
+                            }
+                            unsafe {
+                                builder.dispatch(groups);
+                            }
+                            let command_buffer = builder.build().unwrap();
+                            while !submit.load(Ordering::Relaxed) {
+                                if Arc::strong_count(&submit) == 1 && !submit.load(Ordering::SeqCst)
+                                {
+                                    return;
+                                }
+                                std::thread::sleep(Duration::from_nanos(100));
+                            }
+                            unsafe {
+                                Worker::submit(&queue, &command_buffer, &fence).unwrap();
+                            }
+                            fence.wait(None).unwrap();
+                            state.finish();
+                            unsafe {
+                                descriptor_pool.reset().unwrap();
+                            }
+                        }
+                    }
+                }
+            })
+            .thread()
+            .clone()
+        };
         Ok(Self {
-            op_receiver,
+            ready,
+            op_slot,
             state,
-            fence,
-            command_pool,
-            descriptor_pool,
             host_buffer,
-            queue,
-            guard,
+            thread,
         })
     }
-    unsafe fn submit(&self, command_buffer: &UnsafeCommandBuffer) -> Result<()> {
-        let queue = &self.queue;
+    unsafe fn submit(
+        queue: &Arc<Queue>,
+        command_buffer: &UnsafeCommandBuffer,
+        fence: &Fence,
+    ) -> Result<()> {
         let device = queue.device();
         let command_buffers = &[command_buffer.handle()];
         let submit_info = ash::vk::SubmitInfo::builder().command_buffers(command_buffers);
@@ -433,170 +608,39 @@ impl Worker {
                 queue.handle(),
                 1,
                 [submit_info].as_ptr() as _,
-                self.fence.handle(),
+                fence.handle(),
             )
             .result()
         })?;
         Ok(())
     }
-    fn run(&self) -> Result<()> {
-        loop {
-            let device = self.queue.device();
-            unsafe {
-                self.command_pool.reset(false)?;
+    fn send(&self, op: Op) -> Result<WorkerFuture, ()> {
+        self.wait()?;
+        let future = self.state.next();
+        self.ready.store(false, Ordering::SeqCst);
+        self.op_slot.store(Some(op.into()), Ordering::SeqCst);
+        self.thread.unpark();
+        Ok(future)
+    }
+    fn ready(&self) -> bool {
+        self.ready.load(Ordering::SeqCst)
+    }
+    fn wait(&self) -> Result<(), ()> {
+        while !self.state.ready() {
+            if Arc::strong_count(&self.op_slot) == 1 {
+                return Err(());
             }
-            let command_pool_alloc = self
-                .command_pool
-                .allocate_command_buffers(CommandBufferAllocateInfo {
-                    level: CommandBufferLevel::Primary,
-                    command_buffer_count: 1,
-                    ..Default::default()
-                })?
-                .next()
-                .unwrap();
-            let mut builder = unsafe {
-                UnsafeCommandBufferBuilder::new(
-                    &command_pool_alloc,
-                    CommandBufferBeginInfo {
-                        usage: CommandBufferUsage::OneTimeSubmit,
-                        ..Default::default()
-                    },
-                )?
-            };
-            self.fence.reset()?;
-            let op = self.op_receiver.lock().recv()?;
-            match op {
-                Op::Upload {
-                    sender,
-                    dst,
-                    submit,
-                } => {
-                    let buffer = self.host_buffer.as_ref().unwrap();
-                    while Arc::strong_count(buffer) > 1 {
-                        std::thread::sleep(Duration::from_micros(1));
-                    }
-                    sender.send((buffer.clone(), self.state.next())).unwrap();
-                    unsafe {
-                        builder.copy_buffer(&CopyBufferInfo::buffers(buffer.clone(), dst.clone()));
-                    }
-                    let command_buffer = builder.build()?;
-                    while !submit.load(Ordering::Relaxed) {
-                        if Arc::strong_count(&submit) == 1 {
-                            return Ok(());
-                        }
-                        std::thread::sleep(Duration::from_micros(1));
-                    }
-                    unsafe {
-                        self.submit(&command_buffer)?;
-                    }
-                    self.fence.wait(None)?;
-                    self.state.finish();
-                }
-                Op::Download {
-                    src,
-                    dst_sender,
-                    future,
-                } => {
-                    let buffer = self.host_buffer.as_ref().unwrap();
-                    unsafe {
-                        builder.copy_buffer(&CopyBufferInfo::buffers(src, buffer.clone()));
-                    }
-                    let command_buffer = builder.build()?;
-                    if let Some(future) = future {
-                        while !future.ready() {
-                            if self.guard.exited.load(Ordering::Relaxed) {
-                                return Ok(());
-                            }
-                            std::thread::sleep(Duration::from_micros(1));
-                        }
-                    }
-                    unsafe {
-                        self.submit(&command_buffer)?;
-                    }
-                    self.fence.wait(None)?;
-                    let _ = dst_sender.send(buffer.clone());
-                    while Arc::strong_count(buffer) > 1 {
-                        std::thread::sleep(Duration::from_micros(1));
-                    }
-                }
-                Op::Compute {
-                    futures,
-                    future_sender,
-                    compute_pipeline,
-                    buffers,
-                    push_consts,
-                    groups,
-                } => {
-                    let descriptor_pool = self.descriptor_pool.as_ref().unwrap();
-                    unsafe {
-                        builder.bind_pipeline_compute(&compute_pipeline);
-                    }
-                    let pipeline_layout = compute_pipeline.layout();
-                    if !buffers.is_empty() {
-                        let descriptor_set_layout = pipeline_layout.set_layouts().first().unwrap();
-                        // TODO Push descriptor
-                        let mut descriptor_set = unsafe {
-                            descriptor_pool
-                                .allocate_descriptor_sets([DescriptorSetAllocateInfo {
-                                    layout: descriptor_set_layout,
-                                    variable_descriptor_count: 0,
-                                }])?
-                                .next()
-                                .unwrap()
-                        };
-                        let buffer_iter = buffers
-                            .iter()
-                            .map(|x| -> Arc<dyn BufferAccess> { x.clone() });
-                        unsafe {
-                            descriptor_set.write(
-                                descriptor_set_layout,
-                                &[WriteDescriptorSet::buffer_array(0, 0, buffer_iter)],
-                            );
-                        }
-                        unsafe {
-                            builder.bind_descriptor_sets(
-                                PipelineBindPoint::Compute,
-                                pipeline_layout,
-                                0,
-                                &[descriptor_set],
-                                [],
-                            );
-                        }
-                    }
-                    if !push_consts.is_empty() {
-                        unsafe {
-                            builder.push_constants(
-                                pipeline_layout,
-                                ShaderStages::compute(),
-                                0,
-                                push_consts.len() as u32,
-                                push_consts.as_slice(),
-                            );
-                        }
-                    }
-                    unsafe {
-                        builder.dispatch(groups);
-                    }
-                    let command_buffer = builder.build()?;
-                    for future in futures.iter() {
-                        while !future.ready() {
-                            if self.guard.exited.load(Ordering::SeqCst) {
-                                anyhow::bail!("Exited while waiting for compute!");
-                            }
-                            std::thread::sleep(Duration::from_micros(1));
-                        }
-                    }
-                    unsafe {
-                        self.submit(&command_buffer)?;
-                    }
-                    let _ = future_sender.send(self.state.next());
-                    self.fence.wait(None)?;
-                    self.state.finish();
-                    unsafe {
-                        descriptor_pool.reset()?;
-                    }
-                }
-            }
+        }
+        Ok(())
+    }
+}
+
+impl Drop for Worker {
+    fn drop(&mut self) {
+        let op_slot = Arc::downgrade(&std::mem::take(&mut self.op_slot));
+        self.thread.unpark();
+        while Weak::strong_count(&op_slot) > 0 {
+            std::thread::sleep(Duration::from_micros(1));
         }
     }
 }
@@ -613,22 +657,19 @@ impl Drop for WorkerDropGuard {
 
 enum Op {
     Upload {
-        sender: Sender<(Arc<CpuAccessibleBuffer<[u8]>>, WorkerFuture)>,
         dst: Arc<BufferSlice<[u8], DeviceLocalBuffer<[u8]>>>,
         submit: Arc<AtomicBool>,
     },
     Download {
         src: Arc<BufferSlice<[u8], DeviceLocalBuffer<[u8]>>>,
-        dst_sender: Sender<Arc<CpuAccessibleBuffer<[u8]>>>,
-        future: Option<WorkerFuture>,
+        submit: Arc<AtomicBool>,
     },
     Compute {
-        futures: Vec<WorkerFuture>,
         compute_pipeline: Arc<ComputePipeline>,
         buffers: Vec<Arc<BufferSlice<[u8], DeviceLocalBuffer<[u8]>>>>,
         push_consts: Vec<u8>,
         groups: [u32; 3],
-        future_sender: Sender<WorkerFuture>,
+        submit: Arc<AtomicBool>,
     },
 }
 
@@ -675,10 +716,7 @@ impl DeviceBuffer {
     const MAX_LEN: usize = i32::MAX as usize;
     const MAX_SIZE: usize = aligned_ceil(Self::MAX_LEN, Self::ALIGN);
     const ALIGN: usize = 256;
-    const HOST_BUFFER_SIZE: usize = 128_000_000; // 32_000_000;
-    fn chunk_size(size: usize) -> usize {
-        Self::HOST_BUFFER_SIZE
-    }
+    const HOST_BUFFER_SIZE: usize = 32_000_000;
     fn host_visible(&self) -> bool {
         use vulkano::buffer::sys::BufferMemory;
         if let Some(inner) = self.inner.as_ref() {
@@ -687,45 +725,6 @@ impl DeviceBuffer {
             }
         }
         false
-    }
-    fn write(&mut self, data: &[u8]) -> Result<()> {
-        let engine = &self.engine;
-        let device = &engine.device;
-        if let Some(buffer) = self.inner.as_ref() {
-            if let Ok(mut mapped) = buffer.inner().buffer.write(0..data.len() as _) {
-                mapped[..data.len()].copy_from_slice(data);
-            } else {
-                let mut offset = 0;
-                let device_lost = DeviceLost {
-                    index: engine.info.index,
-                    handle: engine.handle(),
-                };
-                let mut future_guard = self.future.write();
-                for data in data.chunks(Self::chunk_size(data.len())) {
-                    let (sender, receiver) = crossbeam_channel::bounded(1);
-                    let dst = buffer
-                        .slice(offset as _..(offset + data.len()) as _)
-                        .unwrap();
-                    let submit = Arc::new(AtomicBool::default());
-                    let op = Op::Upload {
-                        sender,
-                        dst,
-                        submit: submit.clone(),
-                    };
-                    engine
-                        .transfer_op_sender
-                        .send(op)
-                        .map_err(|_| device_lost)?;
-                    let (src, future) = receiver.recv().map_err(|_| device_lost)?;
-                    src.write().unwrap()[..data.len()].copy_from_slice(data);
-                    submit.store(true, Ordering::Relaxed);
-                    std::mem::drop(src);
-                    *future_guard = future;
-                    offset += data.len();
-                }
-            }
-        }
-        Ok(())
     }
 }
 
@@ -761,10 +760,67 @@ impl DeviceEngineBuffer for DeviceBuffer {
             future: Arc::default(),
         })
     }
-    fn upload(engine: Arc<Self::Engine>, data: &[u8]) -> Result<Self> {
-        let mut buffer = unsafe { Self::uninit(engine.clone(), data.len())? };
-        buffer.write(data)?;
-        Ok(buffer)
+    fn upload(&self, data: &[u8]) -> Result<()> {
+        let engine = &self.engine;
+        let device = &engine.device;
+        let device_lost = DeviceLost {
+            index: engine.info.index,
+            handle: engine.handle(),
+        };
+        let mut future_guard = self.future.write();
+        if let Some(buffer) = self.inner.as_ref() {
+            if let Ok(mut mapped) = buffer.inner().buffer.write(0..data.len() as _) {
+                while !future_guard.ready() {
+                    if engine.exited.load(Ordering::Relaxed) {
+                        return Err(device_lost.into());
+                    }
+                    //std::thread::sleep(Duration::from_micros(1));
+                }
+                mapped[..data.len()].copy_from_slice(data);
+            } else {
+                let _transfer = engine.transfer.lock();
+                let [worker1, worker2] = engine.workers.last().unwrap();
+                let workers = if worker1.ready() {
+                    [worker1, worker2]
+                } else {
+                    [worker2, worker1]
+                };
+                let mut offset = self.offset;
+                let device_lost = DeviceLost {
+                    index: engine.info.index,
+                    handle: engine.handle(),
+                };
+                let mut prev_future = Some(std::mem::take(&mut *future_guard));
+                for (data, worker) in data
+                    .chunks(Self::HOST_BUFFER_SIZE)
+                    .zip(workers.into_iter().cycle())
+                {
+                    let src = worker.host_buffer.as_ref().unwrap();
+                    let dst = buffer
+                        .slice(offset as _..(offset + data.len()) as _)
+                        .unwrap();
+                    let submit = Arc::new(AtomicBool::default());
+                    let op = Op::Upload {
+                        dst,
+                        submit: submit.clone(),
+                    };
+                    let future = worker.send(op).map_err(|_| device_lost)?;
+                    if let Some(prev_future) = prev_future.take() {
+                        while !prev_future.ready() {
+                            if engine.exited.load(Ordering::Relaxed) {
+                                return Err(device_lost.into());
+                            }
+                            //std::thread::sleep(Duration::from_micros(1));
+                        }
+                    }
+                    src.write().unwrap()[..data.len()].copy_from_slice(data);
+                    submit.store(true, Ordering::Relaxed);
+                    *future_guard = future;
+                    offset += data.len();
+                }
+            }
+        }
+        Ok(())
     }
     fn download(&self, data: &mut [u8]) -> Result<()> {
         if let Some(buffer) = self.inner.as_ref() {
@@ -777,13 +833,14 @@ impl DeviceEngineBuffer for DeviceBuffer {
             let prev_future = self.future.read();
             let buffer_inner = buffer.inner();
             if self.host_visible() {
-                while !prev_future.ready() {
-                    if engine.exited.load(Ordering::SeqCst) {
-                        return Err(device_lost.into());
-                    }
-                    std::thread::sleep(Duration::from_micros(1));
-                }
-                loop {
+                engine.wait_for_future(&prev_future)?;
+                let mapped = buffer_inner
+                    .buffer
+                    .read(buffer_inner.offset..buffer_inner.offset + data.len() as u64)
+                    .unwrap();
+                data.copy_from_slice(&mapped[..data.len()]);
+                return Ok(());
+                /*loop {
                     if let Ok(mapped) = buffer_inner
                         .buffer
                         .read(buffer_inner.offset..buffer_inner.offset + data.len() as u64)
@@ -791,63 +848,63 @@ impl DeviceEngineBuffer for DeviceBuffer {
                         data.copy_from_slice(&mapped[..data.len()]);
                         return Ok(());
                     } else {
-                        std::thread::sleep(Duration::from_micros(1));
+                        //std::thread::sleep(Duration::from_micros(1));
                     }
-                }
+                }*/
             }
+            let (_transfer, workers) = engine.transfer_workers();
             let mut prev_future = Some(prev_future.clone());
             let mut offset = self.offset;
             struct HostCopy<'a> {
                 data: &'a mut [u8],
-                dst_receiver: Receiver<Arc<CpuAccessibleBuffer<[u8]>>>,
+                worker: &'a Worker,
             }
+            impl HostCopy<'_> {
+                fn finish(self) -> Result<(), ()> {
+                    let worker = self.worker;
+                    worker.wait()?;
+                    let data = self.data;
+                    let dst = worker.host_buffer.as_ref().unwrap();
+                    data.copy_from_slice(&dst.read().unwrap()[..data.len()]);
+                    Ok(())
+                }
+            }
+
             let mut host_copy: Option<HostCopy> = None;
-            for data in data.chunks_mut(Self::chunk_size(data.len())) {
+            for (data, worker) in data
+                .chunks_mut(Self::HOST_BUFFER_SIZE)
+                .zip(workers.into_iter().cycle())
+            {
                 let src = buffer
                     .slice(offset as _..(offset + data.len()) as _)
                     .unwrap();
                 offset += data.len();
-                let (dst_sender, dst_receiver) = crossbeam_channel::bounded(1);
-                let future = prev_future.take();
+                let submit = Arc::new(AtomicBool::default());
                 let op = Op::Download {
                     src,
-                    dst_sender,
-                    future: future.clone(),
+                    submit: submit.clone(),
                 };
-                engine
-                    .transfer_op_sender
-                    .send(op)
-                    .map_err(|_| device_lost)?;
+                worker.send(op).map_err(|_| device_lost)?;
                 if let Some(future) = prev_future.take() {
-                    while !future.ready() {
-                        if engine.exited.load(Ordering::SeqCst) {
-                            return Err(device_lost.into());
-                        }
-                        std::thread::sleep(Duration::from_micros(1));
-                    }
+                    engine.wait_for_future(&future)?;
                 }
-                let host_copy = host_copy.replace(HostCopy { data, dst_receiver });
+                submit.store(true, Ordering::SeqCst);
+                let host_copy = host_copy.replace(HostCopy { data, worker });
                 if let Some(host_copy) = host_copy {
-                    let dst = host_copy.dst_receiver.recv().map_err(|_| device_lost)?;
-                    host_copy
-                        .data
-                        .copy_from_slice(&dst.read().unwrap()[..host_copy.data.len()]);
+                    host_copy.finish().map_err(|_| device_lost)?;
                 }
             }
             if let Some(host_copy) = host_copy {
-                let dst = host_copy.dst_receiver.recv().map_err(|_| device_lost)?;
-                host_copy
-                    .data
-                    .copy_from_slice(&dst.read().unwrap()[..host_copy.data.len()]);
+                host_copy.finish().map_err(|_| device_lost)?;
             }
         }
         Ok(())
     }
-    fn transfer(&self, engine: Arc<Self::Engine>) -> Result<Self> {
-        let mut output = unsafe { Self::uninit(engine, self.len)? };
-        if output.len == 0 {
-            return Ok(output);
+    fn transfer(&self, dst: &Self) -> Result<()> {
+        if self.len == 0 {
+            return Ok(());
         }
+        let output = dst;
         let buffer1 = self.inner.as_ref().unwrap();
         let engine1 = &self.engine;
         let device1 = &engine1.device;
@@ -866,47 +923,83 @@ impl DeviceEngineBuffer for DeviceBuffer {
         let buffer_inner1 = buffer1.inner();
         let buffer_inner2 = buffer2.inner();
         if self.host_visible() {
-            while !prev_future.ready() {
-                if engine1.exited.load(Ordering::SeqCst) {
-                    return Err(device_lost1.into());
-                }
-                std::thread::sleep(Duration::from_micros(1));
-            }
+            engine1.wait_for_future(&prev_future)?;
             loop {
+                let mapped1 = buffer_inner1
+                    .buffer
+                    .read(buffer_inner1.offset..buffer_inner1.offset + self.len() as u64)
+                    .unwrap();
+                if dst.host_visible() {
+                    let mut mapped2 = buffer_inner2.buffer.write(0..output.len() as u64).unwrap();
+                    mapped2.copy_from_slice(&mapped1[..output.len()]);
+                } else {
+                    output.upload(&mapped1)?;
+                }
+                return Ok(());
+                /*
                 if let Ok(mapped1) = buffer_inner1
                     .buffer
                     .read(buffer_inner1.offset..buffer_inner1.offset + self.len() as u64)
                 {
-                    if output.host_visible() {
+                    if dst.host_visible() {
                         let mut mapped2 =
                             buffer_inner2.buffer.write(0..output.len() as u64).unwrap();
                         mapped2.copy_from_slice(&mapped1[..output.len()]);
                     } else {
-                        output.write(&mapped1)?;
+                        output.upload(&mapped1)?;
                     }
-                    return Ok(output);
+                    return Ok(());
                 } else {
                     std::thread::sleep(Duration::from_micros(1));
-                }
+                }*/
             }
         } else if output.host_visible() {
-            {
-                let mut mapped2 = buffer_inner2.buffer.write(0..output.len() as u64).unwrap();
-                self.download(&mut mapped2)?;
-            }
-            return Ok(output);
+            let mut mapped2 = buffer_inner2.buffer.write(0..output.len() as u64).unwrap();
+            self.download(&mut mapped2)?;
+            return Ok(());
         }
         let mut prev_future = Some(prev_future.clone());
         let mut offset1 = self.offset;
         let mut offset2 = 0;
-        struct HostCopy {
-            chunk_size: usize,
-            receiver: Receiver<(Arc<CpuAccessibleBuffer<[u8]>>, WorkerFuture)>,
-            dst_receiver: Receiver<Arc<CpuAccessibleBuffer<[u8]>>>,
+
+        struct HostCopy<'a> {
+            size: usize,
+            download_worker: &'a Worker,
+            upload_worker: &'a Worker,
             submit: Arc<AtomicBool>,
+            future: WorkerFuture,
         }
+
+        impl HostCopy<'_> {
+            fn finish(self) -> Result<WorkerFuture, ()> {
+                self.download_worker.wait()?;
+                let src = self
+                    .download_worker
+                    .host_buffer
+                    .as_ref()
+                    .unwrap()
+                    .read()
+                    .unwrap();
+                self.upload_worker
+                    .host_buffer
+                    .as_ref()
+                    .unwrap()
+                    .write()
+                    .unwrap()[..self.size]
+                    .copy_from_slice(&src[..self.size]);
+                self.submit.store(true, Ordering::SeqCst);
+                Ok(self.future)
+            }
+        }
+
+        let (_transfer1, workers1) = engine1.transfer_workers();
+        let mut workers1 = workers1.into_iter().cycle();
+        let (_transfer2, workers2) = engine2.transfer_workers();
+        let mut workers2 = workers2.into_iter().cycle();
         let mut host_copy = None;
         while offset2 < output.len() {
+            let download_worker = workers1.next().unwrap();
+            let upload_worker = workers2.next().unwrap();
             let chunk_size = output
                 .len()
                 .checked_sub(offset2)
@@ -920,59 +1013,40 @@ impl DeviceEngineBuffer for DeviceBuffer {
                 .unwrap();
             offset1 += chunk_size;
             offset2 += chunk_size;
-            let (dst_sender, dst_receiver) = crossbeam_channel::bounded(1);
-            let future = prev_future.take();
+            let submit = Arc::new(AtomicBool::default());
             let op = Op::Download {
                 src,
-                dst_sender,
-                future: future.clone(),
+                submit: submit.clone(),
             };
-            engine1
-                .transfer_op_sender
-                .send(op)
-                .map_err(|_| device_lost2)?;
-            if let Some(future) = future {
-                while !future.ready() {
-                    if engine1.exited.load(Ordering::SeqCst) {
-                        return Err(device_lost2.into());
-                    }
-                    std::thread::sleep(Duration::from_micros(1));
-                }
+            download_worker.send(op).map_err(|_| device_lost2)?;
+            if let Some(future) = prev_future.take() {
+                engine1.wait_for_future(&future)?;
             }
-            let (sender, receiver) = crossbeam_channel::bounded(0);
+            submit.store(true, Ordering::SeqCst);
             let submit = Arc::new(AtomicBool::default());
             let op = Op::Upload {
-                sender,
                 dst,
                 submit: submit.clone(),
             };
-            engine2
-                .transfer_op_sender
-                .send(op)
-                .map_err(|_| device_lost2)?;
+            let future = upload_worker.send(op).map_err(|_| device_lost2)?;
             let host_copy = host_copy.replace(HostCopy {
-                chunk_size,
-                receiver,
-                dst_receiver,
+                size: chunk_size,
+                download_worker,
+                upload_worker,
                 submit,
+                future,
             });
             if let Some(host_copy) = host_copy {
-                let dst = host_copy.dst_receiver.recv().map_err(|_| device_lost1)?;
-                let (src, _future) = host_copy.receiver.recv().map_err(|_| device_lost2)?;
-                src.write().unwrap()[..host_copy.chunk_size]
-                    .copy_from_slice(&dst.read().unwrap()[..host_copy.chunk_size]);
-                host_copy.submit.store(true, Ordering::Relaxed);
+                host_copy.finish().map_err(|_| device_lost1)?;
             }
         }
         if let Some(host_copy) = host_copy {
-            let dst = host_copy.dst_receiver.recv().map_err(|_| device_lost1)?;
-            let (src, future) = host_copy.receiver.recv().map_err(|_| device_lost2)?;
-            src.write().unwrap()[..host_copy.chunk_size]
-                .copy_from_slice(&dst.read().unwrap()[..host_copy.chunk_size]);
-            host_copy.submit.store(true, Ordering::Relaxed);
-            *output.future.write() = future;
+            let future = host_copy.finish().map_err(|_| device_lost1)?;
+            let mut future_guard = output.future.write();
+            engine2.wait_for_future(&future_guard)?;
+            *future_guard = future;
         }
-        Ok(output)
+        Ok(())
     }
     fn offset(&self) -> usize {
         self.offset
@@ -1157,26 +1231,52 @@ impl DeviceEngineKernel for Kernel {
                 }
             })
             .collect();
-        let futures = future_guards.iter().map(|x| x.deref().clone()).collect();
         let buffers = buffers
             .iter()
             .map(|x| x.inner.as_ref().unwrap().into_buffer_slice())
             .collect();
-        let (future_sender, future_receiver) = crossbeam_channel::bounded(0);
+        let submit = Arc::new(AtomicBool::default());
         let device_lost = DeviceLost {
             index: engine.info.index,
             handle: engine.handle(),
         };
         let op = Op::Compute {
-            futures,
             compute_pipeline: self.compute_pipeline.clone(),
             buffers,
             push_consts,
             groups,
-            future_sender,
+            submit: submit.clone(),
         };
-        engine.compute_op_sender.send(op).map_err(|_| device_lost)?;
-        let future = future_receiver.recv().map_err(|_| device_lost)?;
+        let compute = engine.compute.lock();
+        let workers = if engine.workers.len() == 1 {
+            engine.workers.as_slice()
+        } else {
+            engine.workers.get(..engine.workers.len() - 1).unwrap()
+        };
+        let worker = 'outer: loop {
+            for max_workers in [1, 2] {
+                for [worker1, worker2] in workers {
+                    let ready1 = worker1.ready();
+                    let ready2 = worker2.ready();
+                    if ready1 && (ready1 || max_workers == 2) {
+                        break 'outer worker1;
+                    }
+                    if ready2 && (ready1 || max_workers == 2) {
+                        break 'outer worker2;
+                    }
+                }
+            }
+        };
+        let future = worker.send(op).map_err(|_| device_lost)?;
+        std::mem::drop(compute);
+        for guard in future_guards.iter() {
+            while !guard.ready() {
+                if engine.exited.load(Ordering::SeqCst) {
+                    return Err(device_lost.into());
+                }
+            }
+        }
+        submit.store(true, Ordering::SeqCst);
         for guard in future_guards {
             match guard {
                 WorkerFutureGuard::UpgradableRead(x) => {
