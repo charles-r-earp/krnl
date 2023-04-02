@@ -1,0 +1,25 @@
+[package]
+name = "krnl-macros"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+license.workspace = true
+readme.workspace = true
+repository.workspace = true
+publish = false
+
+[lib]
+proc-macro = true
+
+[dependencies]
+syn = { version = "1.0.33", features = ["full", "extra-traits"] }
+quote = "1.0.7"
+proc-macro2 = "1.0.18"
+derive-syn-parse = "0.1.5"
+bincode = { workspace = true }
+prettyplease = "0.1.21"
+serde = { workspace = true, default-features = false, features = ["derive"] }
+derive_more = { workspace = true, default-features = false, features = ["is_variant"] }
+

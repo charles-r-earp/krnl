@@ -1,5 +1,53 @@
+use futures::future::Future;
 use krnl::anyhow::Result;
-use ocl::{flags::MemFlags, Buffer, Device, Platform, ProQue};
+use ocl::{
+    flags::MemFlags,
+    r#async::{BufferSink, BufferStream},
+    Buffer, Device, OclPrm, Platform, ProQue, Queue,
+};
+
+trait BufferExt {
+    type Elem: OclPrm;
+    fn from_slice(queue: Queue, data: &[Self::Elem]) -> Result<Self>
+    where
+        Self: Sized;
+    fn to_vec(&self) -> Result<Vec<Self::Elem>>;
+}
+
+impl<T: OclPrm> BufferExt for Buffer<T> {
+    type Elem = T;
+    fn from_slice(queue: Queue, data: &[Self::Elem]) -> Result<Self>
+    where
+        Self: Sized,
+    {
+        let x_host = Buffer::builder()
+            .queue(queue.clone())
+            .len(data.len())
+            .copy_host_slice(data)
+            .build()?;
+        let x_device = Buffer::builder()
+            .queue(queue.clone())
+            .len(data.len())
+            .flags(MemFlags::READ_WRITE | MemFlags::HOST_NO_ACCESS)
+            .build()?;
+        x_host.copy(&x_device, None, None).enq()?;
+        queue.finish()?;
+        Ok(x_device)
+    }
+    fn to_vec(&self) -> Result<Vec<Self::Elem>> {
+        let queue = self.default_queue().unwrap();
+        let y_host = Buffer::builder()
+            .queue(queue.clone())
+            .len(self.len())
+            .flags(MemFlags::HOST_READ_ONLY)
+            .build()?;
+        self.copy(&y_host, None, None).enq()?;
+        queue.finish()?;
+        let mut y_vec = vec![T::default(); y_host.len()];
+        y_host.read(&mut y_vec).enq()?;
+        Ok(y_vec)
+    }
+}
 
 #[derive(Clone)]
 pub struct OclBackend {
@@ -17,7 +65,24 @@ impl OclBackend {
             .build()?;
         Ok(Self { pro_que })
     }
-    pub fn upload(&self, x: &[f32]) -> Result<()> {
+    pub fn alloc(&self, len: usize) -> Result<Alloc> {
+        let x_device = Buffer::builder()
+            .queue(self.pro_que.queue().clone())
+            .len(len)
+            .flags(MemFlags::READ_WRITE | MemFlags::HOST_NO_ACCESS)
+            .build()?;
+        Ok(Alloc {
+            _x_device: x_device,
+        })
+    }
+    pub fn upload(&self, x: &[f32]) -> Result<Upload> {
+        let y_device = Buffer::from_slice(self.pro_que.queue().clone(), &vec![0f32; x.len()])?;
+        Ok(Upload {
+            pro_que: self.pro_que.clone(),
+            x_host: x.to_vec(),
+            y_device,
+        })
+        /*
         let x_host = Buffer::builder()
             .queue(self.pro_que.queue().clone())
             .len(x.len())
@@ -28,6 +93,7 @@ impl OclBackend {
             .len(x.len())
             .flags(MemFlags::READ_WRITE | MemFlags::HOST_NO_ACCESS)
             .build()?;
+        assert_eq!(x_device.len(), x.len());
         x_host.copy(&x_device, None, None).enq()?;
         self.pro_que.finish()?;
         #[cfg(debug_assertions)]
@@ -41,53 +107,36 @@ impl OclBackend {
             y_host.read(&mut y_vec).enq()?;
             assert_eq!(x, y_vec.as_slice());
         }
-        Ok(())
+        Ok(Upload { x_device })*/
     }
     pub fn download(&self, x: &[f32]) -> Result<Download> {
+        let queue = self.pro_que.queue();
         let x_host = Buffer::builder()
-            .queue(self.pro_que.queue().clone())
+            .queue(queue.clone())
+            .len(x.len())
             .copy_host_slice(x)
-            .len(x.len())
             .build()?;
-        let x_device = Buffer::builder()
-            .queue(self.pro_que.queue().clone())
-            .len(x.len())
-            .flags(MemFlags::READ_WRITE | MemFlags::HOST_NO_ACCESS)
-            .build()?;
-        x_host.copy(&x_device, None, None).enq()?;
-        self.pro_que.finish()?;
+        let x_device = BufferStream::new(queue.clone(), x.len())?;
+        x_host.copy(x_device.buffer(), None, None).enq()?;
+        queue.finish()?;
+        #[cfg(debug_assertions)]
+        {
+            let y_host = x_device.buffer().to_vec()?;
+            assert_eq!(y_host.as_slice(), x);
+        }
         Ok(Download {
             pro_que: self.pro_que.clone(),
-            x_device,
             #[cfg(debug_assertions)]
             x_host: x.to_vec(),
+            x_device,
+            y_host: vec![0f32; x.len()],
         })
     }
     pub fn saxpy(&self, x: &[f32], alpha: f32, y: &[f32]) -> Result<Saxpy> {
         assert_eq!(x.len(), y.len());
         let queue = self.pro_que.queue();
-        let x_host = Buffer::builder()
-            .queue(queue.clone())
-            .copy_host_slice(x)
-            .len(x.len())
-            .build()?;
-        let x_device = Buffer::builder()
-            .queue(queue.clone())
-            .len(x.len())
-            .flags(MemFlags::READ_WRITE | MemFlags::HOST_NO_ACCESS)
-            .build()?;
-        x_host.copy(&x_device, None, None).enq()?;
-        let y_host = Buffer::builder()
-            .queue(queue.clone())
-            .copy_host_slice(y)
-            .len(y.len())
-            .build()?;
-        let y_device = Buffer::builder()
-            .queue(queue.clone())
-            .len(x.len())
-            .flags(MemFlags::READ_WRITE | MemFlags::HOST_NO_ACCESS)
-            .build()?;
-        y_host.copy(&y_device, None, None).enq()?;
+        let x_device = Buffer::from_slice(queue.clone(), x)?;
+        let y_device = Buffer::from_slice(queue.clone(), y)?;
         #[cfg(debug_assertions)]
         let y_host = {
             let mut y_host = y.to_vec();
@@ -105,27 +154,59 @@ impl OclBackend {
     }
 }
 
+pub struct Alloc {
+    _x_device: Buffer<f32>,
+}
+
+pub struct Upload {
+    pro_que: ProQue,
+    x_host: Vec<f32>,
+    y_device: Buffer<f32>,
+}
+
+impl Upload {
+    pub fn run(&mut self) -> Result<()> {
+        let y_device = unsafe {
+            BufferSink::from_buffer(
+                self.y_device.clone(),
+                Some(self.pro_que.queue().clone()),
+                0,
+                self.y_device.len(),
+            )?
+        };
+        y_device
+            .clone()
+            .write()
+            .wait()?
+            .copy_from_slice(&self.x_host);
+        y_device.flush().enq()?.wait()?;
+        self.pro_que.finish()?;
+        #[cfg(debug_assertions)]
+        {
+            let y_host = self.y_device.to_vec()?;
+            assert_eq!(self.x_host, y_host);
+        }
+        Ok(())
+    }
+}
+
 pub struct Download {
     pro_que: ProQue,
-    x_device: Buffer<f32>,
     #[cfg(debug_assertions)]
     x_host: Vec<f32>,
+    x_device: BufferStream<f32>,
+    y_host: Vec<f32>,
 }
 
 impl Download {
-    pub fn run(&self) -> Result<()> {
-        let x_host = Buffer::builder()
-            .queue(self.pro_que.queue().clone())
-            .len(self.x_device.len())
-            .flags(MemFlags::HOST_READ_ONLY)
-            .build()?;
-        self.x_device.copy(&x_host, None, None).enq()?;
+    pub fn run(&mut self) -> Result<()> {
+        self.x_device.clone().flood().enq()?.wait()?;
         self.pro_que.finish()?;
-        let mut x_vec = vec![0f32; x_host.len()];
-        x_host.read(&mut x_vec).enq()?;
+        self.y_host
+            .copy_from_slice(&self.x_device.clone().read().wait()?);
         #[cfg(debug_assertions)]
         {
-            assert_eq!(x_vec, self.x_host);
+            assert_eq!(self.y_host, self.x_host);
         }
         Ok(())
     }
