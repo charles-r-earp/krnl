@@ -2,16 +2,19 @@ use crate::{
     device::{Device, DeviceInner},
     scalar::{Scalar, ScalarElem, ScalarType},
 };
+#[cfg(feature = "device")]
+use anyhow::bail;
 use anyhow::Result;
 use bytemuck::PodCastError;
 use dry::{macro_for, macro_wrap};
 use half::{bf16, f16};
+#[cfg(feature = "device")]
 use krnl_macros::module;
 use paste::paste;
 use std::{
     marker::PhantomData,
     mem::{forget, size_of},
-    sync::Arc,
+    ops::{Bound, RangeBounds},
 };
 
 #[cfg(feature = "device")]
@@ -45,13 +48,14 @@ impl RawSlice {
             RawSliceInner::Device(buffer) => buffer.device().into(),
         }
     }
+    /*#[cfg(feature = "device")]
     fn offset(&self) -> usize {
         match &self.inner {
             RawSliceInner::Host(_) => 0,
             #[cfg(feature = "device")]
             RawSliceInner::Device(buffer) => buffer.offset(),
         }
-    }
+    }*/
     fn len(&self) -> usize {
         match &self.inner {
             RawSliceInner::Host(raw) => raw.len,
@@ -74,35 +78,37 @@ impl RawSlice {
             Ok(self)
         }
     }
-    /*fn to_device(&self, device: Device) -> Result<RawBuffer> {
-        match (&self.inner, device.inner()) {
-            #[cfg(feature = "device")]
-            (RawSliceInner::Host(raw), DeviceInner::Device(device)) => {
-                let data = unsafe { std::slice::from_raw_parts(raw.ptr, raw.len) };
-                let device_buffer = DeviceBuffer::upload(device.clone(), data)?;
-                let slice = RawSlice {
-                    inner: RawSliceInner::Device(device_buffer),
-                    width: self.width,
-                };
-                Ok(RawBuffer {
-                    slice,
-                    cap: raw.len,
-                })
+    fn slice(mut self, range: impl RangeBounds<usize>, scalar_type: ScalarType) -> Option<Self> {
+        let width = scalar_type.size();
+        let start = match range.start_bound() {
+            Bound::Included(x) => x.checked_mul(width)?,
+            Bound::Excluded(x) => x.checked_mul(width)?.checked_add(width)?,
+            Bound::Unbounded => 0,
+        };
+        if start > self.len() {
+            return None;
+        }
+        let end = match range.end_bound() {
+            Bound::Included(x) => x.checked_mul(width)?.checked_add(width)?,
+            Bound::Excluded(x) => x.checked_mul(width)?,
+            Bound::Unbounded => self.len(),
+        };
+        if end > self.len() {
+            return None;
+        }
+        match &mut self.inner {
+            RawSliceInner::Host(raw) => {
+                let slice = unsafe { raw.as_bytes().get(start..end)? };
+                raw.ptr = slice.as_ptr() as *mut u8;
+                raw.len = slice.len();
             }
-            _ => todo!(),
-        }
-    }
-    fn as_host_slice<T: Scalar>(&self) -> Option<&[T]> {
-         #[cfg(feature = "device")]
-
-    }
-    fn to_vec<T: Scalar>(&self) -> Result<Vec<T>> {
-        match &self.inner {
             #[cfg(feature = "device")]
-            RawSliceInner::Host(_) => Ok(self.as_host_slice().unwrap().to_vec()),
-            _ => todo!(),
+            RawSliceInner::Device(buffer) => {
+                *buffer = buffer.slice(start..end)?;
+            }
         }
-    }*/
+        Some(self)
+    }
 }
 
 #[derive(Clone, derive_more::Unwrap)]
@@ -121,31 +127,9 @@ pub struct RawBuffer {
     width: usize,
 }
 
-impl RawBuffer {
-    /*fn into_device(self, device: Device) -> Result<Self> {
-        if self.device() == device {
-            Ok(self)
-        } else {
-            self.slice.to_device(device)
-        }
-    }
-    fn into_vec<T: Scalar>(self) -> Result<Vec<T>> {
-        match self.slice.inner {
-            RawSliceInner::Host(raw) => {
-                let width = size_of::<T>();
-                let vec =
-                    unsafe { Vec::from_raw_parts(raw.ptr as _, raw.len / width, self.cap / width) };
-                std::mem::forget(self);
-                Ok(vec)
-            }
-            #[cfg(feature = "device")]
-            RawSliceInner::Device(_) => self.slice.to_vec(),
-        }
-    }*/
-}
-
 impl Drop for RawBuffer {
     fn drop(&mut self) {
+        #[cfg_attr(not(feature = "device"), allow(irrefutable_let_patterns))]
         if let RawSliceInner::Host(slice) = self.inner {
             let ptr = slice.ptr;
             let len = slice.len * self.width;
@@ -219,27 +203,6 @@ pub struct ScalarBufferRepr {
     scalar_type: ScalarType,
 }
 
-/*
-impl ScalarBufferRepr {
-    fn zeros(device: Device, len: usize, scalar_type: ScalarType) -> Result<Self> {
-        let buffer = match device.inner() {
-            DeviceInner::Host => {
-                let width = scalar_type.size();
-                match width {
-                    1 => BufferRepr::from_vec(vec![0u8; len]).into(),
-                    2 => BufferRepr::from_vec(vec![0u16; len]).into(),
-                    4 => BufferRepr::from_vec(vec![0u32; len]).into(),
-                    8 => BufferRepr::from_vec(vec![0u64; len]).into(),
-                    _ => unreachable!(),
-                }
-            }
-            #[cfg(feature = "device")]
-            DeviceInner::Device(device) => todo!(),
-        };
-        Ok(buffer)
-    }
-}*/
-
 impl<T: Scalar> From<BufferRepr<T>> for ScalarBufferRepr {
     fn from(buffer: BufferRepr<T>) -> Self {
         Self {
@@ -285,7 +248,7 @@ pub struct ScalarSliceRepr<'a> {
 }
 
 impl<'a> ScalarSliceRepr<'a> {
-    pub fn bitcast(
+    fn bitcast(
         self,
         scalar_type: ScalarType,
     ) -> Result<ScalarSliceRepr<'a>, bytemuck::PodCastError> {
@@ -295,6 +258,10 @@ impl<'a> ScalarSliceRepr<'a> {
             scalar_type,
             _m: Default::default(),
         })
+    }
+    fn slice(mut self, range: impl RangeBounds<usize>) -> Option<Self> {
+        self.raw = self.raw.slice(range, self.scalar_type)?;
+        Some(self)
     }
 }
 
@@ -316,7 +283,7 @@ pub struct ScalarSliceMutRepr<'a> {
 }
 
 impl<'a> ScalarSliceMutRepr<'a> {
-    pub fn bitcast_mut(
+    fn bitcast_mut(
         self,
         scalar_type: ScalarType,
     ) -> Result<ScalarSliceMutRepr<'a>, bytemuck::PodCastError> {
@@ -326,6 +293,10 @@ impl<'a> ScalarSliceMutRepr<'a> {
             scalar_type,
             _m: Default::default(),
         })
+    }
+    fn slice(mut self, range: impl RangeBounds<usize>) -> Option<Self> {
+        self.raw = self.raw.slice(range, self.scalar_type)?;
+        Some(self)
     }
 }
 
@@ -358,17 +329,13 @@ pub type ScalarSlice<'a> = ScalarBufferBase<ScalarSliceRepr<'a>>;
 pub type ScalarSliceMut<'a> = ScalarBufferBase<ScalarSliceMutRepr<'a>>;
 
 impl<S: ScalarDataOwned> ScalarBufferBase<S> {
-    unsafe fn uninit(device: Device, len: usize, scalar_type: ScalarType) -> Result<Self> {
+    pub unsafe fn uninit(device: Device, len: usize, scalar_type: ScalarType) -> Result<Self> {
         macro_wrap!(paste! {
             match scalar_type {
                 macro_for!($T in [u8, i8, u16, i16, f16, bf16, u32, i32, f32, u64, i64, f64] {
-                    ScalarType::[<$T:upper>] => {
-                        unsafe {
-                            Ok(unsafe { Buffer::<$T>::uninit(device, len)? }.into())
-                        }
-                    }
-                    _ => unreachable!(),
+                    ScalarType::[<$T:upper>] => Ok(unsafe { Buffer::<$T>::uninit(device, len)? }.into()),
                 })
+                _ => unreachable!(),
             }
         })
     }
@@ -376,11 +343,7 @@ impl<S: ScalarDataOwned> ScalarBufferBase<S> {
         macro_wrap!(paste! {
             match elem {
                 macro_for!($T in [u8, i8, u16, i16, f16, bf16, u32, i32, f32, u64, i64, f64] {
-                  ScalarElem::[<$T:upper>](elem) => {
-                      unsafe {
-                          Ok(Buffer::from_elem(device, len, elem)?.into())
-                      }
-                  }
+                  ScalarElem::[<$T:upper>](elem) => Ok(Buffer::from_elem(device, len, elem)?.into()),
                 })
                 _ => unreachable!(),
             }
@@ -415,18 +378,18 @@ impl<S: ScalarData> ScalarBufferBase<S> {
         let data = self.data.as_scalar_slice_mut();
         ScalarSliceMut { data }
     }
-    pub fn into_scalar_buffer(self) -> Result<ScalarBuffer> {
+    pub fn into_owned(self) -> Result<ScalarBuffer> {
         match self.data.try_into_scalar_buffer() {
             Ok(data) => Ok(ScalarBuffer { data }),
-            Err(data) => Self { data }.to_scalar_buffer(),
+            Err(data) => Self { data }.to_owned(),
         }
     }
-    pub fn to_scalar_buffer(self) -> Result<ScalarBuffer> {
+    pub fn to_owned(self) -> Result<ScalarBuffer> {
         self.cast(self.scalar_type())
     }
     pub fn into_device(self, device: Device) -> Result<ScalarBuffer> {
         if device == self.device() {
-            self.into_scalar_buffer()
+            self.into_owned()
         } else {
             self.to_device(device)
         }
@@ -440,9 +403,6 @@ impl<S: ScalarData> ScalarBufferBase<S> {
             _ => unreachable!(),
         }})
     }
-}
-
-impl<S: ScalarData> ScalarBufferBase<S> {
     pub fn fill(&mut self, elem: ScalarElem) -> Result<()>
     where
         S: ScalarDataMut,
@@ -478,6 +438,17 @@ impl<S: ScalarData> ScalarBufferBase<S> {
     {
         let data = self.data.as_scalar_slice_mut().bitcast_mut(scalar_type)?;
         Ok(ScalarSliceMut { data })
+    }
+    pub fn slice(&self, range: impl RangeBounds<usize>) -> Option<ScalarSlice> {
+        let data = self.data.as_scalar_slice().slice(range)?;
+        Some(ScalarSlice { data })
+    }
+    pub fn slice_mut(&mut self, range: impl RangeBounds<usize>) -> Option<ScalarSliceMut>
+    where
+        S: ScalarDataMut,
+    {
+        let data = self.data.as_scalar_slice_mut().slice(range)?;
+        Some(ScalarSliceMut { data })
     }
 }
 
@@ -613,15 +584,17 @@ impl<T: Scalar> BufferRepr<T> {
             }
         }
     }
-    fn into_device(mut self, device: Device) -> Result<Self> {
-        if self.device() == device {
-            return Ok(self);
+    /*#[cfg(feature = "device")]
+    fn into_device(self, device: Device) -> Result<Self> {
+        let this_device = self.device();
+        if this_device == device {
+            Ok(self)
+        } else if this_device.is_host() {
+            Ok(Self::from_vec(self.into_vec()?))
+        } else {
+            self.as_slice().to_device(device)
         }
-        match (&self.raw.inner, device.inner()) {
-            (RawSliceInner::Host(raw), DeviceInner::Host) => Ok(Self::from_vec(self.into_vec()?)),
-            _ => self.as_slice().to_device(device),
-        }
-    }
+    }*/
     fn into_vec(self) -> Result<Vec<T>> {
         match self.raw.inner {
             RawSliceInner::Host(raw) => {
@@ -743,66 +716,24 @@ impl<'a, T: Scalar> SliceRepr<'a, T> {
             self.to_device(Device::host())?.into_vec()
         }
     }
-    fn to_buffer(&self) -> Result<BufferRepr<T>> {
+    /*fn to_buffer(&self) -> Result<BufferRepr<T>> {
         self.to_device(self.device())
-    }
+    }*/
     fn to_device(&self, device: Device) -> Result<BufferRepr<T>> {
         let mut output = unsafe { BufferRepr::uninit(device, self.len())? };
         output.as_slice_mut().copy_from_slice(self)?;
         Ok(output)
-
-        /*match (&self.raw.inner, device.inner()) {
-            (RawSliceInner::Host(raw), DeviceInner::Host) => {
-                Ok(BufferRepr::from_vec(self.to_vec()?))
-            }
-            #[cfg(feature = "device")]
-            (RawSliceInner::Host(raw), DeviceInner::Device(device)) => {
-                let data = unsafe { std::slice::from_raw_parts(raw.ptr, raw.len) };
-                let device_buffer = DeviceBuffer::upload(device.clone(), data)?;
-                let slice = RawSlice {
-                    inner: RawSliceInner::Device(device_buffer),
-                };
-                let raw = RawBuffer {
-                    slice,
-                    cap: raw.len,
-                    width: size_of::<T>(),
-                };
-                Ok(BufferRepr {
-                    raw,
-                    _m: PhantomData::default(),
-                })
-            }
-            #[cfg(feature = "device")]
-            (RawSliceInner::Device(device_buffer), DeviceInner::Host) => {
-                let mut vec = vec![T::zero(); device_buffer.len() / size_of::<T>()];
-                device_buffer.download(bytemuck::cast_slice_mut(vec.as_mut_slice()))?;
-                Ok(BufferRepr::from_vec(vec))
-            }
-            #[cfg(feature = "device")]
-            (RawSliceInner::Device(device_buffer), DeviceInner::Device(device)) => {
-                let len = device_buffer.len();
-                let device_buffer = device_buffer.transfer(device.clone())?;
-                let slice = RawSlice {
-                    inner: RawSliceInner::Device(device_buffer),
-                };
-                let raw = RawBuffer {
-                    slice,
-                    cap: len,
-                    width: size_of::<T>(),
-                };
-                Ok(BufferRepr {
-                    raw,
-                    _m: PhantomData::default(),
-                })
-            }
-        }*/
     }
-    pub fn bitcast<Y: Scalar>(self) -> Result<SliceRepr<'a, Y>, bytemuck::PodCastError> {
+    fn bitcast<Y: Scalar>(self) -> Result<SliceRepr<'a, Y>, bytemuck::PodCastError> {
         let raw = self.raw.bitcast(Y::scalar_type())?;
         Ok(SliceRepr {
             raw,
             _m: PhantomData::default(),
         })
+    }
+    fn slice(mut self, range: impl RangeBounds<usize>) -> Option<Self> {
+        self.raw = self.raw.slice(range, T::scalar_type())?;
+        Some(self)
     }
 }
 
@@ -868,8 +799,6 @@ impl<'a, T: Scalar> SliceMutRepr<'a, T> {
         }
     }
     fn copy_from_slice(&mut self, src: &SliceRepr<T>) -> Result<()> {
-        let src_device = src.device();
-        let dst_device = self.device();
         match (&mut self.raw.inner, &src.raw.inner) {
             (RawSliceInner::Host(dst), RawSliceInner::Host(src)) => {
                 unsafe {
@@ -898,6 +827,17 @@ impl<'a, T: Scalar> SliceMutRepr<'a, T> {
                 })
             }
         }
+    }
+    fn bitcast<Y: Scalar>(self) -> Result<SliceMutRepr<'a, Y>, bytemuck::PodCastError> {
+        let raw = self.raw.bitcast(Y::scalar_type())?;
+        Ok(SliceMutRepr {
+            raw,
+            _m: PhantomData::default(),
+        })
+    }
+    fn slice(mut self, range: impl RangeBounds<usize>) -> Option<Self> {
+        self.raw = self.raw.slice(range, T::scalar_type())?;
+        Some(self)
     }
 }
 
@@ -1092,18 +1032,18 @@ impl<T: Scalar, S: Data<Elem = T>> BufferBase<S> {
         let data = self.data.as_scalar_slice_mut();
         ScalarSliceMut { data }
     }
-    pub fn into_buffer(self) -> Result<Buffer<T>> {
+    pub fn into_owned(self) -> Result<Buffer<T>> {
         match self.data.try_into_buffer() {
             Ok(data) => Ok(Buffer { data }),
-            Err(data) => Self { data }.to_buffer(),
+            Err(data) => Self { data }.to_owned(),
         }
     }
-    pub fn to_buffer(&self) -> Result<Buffer<T>> {
+    pub fn to_owned(&self) -> Result<Buffer<T>> {
         self.cast()
     }
     pub fn into_device(self, device: Device) -> Result<Buffer<T>> {
         if device == self.device() {
-            self.into_buffer()
+            self.into_owned()
         } else {
             self.to_device(device)
         }
@@ -1125,9 +1065,6 @@ impl<T: Scalar, S: Data<Elem = T>> BufferBase<S> {
     where
         S: DataMut,
     {
-        use dry::macro_wrap;
-        use paste::paste;
-
         if self.is_empty() {
             return Ok(());
         }
@@ -1137,24 +1074,52 @@ impl<T: Scalar, S: Data<Elem = T>> BufferBase<S> {
             }
             return Ok(());
         }
+        #[cfg(not(feature = "device"))]
+        {
+            unreachable!()
+        }
         #[cfg(feature = "device")]
         {
-            let x = ScalarElem::from(elem);
-            let y = self.as_scalar_slice_mut();
-            macro_wrap!(paste! {
-                    match x {
-                        macro_for!($T in [u8, i8, u16, i16, f16, bf16, u32, i32, f32, u64, i64, f64] {
-                            ScalarElem::[<$T:upper>](x) => {
-                                kernels::[<fill_ $T>]::builder()?
-                                .build(y.device())?
-                                .dispatch(x, y.try_into().ok().unwrap())?;
-                            }
-                        })
-                    _ => unreachable!(),
+            fn copied_bytes<X: Scalar, Y: Scalar>(x: X) -> Y {
+                assert!(size_of::<Y>() >= size_of::<X>());
+                let mut y = Y::default();
+                for (y, x) in bytemuck::bytes_of_mut(&mut y)
+                    .iter_mut()
+                    .zip(bytemuck::bytes_of(&x).iter().cycle())
+                {
+                    *y = *x;
                 }
-            });
+                y
+            }
+
+            let device = self.device();
+            let features = device.info().unwrap().features();
+            if let Ok(y) = self.bitcast_mut::<u64>() {
+                let x = copied_bytes(elem);
+                return kernels::fill_u64::builder()?.build(device)?.dispatch(x, y);
+            }
+            if let Ok(y) = self.bitcast_mut::<u32>() {
+                let x = copied_bytes(elem);
+                return kernels::fill_u32::builder()?.build(device)?.dispatch(x, y);
+            }
+            if features.shader_int16() {
+                if let Ok(y) = self.bitcast_mut::<u16>() {
+                    let x = copied_bytes(elem);
+                    return kernels::fill_u16::builder()?.build(device)?.dispatch(x, y);
+                }
+            }
+            if features.shader_int8() {
+                if let Ok(y) = self.bitcast_mut::<u8>() {
+                    let x = copied_bytes(elem);
+                    return kernels::fill_u8::builder()?.build(device)?.dispatch(x, y);
+                }
+            }
+            if self.bitcast::<u16>().is_ok() {
+                bail!("Device {device:?} does not support 16 bit operations!");
+            } else {
+                bail!("Device {device:?} does not support 16 bit operations!");
+            }
         }
-        Ok(())
     }
     fn cast_impl<Y: Scalar>(&self, output: &mut SliceMut<Y>) -> Result<()> {
         debug_assert_eq!(self.len(), output.len());
@@ -1191,7 +1156,7 @@ impl<T: Scalar, S: Data<Elem = T>> BufferBase<S> {
     }
     pub fn cast_into<Y: Scalar>(self) -> Result<Buffer<Y>> {
         if T::scalar_type() == Y::scalar_type() {
-            let buffer = self.into_buffer()?;
+            let buffer = self.into_owned()?;
             Ok(ScalarBuffer::from(buffer).try_into().ok().unwrap())
         } else {
             self.cast()
@@ -1201,14 +1166,29 @@ impl<T: Scalar, S: Data<Elem = T>> BufferBase<S> {
         let data = self.data.as_slice().bitcast()?;
         Ok(Slice { data })
     }
-    pub fn bitcast_mut<Y: Scalar>(&mut self) -> Result<SliceMut<Y>, bytemuck::PodCastError> {
-        todo!()
+    pub fn bitcast_mut<Y: Scalar>(&mut self) -> Result<SliceMut<Y>, bytemuck::PodCastError>
+    where
+        S: DataMut,
+    {
+        let data = self.data.as_slice_mut().bitcast()?;
+        Ok(SliceMut { data })
     }
     pub fn copy_from_slice(&mut self, src: &Slice<T>) -> Result<()>
     where
         S: DataMut,
     {
         self.data.as_slice_mut().copy_from_slice(&src.data)
+    }
+    pub fn slice(&self, range: impl RangeBounds<usize>) -> Option<Slice<T>> {
+        let data = self.data.as_slice().slice(range)?;
+        Some(Slice { data })
+    }
+    pub fn slice_mut(&mut self, range: impl RangeBounds<usize>) -> Option<SliceMut<T>>
+    where
+        S: DataMut,
+    {
+        let data = self.data.as_slice_mut().slice(range)?;
+        Some(SliceMut { data })
     }
 }
 
@@ -1219,15 +1199,15 @@ mod kernels {
     use dry::macro_for;
     #[cfg(not(target_arch = "spirv"))]
     use krnl_core;
+    use krnl_core::macros::kernel;
     #[cfg(target_arch = "spirv")]
-    use krnl_core::scalar::Scalar;
     use krnl_core::{
         half::{bf16, f16},
-        macros::kernel,
+        scalar::Scalar,
     };
     use paste::paste;
 
-    macro_for!($T in [u8, i8, u16, i16, f16, bf16, u32, i32, f32, u64, i64, f64]  {
+    macro_for!($T in [u8, u16, u32, u64]  {
        paste! {
            #[kernel(threads(128))]
            pub fn [<fill_ $T>](x: $T, #[item] y: &mut $T) {

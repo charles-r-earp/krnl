@@ -2,25 +2,15 @@ use crate::{
     buffer::{ScalarSlice, ScalarSliceMut, Slice, SliceMut},
     scalar::{Scalar, ScalarElem, ScalarType},
 };
-#[cfg(feature = "device")]
-use anyhow::format_err;
 use anyhow::{bail, Result};
 #[cfg(feature = "device")]
-use rspirv::{
-    binary::{Assemble, Disassemble},
-    dr::Operand,
-    spirv::ExecutionMode,
-};
+use rspirv::{binary::Assemble, dr::Operand};
 use serde::Deserialize;
+#[cfg(feature = "device")]
+use std::{collections::HashMap, hash::Hash, ops::Range};
 use std::{
-    borrow::Cow,
-    collections::HashMap,
     fmt::{self, Debug},
-    hash::{Hash, Hasher},
-    mem::{forget, size_of},
-    ops::RangeBounds,
     sync::Arc,
-    time::Duration,
 };
 
 #[cfg(feature = "device")]
@@ -38,7 +28,9 @@ mod error {
     #[cfg(feature = "device")]
     #[derive(Clone, Copy, Debug, thiserror::Error)]
     pub(super) struct DeviceIndexOutOfRange {
+        #[allow(unused)]
         pub(super) index: usize,
+        #[allow(unused)]
         pub(super) devices: usize,
     }
 
@@ -48,8 +40,6 @@ mod error {
             Debug::fmt(self, f)
         }
     }
-    #[cfg(feature = "device")]
-    pub(super) struct DeviceNotSupported;
 
     #[derive(Clone, Copy, thiserror::Error)]
     pub struct DeviceLost {
@@ -101,6 +91,7 @@ pub mod builder {
             }
             #[cfg(not(feature = "device"))]
             {
+                let _ = index;
                 self
             }
         }
@@ -148,7 +139,7 @@ trait DeviceEngineBuffer: Sized {
     fn engine(&self) -> &Arc<Self::Engine>;
     fn offset(&self) -> usize;
     fn len(&self) -> usize;
-    fn slice(self: &Arc<Self>, bounds: impl RangeBounds<usize>) -> Option<Arc<Self>>;
+    fn slice(self: &Arc<Self>, range: Range<usize>) -> Option<Arc<Self>>;
 }
 
 #[cfg(feature = "device")]
@@ -244,6 +235,7 @@ pub(crate) enum DeviceInner {
 
 impl DeviceInner {
     pub(crate) fn is_host(&self) -> bool {
+        #[cfg_attr(not(feature = "device"), allow(irrefutable_let_patterns))]
         if let Self::Host = self {
             true
         } else {
@@ -341,6 +333,10 @@ impl DeviceBuffer {
             engine: self.inner.engine().clone(),
         }
     }
+    pub(crate) fn slice(&self, range: Range<usize>) -> Option<Self> {
+        let inner = self.inner.slice(range)?;
+        Some(Self { inner })
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
@@ -415,6 +411,7 @@ impl Features {
 }
 
 #[derive(Debug)]
+#[allow(dead_code)]
 pub struct DeviceInfo {
     index: usize,
     name: String,
@@ -486,6 +483,7 @@ impl Hash for KernelKey {
     }
 }*/
 
+#[cfg_attr(not(feature = "device"), allow(dead_code))]
 #[derive(Clone, Deserialize, Debug)]
 struct KernelDesc {
     name: String,
@@ -509,10 +507,7 @@ impl KernelDesc {
         size.try_into().unwrap()
     }
     fn specialize(&self, threads: Vec<u32>, spec_consts: &[ScalarElem]) -> Result<Self> {
-        use rspirv::{
-            dr::Operand,
-            spirv::{Decoration, ExecutionMode, Op},
-        };
+        use rspirv::spirv::{Decoration, Op};
         let mut module = rspirv::dr::load_words(&self.spirv).unwrap();
         let mut spec_ids = HashMap::<u32, u32>::with_capacity(spec_consts.len());
         for inst in module.annotations.iter() {
@@ -556,13 +551,16 @@ impl KernelDesc {
     }
 }
 
+#[cfg_attr(not(feature = "device"), allow(dead_code))]
 #[derive(Clone, Deserialize, Debug)]
 struct SpecDesc {
+    #[allow(unused)]
     name: String,
     scalar_type: ScalarType,
     thread_dim: Option<usize>,
 }
 
+#[cfg_attr(not(feature = "device"), allow(dead_code))]
 #[derive(Clone, Deserialize, Debug)]
 struct SliceDesc {
     name: String,
@@ -571,25 +569,29 @@ struct SliceDesc {
     item: bool,
 }
 
+#[cfg_attr(not(feature = "device"), allow(dead_code))]
 #[derive(Clone, Deserialize, Debug)]
 struct PushDesc {
+    #[allow(unused)]
     name: String,
     scalar_type: ScalarType,
 }
 
 #[doc(hidden)]
+#[cfg_attr(not(feature = "device"), allow(dead_code))]
 #[derive(Clone)]
 pub struct KernelBuilder {
     id: usize,
     desc: Arc<KernelDesc>,
     spec_consts: Vec<ScalarElem>,
-    threads: Vec<u32>,
+    threads: [u32; 3],
 }
 
 impl KernelBuilder {
     pub fn from_bytes(bytes: &'static [u8]) -> Result<Self> {
         let desc: Arc<KernelDesc> = Arc::new(bincode::deserialize(bytes)?);
-        let threads = desc.threads.clone();
+        let mut threads = [1, 1, 1];
+        threads[..desc.threads.len()].copy_from_slice(&desc.threads);
         Ok(Self {
             id: bytes.as_ptr() as usize,
             desc,
@@ -605,7 +607,7 @@ impl KernelBuilder {
             if let Some(dim) = spec_desc.thread_dim {
                 if let ScalarElem::U32(value) = spec_const {
                     if value == 0 {
-                        bail!("threads.{} cannot be zero!", ["x", "y", "z"][dim]);
+                        bail!("threads.{} cannot be zero!", ["x", "y", "z"][dim],);
                     }
                     self.threads[dim] = value;
                 } else {
@@ -647,10 +649,13 @@ impl KernelBuilder {
                     id: self.id,
                     spec_bytes,
                 };
-                let inner = if !desc.spec_descs.is_empty() || self.threads != desc.threads {
+                let inner = if !desc.spec_descs.is_empty() {
                     <<Engine as DeviceEngine>::Kernel>::cached(device.engine, key, || {
-                        desc.specialize(self.threads.clone(), &self.spec_consts)
-                            .map(Arc::new)
+                        desc.specialize(
+                            self.threads[..self.desc.threads.len()].to_vec(),
+                            &self.spec_consts,
+                        )
+                        .map(Arc::new)
                     })?
                 } else {
                     <<Engine as DeviceEngine>::Kernel>::cached(device.engine, key, || {
@@ -678,9 +683,11 @@ struct KernelKey {
 pub struct Kernel {
     #[cfg(feature = "device")]
     inner: Arc<<Engine as DeviceEngine>::Kernel>,
+    #[cfg(feature = "device")]
     groups: Option<[u32; 3]>,
 }
 
+#[cfg(feature = "device")]
 fn global_threads_to_groups(global_threads: &[u32], threads: &[u32]) -> [u32; 3] {
     debug_assert_eq!(global_threads.len(), threads.len());
     let mut groups = [1; 3];
@@ -695,24 +702,29 @@ fn global_threads_to_groups(global_threads: &[u32], threads: &[u32]) -> [u32; 3]
 }
 
 impl Kernel {
-    pub fn global_threads(mut self, global_threads: &[u32]) -> Self {
+    pub fn global_threads(
+        #[cfg_attr(not(feature = "device"), allow(unused_mut))] mut self,
+        global_threads: &[u32],
+    ) -> Self {
         #[cfg(feature = "device")]
         {
             let desc = &self.inner.desc();
-            let threads = &desc.threads;
             let groups = global_threads_to_groups(global_threads, &desc.threads);
             self.groups.replace(groups);
             self
         }
         #[cfg(not(feature = "device"))]
         {
+            let _ = global_threads;
             unreachable!()
         }
     }
-    pub fn groups(mut self, groups: &[u32]) -> Self {
+    pub fn groups(
+        #[cfg_attr(not(feature = "device"), allow(unused_mut))] mut self,
+        groups: &[u32],
+    ) -> Self {
         #[cfg(feature = "device")]
         {
-            let desc = &self.inner.desc();
             debug_assert_eq!(groups.len(), self.inner.desc().threads.len());
             let mut new_groups = [1; 3];
             new_groups[..groups.len()].copy_from_slice(groups);
@@ -721,6 +733,7 @@ impl Kernel {
         }
         #[cfg(not(feature = "device"))]
         {
+            let _ = groups;
             unreachable!()
         }
     }
@@ -781,14 +794,29 @@ impl Kernel {
         }
         #[cfg(not(feature = "device"))]
         {
+            let _ = (slices, push_consts);
             unreachable!()
         }
     }
     pub fn threads(&self) -> &[u32] {
-        todo!()
+        #[cfg(feature = "device")]
+        {
+            return self.inner.desc().threads.as_ref();
+        }
+        #[cfg(not(feature = "device"))]
+        {
+            unreachable!()
+        }
     }
-    pub(crate) fn features(&self) -> Features {
-        todo!()
+    pub fn features(&self) -> Features {
+        #[cfg(feature = "device")]
+        {
+            return self.inner.desc().features;
+        }
+        #[cfg(not(feature = "device"))]
+        {
+            unreachable!()
+        }
     }
 }
 

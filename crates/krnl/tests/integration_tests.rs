@@ -1,7 +1,7 @@
 use dry::macro_for;
 use half::{bf16, f16};
 use krnl::{
-    buffer::{Buffer, Slice},
+    buffer::Slice,
     device::{Device, Features},
     scalar::{Scalar, ScalarType},
 };
@@ -60,10 +60,10 @@ fn tests(device: &Device, device2: Option<&Device>) -> impl IntoIterator<Item = 
 
 fn buffer_tests(device: &Device, device2: Option<&Device>) -> impl IntoIterator<Item = Trial> {
     fn buffer_test_lengths() -> impl ExactSizeIterator<Item = usize> {
-        [0, 1, 3, 4, 16, 67, 531].into_iter()
+        [0, 1, 3, 4, 16, 67, 157].into_iter()
     }
     fn buffer_transfer_test_lengths() -> impl ExactSizeIterator<Item = usize> {
-        [0, 1, 3, 4, 16, 112_789_546].into_iter()
+        [0, 1, 3, 4, 16, 55_337_791].into_iter()
     }
     let features = device
         .info()
@@ -206,24 +206,13 @@ fn buffer_tests(device: &Device, device2: Option<&Device>) -> impl IntoIterator<
     }
 
     fn buffer_bitcast<X: Scalar, Y: Scalar>(device: Device) {
-        if device.is_host() {
-            let x = &[X::default(); 16];
-            for i in 0..=16 {
-                for x in [&x[i..], &x[..i]] {
-                    let bytemuck_result = bytemuck::try_cast_slice::<X, Y>(x).map(|_| ());
-                    let result = Slice::from(x).bitcast::<Y>().map(|_| ());
-                    assert_eq!(result, bytemuck_result);
-                }
-            }
-        } else {
-            let x = &[0u64; 16];
-            let x = &bytemuck::cast_slice(x)[..16];
-            for i in 0..=16 {
-                let bytemuck_result = bytemuck::try_cast_slice::<X, Y>(&x[..i]).map(|_| ());
-                let result = Buffer::<X>::zeros(device.clone(), i)
-                    .unwrap()
-                    .bitcast::<Y>()
-                    .map(|_| ());
+        let x_host = &[X::default(); 16];
+        let x = Slice::from(x_host.as_ref()).to_device(device).unwrap();
+        for i in 0..=16 {
+            for range in [i..16, 0..i] {
+                let bytemuck_result =
+                    bytemuck::try_cast_slice::<X, Y>(&x_host[range.clone()]).map(|_| ());
+                let result = x.slice(range).unwrap().bitcast::<Y>().map(|_| ());
                 assert_eq!(result, bytemuck_result);
             }
         }

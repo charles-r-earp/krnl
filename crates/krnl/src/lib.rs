@@ -1,5 +1,4 @@
 #![forbid(unsafe_op_in_unsafe_fn)]
-#![allow(warnings)]
 
 pub use anyhow;
 pub use krnl_core;

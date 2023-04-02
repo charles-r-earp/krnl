@@ -2,18 +2,14 @@ use super::{
     DeviceEngine, DeviceEngineBuffer, DeviceEngineKernel, DeviceInfo, DeviceLost, DeviceOptions,
     Features, KernelDesc, KernelKey,
 };
-use crate::{device, scalar::ScalarElem};
-use anyhow::{format_err, Result};
-use ash::vk::{Handle, PipelineStageFlags};
+
+use anyhow::Result;
+use ash::vk::Handle;
 use atomicbox::AtomicOptionBox;
 use dashmap::DashMap;
 use parking_lot::{Mutex, MutexGuard, RwLock, RwLockReadGuard, RwLockUpgradableReadGuard};
 use std::{
-    borrow::Cow,
-    collections::HashMap,
-    hash::{Hash, Hasher},
-    ops::{Deref, Range, RangeBounds},
-    rc::Rc,
+    ops::{Deref, Range},
     sync::{
         atomic::{AtomicBool, AtomicUsize, Ordering},
         Arc, Weak,
@@ -23,46 +19,28 @@ use std::{
 };
 use vulkano::{
     buffer::{
-        sys::{Buffer, BufferCreateInfo, BufferError, BufferMemory, RawBuffer},
-        BufferAccess, BufferInner, BufferSlice, BufferUsage, CpuAccessibleBuffer,
+        sys::Buffer, BufferAccess, BufferInner, BufferSlice, BufferUsage, CpuAccessibleBuffer,
         DeviceLocalBuffer,
     },
     command_buffer::{
-        self,
-        allocator::{
-            CommandBufferAlloc, StandardCommandBufferAllocator,
-            StandardCommandBufferAllocatorCreateInfo,
-        },
-        pool::{CommandBufferAllocateInfo, CommandPool, CommandPoolAlloc, CommandPoolCreateInfo},
+        pool::{CommandBufferAllocateInfo, CommandPool, CommandPoolCreateInfo},
         sys::{CommandBufferBeginInfo, UnsafeCommandBuffer, UnsafeCommandBufferBuilder},
         CommandBufferLevel, CommandBufferUsage, CopyBufferInfo,
     },
     descriptor_set::{
-        self,
-        allocator::{
-            DescriptorSetAlloc, DescriptorSetAllocator, StandardDescriptorSetAlloc,
-            StandardDescriptorSetAllocator,
-        },
         layout::{DescriptorSetLayout, DescriptorType},
         pool::{DescriptorPool, DescriptorPoolCreateInfo, DescriptorSetAllocateInfo},
-        sys::UnsafeDescriptorSet,
-        DescriptorSet, DescriptorSetResources, DescriptorSetWithOffsets, WriteDescriptorSet,
+        WriteDescriptorSet,
     },
     device::{Device, DeviceCreateInfo, DeviceOwned, Queue, QueueCreateInfo},
     instance::{Instance, InstanceCreateInfo, Version},
     library::VulkanLibrary,
-    memory::{
-        allocator::{
-            GenericMemoryAllocator, GenericMemoryAllocatorCreateInfo, MemoryAlloc, MemoryAllocator,
-            StandardMemoryAllocator,
-        },
-        DedicatedAllocation, DeviceMemory, MemoryAllocateInfo,
-    },
-    pipeline::{self, ComputePipeline, Pipeline, PipelineBindPoint},
+    memory::allocator::{GenericMemoryAllocatorCreateInfo, StandardMemoryAllocator},
+    pipeline::{ComputePipeline, Pipeline, PipelineBindPoint},
     shader::{
         DescriptorRequirements, ShaderExecution, ShaderInterface, ShaderModule, ShaderStages,
     },
-    sync::{Fence, FenceError, PipelineStage, Semaphore},
+    sync::Fence,
     VulkanObject,
 };
 
@@ -76,7 +54,7 @@ pub struct Engine {
     kernels: DashMap<KernelKey, KernelInner>,
     memory_allocator: Arc<StandardMemoryAllocator>,
     device: Arc<Device>,
-    instance: Arc<Instance>,
+    _instance: Arc<Instance>,
 }
 
 impl Engine {
@@ -123,15 +101,10 @@ impl DeviceEngine for Engine {
         } else {
             return Err(super::DeviceIndexOutOfRange { index, devices }.into());
         };
-        let physical_device = instance
-            .enumerate_physical_devices()?
-            .skip(options.index)
-            .next()
-            .unwrap();
         let name = physical_device.properties().device_name.clone();
         let optimal_device_extensions = vulkano::device::DeviceExtensions {
             khr_vulkan_memory_model: true,
-            ..vulkano::device::DeviceExtensions::none()
+            ..vulkano::device::DeviceExtensions::empty()
         };
         let device_extensions = physical_device
             .supported_extensions()
@@ -162,9 +135,9 @@ impl DeviceEngine for Engine {
             .filter(|(_, x)| x.queue_flags.compute)
             .map(|(i, x)| (i as u32, x.queue_flags))
             .collect();
-        compute_families.sort_by_key(|(i, flags)| flags.graphics);
+        compute_families.sort_by_key(|(_, flags)| flags.graphics);
         let mut compute_families: Vec<u32> = compute_families.iter().map(|(i, _)| *i).collect();
-        let mut transfer_family = physical_device
+        let transfer_family = physical_device
             .queue_family_properties()
             .iter()
             .position(|x| {
@@ -225,11 +198,6 @@ impl DeviceEngine for Engine {
             let worker2 = Worker::new(Some(&memory_allocator), true, queue, exited.clone())?;
             workers.push([worker1, worker2]);
         }
-        let queue_family_indices: Vec<u32> = compute_families
-            .iter()
-            .copied()
-            .chain(transfer_family)
-            .collect();
         let kernels = DashMap::default();
         let info = Arc::new(DeviceInfo {
             index,
@@ -250,7 +218,7 @@ impl DeviceEngine for Engine {
             kernels,
             memory_allocator,
             device,
-            instance,
+            _instance: instance,
         }))
     }
     fn handle(&self) -> u64 {
@@ -381,15 +349,6 @@ impl Worker {
                 ..Default::default()
             },
         )?;
-        /*let command_pool_alloc = command_pool
-            .allocate_command_buffers(CommandBufferAllocateInfo {
-                level: CommandBufferLevel::Primary,
-                command_buffer_count: 1,
-                ..Default::default()
-            })?
-            .next()
-            .unwrap();
-        */
         let descriptor_pool = if compute {
             Some(DescriptorPool::new(
                 device.clone(),
@@ -414,7 +373,6 @@ impl Worker {
         let guard = WorkerDropGuard { exited };
         let op_slot = Arc::new(AtomicOptionBox::<Op>::none());
         let thread = {
-            let completed = state.completed.clone();
             let ready = ready.clone();
             let op_slot = op_slot.clone();
             let queue = queue.clone();
@@ -432,7 +390,7 @@ impl Worker {
                     .next()
                     .unwrap();
                 let mut last_msg = Instant::now();
-                'outer: loop {
+                loop {
                     let device = queue.device();
                     unsafe {
                         (device.fns().v1_0.reset_command_buffer)(
@@ -704,6 +662,7 @@ impl Deref for WorkerFutureGuard<'_> {
     }
 }
 
+#[derive(Clone)]
 pub(super) struct DeviceBuffer {
     inner: Option<Arc<DeviceLocalBuffer<[u8]>>>,
     engine: Arc<Engine>,
@@ -762,29 +721,13 @@ impl DeviceEngineBuffer for DeviceBuffer {
     }
     fn upload(&self, data: &[u8]) -> Result<()> {
         let engine = &self.engine;
-        let device = &engine.device;
-        let device_lost = DeviceLost {
-            index: engine.info.index,
-            handle: engine.handle(),
-        };
         let mut future_guard = self.future.write();
         if let Some(buffer) = self.inner.as_ref() {
             if let Ok(mut mapped) = buffer.inner().buffer.write(0..data.len() as _) {
-                while !future_guard.ready() {
-                    if engine.exited.load(Ordering::Relaxed) {
-                        return Err(device_lost.into());
-                    }
-                    //std::thread::sleep(Duration::from_micros(1));
-                }
+                engine.wait_for_future(&future_guard)?;
                 mapped[..data.len()].copy_from_slice(data);
             } else {
-                let _transfer = engine.transfer.lock();
-                let [worker1, worker2] = engine.workers.last().unwrap();
-                let workers = if worker1.ready() {
-                    [worker1, worker2]
-                } else {
-                    [worker2, worker1]
-                };
+                let (_transfer, workers) = engine.transfer_workers();
                 let mut offset = self.offset;
                 let device_lost = DeviceLost {
                     index: engine.info.index,
@@ -806,12 +749,7 @@ impl DeviceEngineBuffer for DeviceBuffer {
                     };
                     let future = worker.send(op).map_err(|_| device_lost)?;
                     if let Some(prev_future) = prev_future.take() {
-                        while !prev_future.ready() {
-                            if engine.exited.load(Ordering::Relaxed) {
-                                return Err(device_lost.into());
-                            }
-                            //std::thread::sleep(Duration::from_micros(1));
-                        }
+                        engine.wait_for_future(&prev_future)?;
                     }
                     src.write().unwrap()[..data.len()].copy_from_slice(data);
                     submit.store(true, Ordering::Relaxed);
@@ -825,7 +763,6 @@ impl DeviceEngineBuffer for DeviceBuffer {
     fn download(&self, data: &mut [u8]) -> Result<()> {
         if let Some(buffer) = self.inner.as_ref() {
             let engine = &self.engine;
-            let device = &engine.device;
             let device_lost = DeviceLost {
                 index: engine.info.index,
                 handle: engine.handle(),
@@ -840,17 +777,6 @@ impl DeviceEngineBuffer for DeviceBuffer {
                     .unwrap();
                 data.copy_from_slice(&mapped[..data.len()]);
                 return Ok(());
-                /*loop {
-                    if let Ok(mapped) = buffer_inner
-                        .buffer
-                        .read(buffer_inner.offset..buffer_inner.offset + data.len() as u64)
-                    {
-                        data.copy_from_slice(&mapped[..data.len()]);
-                        return Ok(());
-                    } else {
-                        //std::thread::sleep(Duration::from_micros(1));
-                    }
-                }*/
             }
             let (_transfer, workers) = engine.transfer_workers();
             let mut prev_future = Some(prev_future.clone());
@@ -907,14 +833,12 @@ impl DeviceEngineBuffer for DeviceBuffer {
         let output = dst;
         let buffer1 = self.inner.as_ref().unwrap();
         let engine1 = &self.engine;
-        let device1 = &engine1.device;
         let device_lost1 = DeviceLost {
             index: engine1.info.index,
             handle: engine1.handle(),
         };
         let buffer2 = output.inner.as_ref().unwrap();
         let engine2 = &output.engine;
-        let device2 = &engine2.device;
         let device_lost2 = DeviceLost {
             index: engine2.info.index,
             handle: engine2.handle(),
@@ -936,22 +860,6 @@ impl DeviceEngineBuffer for DeviceBuffer {
                     output.upload(&mapped1)?;
                 }
                 return Ok(());
-                /*
-                if let Ok(mapped1) = buffer_inner1
-                    .buffer
-                    .read(buffer_inner1.offset..buffer_inner1.offset + self.len() as u64)
-                {
-                    if dst.host_visible() {
-                        let mut mapped2 =
-                            buffer_inner2.buffer.write(0..output.len() as u64).unwrap();
-                        mapped2.copy_from_slice(&mapped1[..output.len()]);
-                    } else {
-                        output.upload(&mapped1)?;
-                    }
-                    return Ok(());
-                } else {
-                    std::thread::sleep(Duration::from_micros(1));
-                }*/
             }
         } else if output.host_visible() {
             let mut mapped2 = buffer_inner2.buffer.write(0..output.len() as u64).unwrap();
@@ -1054,8 +962,21 @@ impl DeviceEngineBuffer for DeviceBuffer {
     fn len(&self) -> usize {
         self.len
     }
-    fn slice(self: &Arc<Self>, bounds: impl RangeBounds<usize>) -> Option<Arc<Self>> {
-        todo!()
+    fn slice(self: &Arc<Self>, range: Range<usize>) -> Option<Arc<Self>> {
+        let Range { start, end } = range;
+        if start > self.len {
+            return None;
+        }
+        if end > self.len {
+            return None;
+        }
+        let offset = self.offset.checked_add(start)?;
+        let len = end.checked_sub(start)?;
+        Some(Arc::new(Self {
+            offset,
+            len,
+            ..Self::clone(self)
+        }))
     }
 }
 
@@ -1075,7 +996,7 @@ impl KernelInner {
         let device = &engine.device;
         let stages = ShaderStages {
             compute: true,
-            ..ShaderStages::none()
+            ..ShaderStages::empty()
         };
         let descriptor_requirements = desc
             .slice_descs
@@ -1130,7 +1051,7 @@ impl KernelInner {
             )?
         };
         let bindings = (0..desc.slice_descs.len())
-            .map(|(binding)| {
+            .map(|binding| {
                 let descriptor_set_layout_binding = DescriptorSetLayoutBinding {
                     descriptor_count: 1,
                     stages,
@@ -1205,7 +1126,6 @@ impl DeviceEngineKernel for Kernel {
         mut push_consts: Vec<u8>,
     ) -> Result<()> {
         let engine = &self.engine;
-        let device = &engine.device;
         while push_consts.len() % 4 != 0 {
             push_consts.push(0);
         }
