@@ -358,49 +358,49 @@ impl Features {
             shader_float64: false,
         }
     }
-    pub fn shader_int8(&self) -> bool {
+    pub const fn shader_int8(&self) -> bool {
         self.shader_int8
     }
     pub const fn with_shader_int8(mut self, shader_int8: bool) -> Self {
         self.shader_int8 = shader_int8;
         self
     }
-    pub fn shader_int16(&self) -> bool {
+    pub const fn shader_int16(&self) -> bool {
         self.shader_int16
     }
     pub const fn with_shader_int16(mut self, shader_int16: bool) -> Self {
         self.shader_int16 = shader_int16;
         self
     }
-    pub fn shader_int64(&self) -> bool {
+    pub const fn shader_int64(&self) -> bool {
         self.shader_int64
     }
     pub const fn with_shader_int64(mut self, shader_int64: bool) -> Self {
         self.shader_int64 = shader_int64;
         self
     }
-    pub fn shader_float16(&self) -> bool {
+    pub const fn shader_float16(&self) -> bool {
         self.shader_float16
     }
     pub const fn with_shader_float16(mut self, shader_float16: bool) -> Self {
         self.shader_float16 = shader_float16;
         self
     }
-    pub fn shader_float64(&self) -> bool {
+    pub const fn shader_float64(&self) -> bool {
         self.shader_float64
     }
     pub const fn with_shader_float64(mut self, shader_float64: bool) -> Self {
         self.shader_float64 = shader_float64;
         self
     }
-    pub fn contains(&self, other: &Features) -> bool {
+    pub const fn contains(&self, other: &Features) -> bool {
         (self.shader_int8 || !other.shader_int8)
             && (self.shader_int16 || !other.shader_int16)
             && (self.shader_int64 || !other.shader_int64)
             && (self.shader_float16 || !other.shader_float16)
             && (self.shader_float64 || !other.shader_float64)
     }
-    pub fn union(mut self, other: &Features) -> Self {
+    pub const fn union(mut self, other: &Features) -> Self {
         self.shader_int8 |= other.shader_int8;
         self.shader_int16 |= other.shader_int16;
         self.shader_int64 |= other.shader_int64;

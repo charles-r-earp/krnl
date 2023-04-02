@@ -3,6 +3,10 @@ name = "krnlc"
 version = "0.0.1"
 edition = "2021"
 publish = false
+autobins = false 
+autoexamples = false
+autotests = false
+autobenches = false
 
 [workspace]
 

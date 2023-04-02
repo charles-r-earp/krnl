@@ -34,7 +34,7 @@ use vulkano::{
     },
     device::{Device, DeviceCreateInfo, DeviceOwned, Queue, QueueCreateInfo},
     instance::{Instance, InstanceCreateInfo, Version},
-    library::VulkanLibrary,
+    library::{LoadingError, VulkanLibrary},
     memory::allocator::{GenericMemoryAllocatorCreateInfo, StandardMemoryAllocator},
     pipeline::{ComputePipeline, Pipeline, PipelineBindPoint},
     shader::{
@@ -43,6 +43,38 @@ use vulkano::{
     sync::Fence,
     VulkanObject,
 };
+
+#[cfg(any(target_os = "ios", target_os = "macos"))]
+struct MoltenLoader;
+
+#[cfg(any(target_os = "ios", target_os = "macos"))]
+unsafe impl vulkano::library::Loader for MoltenLoader {
+    unsafe fn get_instance_proc_addr(
+        &self,
+        instance: ash::vk::Instance,
+        name: *const std::os::raw::c_char,
+    ) -> ash::vk::PFN_vkVoidFunction {
+        unsafe { ash_molten::load().get_instance_proc_addr(instance, name) }
+    }
+}
+
+fn vulkan_library() -> Result<Arc<VulkanLibrary>, LoadingError> {
+    #[cfg(target_os = "ios")]
+    {
+        VulkanLibrary::with_loader(MoltenLoader)
+    }
+    #[cfg(target_os = "macos")]
+    {
+        match VulkanLibrary::new() {
+            Err(LoadingError::LibraryLoadFailure(_)) => VulkanLibrary::with_loader(MoltenLoader),
+            result => result,
+        }
+    }
+    #[cfg(not(any(target_os = "ios", target_os = "macos")))]
+    {
+        VulkanLibrary::new()
+    }
+}
 
 pub struct Engine {
     info: Arc<DeviceInfo>,
@@ -90,10 +122,8 @@ impl DeviceEngine for Engine {
             index,
             optimal_features,
         } = options;
-        let instance = Instance::new(
-            VulkanLibrary::new()?,
-            InstanceCreateInfo::application_from_cargo_toml(),
-        )?;
+        let library = vulkan_library()?;
+        let instance = Instance::new(library, InstanceCreateInfo::application_from_cargo_toml())?;
         let physical_devices = instance.enumerate_physical_devices()?;
         let devices = physical_devices.len();
         let physical_device = if let Some(physical_device) = physical_devices.skip(index).next() {

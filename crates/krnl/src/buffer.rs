@@ -15,6 +15,7 @@ use std::{
     marker::PhantomData,
     mem::{forget, size_of},
     ops::{Bound, RangeBounds},
+    sync::Arc,
 };
 
 #[cfg(feature = "device")]
@@ -36,7 +37,7 @@ impl RawHostSlice {
 }
 
 #[derive(Clone)]
-pub struct RawSlice {
+struct RawSlice {
     inner: RawSliceInner,
 }
 
@@ -119,7 +120,7 @@ enum RawSliceInner {
 }
 
 #[derive(derive_more::Deref, derive_more::DerefMut)]
-pub struct RawBuffer {
+struct RawBuffer {
     #[deref]
     #[deref_mut]
     slice: RawSlice,
@@ -132,8 +133,8 @@ impl Drop for RawBuffer {
         #[cfg_attr(not(feature = "device"), allow(irrefutable_let_patterns))]
         if let RawSliceInner::Host(slice) = self.inner {
             let ptr = slice.ptr;
-            let len = slice.len * self.width;
-            let cap = self.cap * self.width;
+            let len = slice.len / self.width;
+            let cap = self.cap / self.width;
             unsafe {
                 match self.width {
                     1 => {
@@ -160,7 +161,7 @@ mod sealed {
 }
 use sealed::Sealed;
 
-macro_for!($S in [ScalarBufferRepr] {
+macro_for!($S in [ScalarBufferRepr, ScalarArcBufferRepr] {
     impl Sealed for $S {}
     unsafe impl Send for $S {}
     unsafe impl Sync for $S {}
@@ -173,30 +174,63 @@ macro_for!($S in [ScalarSliceRepr,ScalarSliceMutRepr] {
 });
 
 pub trait ScalarData: Sealed {
+    #[doc(hidden)]
     fn as_scalar_slice(&self) -> ScalarSliceRepr;
+    #[doc(hidden)]
+    fn get_scalar_slice_mut(&mut self) -> Option<ScalarSliceMutRepr> {
+        None
+    }
+    #[doc(hidden)]
     fn device(&self) -> Device {
         self.as_scalar_slice().raw.device()
     }
+    #[doc(hidden)]
     fn scalar_type(&self) -> ScalarType {
         self.as_scalar_slice().scalar_type
     }
+    #[doc(hidden)]
     fn len(&self) -> usize {
         let slice = self.as_scalar_slice();
         slice.raw.len() / slice.scalar_type().size()
     }
+    #[doc(hidden)]
     fn try_into_scalar_buffer(self) -> Result<ScalarBufferRepr, Self>
     where
         Self: Sized,
     {
         Err(self)
     }
+    #[doc(hidden)]
+    fn try_into_scalar_arc_buffer(self) -> Result<ScalarArcBufferRepr, Self>
+    where
+        Self: Sized,
+    {
+        match self.try_into_scalar_buffer() {
+            Ok(buffer) => Ok(ScalarArcBufferRepr::from_scalar_buffer(buffer)),
+            Err(this) => Err(this),
+        }
+    }
+    #[doc(hidden)]
+    fn to_scalar_arc_buffer(&self) -> Result<ScalarArcBufferRepr> {
+        Ok(ScalarArcBufferRepr::from_scalar_buffer(
+            self.as_scalar_slice().to_scalar_buffer()?,
+        ))
+    }
 }
 
 pub trait ScalarDataMut: ScalarData {
+    #[doc(hidden)]
     fn as_scalar_slice_mut(&mut self) -> ScalarSliceMutRepr;
 }
 
-pub trait ScalarDataOwned: ScalarData + From<ScalarBufferRepr> {}
+pub trait ScalarDataOwned: ScalarData {
+    #[doc(hidden)]
+    fn from_scalar_buffer(buffer: ScalarBufferRepr) -> Self
+    where
+        Self: Sized;
+    #[doc(hidden)]
+    fn make_scalar_slice_mut(&mut self) -> Result<ScalarSliceMutRepr>;
+}
 
 pub struct ScalarBufferRepr {
     raw: RawBuffer,
@@ -220,6 +254,9 @@ impl ScalarData for ScalarBufferRepr {
             _m: PhantomData::default(),
         }
     }
+    fn get_scalar_slice_mut(&mut self) -> Option<ScalarSliceMutRepr> {
+        Some(self.as_scalar_slice_mut())
+    }
     fn try_into_scalar_buffer(self) -> Result<Self, Self>
     where
         Self: Sized,
@@ -238,7 +275,17 @@ impl ScalarDataMut for ScalarBufferRepr {
     }
 }
 
-impl ScalarDataOwned for ScalarBufferRepr {}
+impl ScalarDataOwned for ScalarBufferRepr {
+    fn from_scalar_buffer(buffer: Self) -> Self
+    where
+        Self: Sized,
+    {
+        buffer
+    }
+    fn make_scalar_slice_mut(&mut self) -> Result<ScalarSliceMutRepr> {
+        Ok(self.as_scalar_slice_mut())
+    }
+}
 
 #[derive(Clone)]
 pub struct ScalarSliceRepr<'a> {
@@ -248,6 +295,9 @@ pub struct ScalarSliceRepr<'a> {
 }
 
 impl<'a> ScalarSliceRepr<'a> {
+    fn to_scalar_buffer(&self) -> Result<ScalarBufferRepr> {
+        Ok(ScalarSlice { data: self.clone() }.to_owned()?.data)
+    }
     fn bitcast(
         self,
         scalar_type: ScalarType,
@@ -262,6 +312,16 @@ impl<'a> ScalarSliceRepr<'a> {
     fn slice(mut self, range: impl RangeBounds<usize>) -> Option<Self> {
         self.raw = self.raw.slice(range, self.scalar_type)?;
         Some(self)
+    }
+}
+
+impl<'a, T: Scalar> From<SliceRepr<'a, T>> for ScalarSliceRepr<'a> {
+    fn from(slice: SliceRepr<'a, T>) -> Self {
+        Self {
+            raw: slice.raw,
+            scalar_type: T::scalar_type(),
+            _m: PhantomData::default(),
+        }
     }
 }
 
@@ -300,6 +360,16 @@ impl<'a> ScalarSliceMutRepr<'a> {
     }
 }
 
+impl<'a, T: Scalar> From<SliceMutRepr<'a, T>> for ScalarSliceMutRepr<'a> {
+    fn from(slice: SliceMutRepr<'a, T>) -> Self {
+        Self {
+            raw: slice.raw,
+            scalar_type: T::scalar_type(),
+            _m: PhantomData::default(),
+        }
+    }
+}
+
 impl ScalarData for ScalarSliceMutRepr<'_> {
     fn as_scalar_slice(&self) -> ScalarSliceRepr {
         ScalarSliceRepr {
@@ -320,6 +390,87 @@ impl ScalarDataMut for ScalarSliceMutRepr<'_> {
     }
 }
 
+#[derive(Clone)]
+pub struct ScalarArcBufferRepr {
+    raw: Arc<RawBuffer>,
+    scalar_type: ScalarType,
+}
+
+impl From<ScalarBufferRepr> for ScalarArcBufferRepr {
+    fn from(buffer: ScalarBufferRepr) -> Self {
+        Self::from_scalar_buffer(buffer)
+    }
+}
+
+impl<T: Scalar> From<ArcBufferRepr<T>> for ScalarArcBufferRepr {
+    fn from(buffer: ArcBufferRepr<T>) -> Self {
+        Self {
+            raw: buffer.raw,
+            scalar_type: T::scalar_type(),
+        }
+    }
+}
+
+impl ScalarData for ScalarArcBufferRepr {
+    fn as_scalar_slice(&self) -> ScalarSliceRepr {
+        ScalarSliceRepr {
+            raw: self.raw.slice.clone(),
+            scalar_type: self.scalar_type,
+            _m: PhantomData::default(),
+        }
+    }
+    fn get_scalar_slice_mut(&mut self) -> Option<ScalarSliceMutRepr> {
+        let raw = Arc::get_mut(&mut self.raw)?;
+        Some(ScalarSliceMutRepr {
+            raw: raw.slice.clone(),
+            scalar_type: self.scalar_type,
+            _m: PhantomData::default(),
+        })
+    }
+    fn try_into_scalar_buffer(self) -> Result<ScalarBufferRepr, Self> {
+        match Arc::try_unwrap(self.raw) {
+            Ok(raw) => Ok(ScalarBufferRepr {
+                raw,
+                scalar_type: self.scalar_type,
+            }),
+            Err(raw) => Err(Self {
+                raw,
+                scalar_type: self.scalar_type,
+            }),
+        }
+    }
+    fn try_into_scalar_arc_buffer(self) -> Result<Self, Self> {
+        Ok(self)
+    }
+    fn to_scalar_arc_buffer(&self) -> Result<Self> {
+        Ok(self.clone())
+    }
+}
+
+impl ScalarDataOwned for ScalarArcBufferRepr {
+    fn from_scalar_buffer(buffer: ScalarBufferRepr) -> Self {
+        Self {
+            raw: Arc::new(buffer.raw),
+            scalar_type: buffer.scalar_type,
+        }
+    }
+    fn make_scalar_slice_mut(&mut self) -> Result<ScalarSliceMutRepr> {
+        if let Some(raw) = Arc::get_mut(&mut self.raw) {
+            return Ok(ScalarSliceMutRepr {
+                raw: raw.slice.clone(),
+                scalar_type: self.scalar_type,
+                _m: PhantomData::default(),
+            });
+        }
+        self.raw = Arc::new(self.as_scalar_slice().to_scalar_buffer()?.raw);
+        Ok(ScalarSliceMutRepr {
+            raw: self.raw.slice.clone(),
+            scalar_type: self.scalar_type,
+            _m: PhantomData::default(),
+        })
+    }
+}
+
 pub struct ScalarBufferBase<S: ScalarData> {
     data: S,
 }
@@ -327,6 +478,7 @@ pub struct ScalarBufferBase<S: ScalarData> {
 pub type ScalarBuffer = ScalarBufferBase<ScalarBufferRepr>;
 pub type ScalarSlice<'a> = ScalarBufferBase<ScalarSliceRepr<'a>>;
 pub type ScalarSliceMut<'a> = ScalarBufferBase<ScalarSliceMutRepr<'a>>;
+pub type ScalarArcBuffer = ScalarBufferBase<ScalarArcBufferRepr>;
 
 impl<S: ScalarDataOwned> ScalarBufferBase<S> {
     pub unsafe fn uninit(device: Device, len: usize, scalar_type: ScalarType) -> Result<Self> {
@@ -384,14 +536,32 @@ impl<S: ScalarData> ScalarBufferBase<S> {
             Err(data) => Self { data }.to_owned(),
         }
     }
-    pub fn to_owned(self) -> Result<ScalarBuffer> {
+    pub fn to_owned(&self) -> Result<ScalarBuffer> {
         self.cast(self.scalar_type())
+    }
+    pub fn into_shared(self) -> Result<ScalarArcBuffer> {
+        let data = match self.data.try_into_scalar_arc_buffer() {
+            Ok(data) => data,
+            Err(data) => data.to_scalar_arc_buffer()?,
+        };
+        Ok(ScalarArcBuffer { data })
+    }
+    pub fn to_shared(&self) -> Result<ScalarArcBuffer> {
+        let data = self.data.to_scalar_arc_buffer()?;
+        Ok(ScalarArcBuffer { data })
     }
     pub fn into_device(self, device: Device) -> Result<ScalarBuffer> {
         if device == self.device() {
             self.into_owned()
         } else {
             self.to_device(device)
+        }
+    }
+    pub fn into_device_shared(self, device: Device) -> Result<ScalarArcBuffer> {
+        if device == self.device() {
+            self.into_shared()
+        } else {
+            self.to_device(device).map(Into::into)
         }
     }
     pub fn to_device(&self, device: Device) -> Result<ScalarBuffer> {
@@ -427,6 +597,20 @@ impl<S: ScalarData> ScalarBufferBase<S> {
             });
         });
         unreachable!()
+    }
+    pub fn cast_into(self, scalar_type: ScalarType) -> Result<ScalarBuffer> {
+        if self.scalar_type() == scalar_type {
+            self.into_owned()
+        } else {
+            self.cast(scalar_type)
+        }
+    }
+    pub fn cast_shared(&self, scalar_type: ScalarType) -> Result<ScalarArcBuffer> {
+        if self.scalar_type() == scalar_type {
+            self.to_shared()
+        } else {
+            self.cast(scalar_type).map(Into::into)
+        }
     }
     pub fn bitcast(&self, scalar_type: ScalarType) -> Result<ScalarSlice, PodCastError> {
         let data = self.data.as_scalar_slice().bitcast(scalar_type)?;
@@ -476,7 +660,7 @@ impl ScalarSliceMut<'_> {
 
 impl<T: Scalar, S: ScalarDataOwned> From<Buffer<T>> for ScalarBufferBase<S> {
     fn from(buffer: Buffer<T>) -> Self {
-        let data = ScalarBufferRepr::from(buffer.data).into();
+        let data = S::from_scalar_buffer(ScalarBufferRepr::from(buffer.data));
         Self { data }
     }
 }
@@ -503,7 +687,23 @@ impl<'a, T: Scalar> From<SliceMut<'a, T>> for ScalarSliceMut<'a> {
     }
 }
 
-macro_for!($S in [BufferRepr] {
+impl From<ScalarBuffer> for ScalarArcBuffer {
+    fn from(buffer: ScalarBuffer) -> Self {
+        Self {
+            data: buffer.data.into(),
+        }
+    }
+}
+
+impl<T: Scalar> From<ArcBuffer<T>> for ScalarArcBuffer {
+    fn from(buffer: ArcBuffer<T>) -> Self {
+        Self {
+            data: buffer.data.into(),
+        }
+    }
+}
+
+macro_for!($S in [BufferRepr, ArcBufferRepr] {
     impl<T: Scalar> Sealed for $S<T> {}
     unsafe impl<T: Scalar> Send for $S<T> {}
     unsafe impl<T: Scalar> Sync for $S<T> {}
@@ -517,26 +717,57 @@ macro_for!($S in [SliceRepr, SliceMutRepr] {
 
 pub trait Data: ScalarData {
     type Elem: Scalar;
+    #[doc(hidden)]
     fn as_slice(&self) -> SliceRepr<Self::Elem>;
+    #[doc(hidden)]
+    fn get_slice_mut(&mut self) -> Option<SliceMutRepr<Self::Elem>> {
+        None
+    }
+    #[doc(hidden)]
     fn as_host_slice(&self) -> Option<&[Self::Elem]> {
         self.as_slice().into_host_slice()
     }
+    #[doc(hidden)]
     fn try_into_buffer(self) -> Result<BufferRepr<Self::Elem>, Self>
     where
         Self: Sized,
     {
         Err(self)
     }
+    #[doc(hidden)]
+    fn try_into_arc_buffer(self) -> Result<ArcBufferRepr<Self::Elem>, Self>
+    where
+        Self: Sized,
+    {
+        match self.try_into_buffer() {
+            Ok(buffer) => Ok(ArcBufferRepr::from_buffer(buffer)),
+            Err(this) => Err(this),
+        }
+    }
+    #[doc(hidden)]
+    fn to_arc_buffer(&self) -> Result<ArcBufferRepr<Self::Elem>>
+    where
+        Self: Sized,
+    {
+        Ok(ArcBufferRepr::from_buffer(self.as_slice().to_buffer()?))
+    }
 }
 
 pub trait DataMut: Data + ScalarDataMut {
+    #[doc(hidden)]
     fn as_slice_mut(&mut self) -> SliceMutRepr<Self::Elem>;
+    #[doc(hidden)]
     fn as_host_slice_mut(&mut self) -> Option<&mut [Self::Elem]> {
         self.as_slice_mut().into_host_slice_mut()
     }
 }
 
-pub trait DataOwned: Data + From<BufferRepr<Self::Elem>> {}
+pub trait DataOwned: Data {
+    #[doc(hidden)]
+    fn from_buffer(buffer: BufferRepr<Self::Elem>) -> Self;
+    #[doc(hidden)]
+    fn make_slice_mut(&mut self) -> Result<SliceMutRepr<Self::Elem>>;
+}
 
 pub struct BufferRepr<T: Scalar> {
     raw: RawBuffer,
@@ -646,6 +877,9 @@ impl<T: Scalar> Data for BufferRepr<T> {
             _m: PhantomData::default(),
         }
     }
+    fn get_slice_mut(&mut self) -> Option<SliceMutRepr<T>> {
+        Some(self.as_slice_mut())
+    }
     fn try_into_buffer(self) -> Result<Self, Self>
     where
         Self: Sized,
@@ -663,7 +897,14 @@ impl<T: Scalar> DataMut for BufferRepr<T> {
     }
 }
 
-impl<T: Scalar> DataOwned for BufferRepr<T> {}
+impl<T: Scalar> DataOwned for BufferRepr<T> {
+    fn from_buffer(buffer: Self) -> Self {
+        buffer
+    }
+    fn make_slice_mut(&mut self) -> Result<SliceMutRepr<T>> {
+        Ok(self.as_slice_mut())
+    }
+}
 
 impl<T: Scalar> TryFrom<ScalarBufferRepr> for BufferRepr<T> {
     type Error = ScalarBufferRepr;
@@ -716,9 +957,9 @@ impl<'a, T: Scalar> SliceRepr<'a, T> {
             self.to_device(Device::host())?.into_vec()
         }
     }
-    /*fn to_buffer(&self) -> Result<BufferRepr<T>> {
+    fn to_buffer(&self) -> Result<BufferRepr<T>> {
         self.to_device(self.device())
-    }*/
+    }
     fn to_device(&self, device: Device) -> Result<BufferRepr<T>> {
         let mut output = unsafe { BufferRepr::uninit(device, self.len())? };
         output.as_slice_mut().copy_from_slice(self)?;
@@ -894,6 +1135,113 @@ impl<'a, T: Scalar> TryFrom<ScalarSliceMutRepr<'a>> for SliceMutRepr<'a, T> {
     }
 }
 
+#[derive(Clone)]
+pub struct ArcBufferRepr<T> {
+    raw: Arc<RawBuffer>,
+    _m: PhantomData<T>,
+}
+
+impl<T: Scalar> From<BufferRepr<T>> for ArcBufferRepr<T> {
+    fn from(buffer: BufferRepr<T>) -> Self {
+        Self {
+            raw: Arc::new(buffer.raw),
+            _m: PhantomData::default(),
+        }
+    }
+}
+
+impl<T: Scalar> TryFrom<ScalarArcBufferRepr> for ArcBufferRepr<T> {
+    type Error = ScalarArcBufferRepr;
+    fn try_from(buffer: ScalarArcBufferRepr) -> Result<Self, Self::Error> {
+        if T::scalar_type() == buffer.scalar_type {
+            Ok(Self {
+                raw: buffer.raw,
+                _m: PhantomData::default(),
+            })
+        } else {
+            Err(buffer)
+        }
+    }
+}
+
+impl<T: Scalar> ScalarData for ArcBufferRepr<T> {
+    fn as_scalar_slice(&self) -> ScalarSliceRepr {
+        self.as_slice().into()
+    }
+    fn get_scalar_slice_mut(&mut self) -> Option<ScalarSliceMutRepr> {
+        self.get_slice_mut().map(Into::into)
+    }
+    fn try_into_scalar_buffer(self) -> Result<ScalarBufferRepr, Self> {
+        self.try_into_buffer().map(Into::into)
+    }
+    fn try_into_scalar_arc_buffer(self) -> Result<ScalarArcBufferRepr, Self> {
+        self.try_into_arc_buffer().map(Into::into)
+    }
+    fn to_scalar_arc_buffer(&self) -> Result<ScalarArcBufferRepr> {
+        Ok(self.clone().into())
+    }
+}
+
+impl<T: Scalar> Data for ArcBufferRepr<T> {
+    type Elem = T;
+    fn as_slice(&self) -> SliceRepr<T> {
+        SliceRepr {
+            raw: self.raw.slice.clone(),
+            _m: PhantomData::default(),
+        }
+    }
+    fn get_slice_mut(&mut self) -> Option<SliceMutRepr<T>> {
+        let raw = Arc::get_mut(&mut self.raw)?;
+        Some(SliceMutRepr {
+            raw: raw.slice.clone(),
+            _m: PhantomData,
+        })
+    }
+    fn try_into_buffer(self) -> Result<BufferRepr<T>, Self> {
+        match Arc::try_unwrap(self.raw) {
+            Ok(raw) => Ok(BufferRepr {
+                raw,
+                _m: PhantomData::default(),
+            }),
+            Err(raw) => Err(Self {
+                raw,
+                _m: PhantomData::default(),
+            }),
+        }
+    }
+    fn try_into_arc_buffer(self) -> Result<Self, Self>
+    where
+        Self: Sized,
+    {
+        Ok(self)
+    }
+    fn to_arc_buffer(&self) -> Result<Self> {
+        Ok(self.clone())
+    }
+}
+
+impl<T: Scalar> DataOwned for ArcBufferRepr<T> {
+    fn from_buffer(buffer: BufferRepr<T>) -> Self {
+        Self {
+            raw: Arc::new(buffer.raw),
+            _m: PhantomData::default(),
+        }
+    }
+    fn make_slice_mut(&mut self) -> Result<SliceMutRepr<T>> {
+        if let Some(raw) = Arc::get_mut(&mut self.raw) {
+            return Ok(SliceMutRepr {
+                raw: raw.slice.clone(),
+                _m: PhantomData::default(),
+            });
+        }
+        self.raw = Arc::new(self.as_slice().to_buffer()?.raw);
+        Ok(SliceMutRepr {
+            raw: self.raw.slice.clone(),
+            _m: PhantomData::default(),
+        })
+    }
+}
+
 pub struct BufferBase<S: Data> {
     data: S,
 }
@@ -901,6 +1249,7 @@ pub struct BufferBase<S: Data> {
 pub type Buffer<T> = BufferBase<BufferRepr<T>>;
 pub type Slice<'a, T> = BufferBase<SliceRepr<'a, T>>;
 pub type SliceMut<'a, T> = BufferBase<SliceMutRepr<'a, T>>;
+pub type ArcBuffer<T> = BufferBase<ArcBufferRepr<T>>;
 
 impl<T: Scalar, S: DataOwned<Elem = T>> From<Vec<T>> for BufferBase<S> {
     fn from(vec: Vec<T>) -> Self {
@@ -950,16 +1299,34 @@ impl<'a, T: Scalar> TryFrom<ScalarSliceMut<'a>> for SliceMut<'a, T> {
     }
 }
 
+impl<T: Scalar> TryFrom<ScalarArcBuffer> for ArcBuffer<T> {
+    type Error = ScalarArcBuffer;
+    fn try_from(buffer: ScalarArcBuffer) -> Result<Self, Self::Error> {
+        match buffer.data.try_into() {
+            Ok(data) => Ok(Self { data }),
+            Err(data) => Err(ScalarArcBuffer { data }),
+        }
+    }
+}
+
+impl<T: Scalar> From<Buffer<T>> for ArcBuffer<T> {
+    fn from(buffer: Buffer<T>) -> Self {
+        Self {
+            data: buffer.data.into(),
+        }
+    }
+}
+
 impl<T: Scalar, S: DataOwned<Elem = T>> BufferBase<S> {
     pub unsafe fn uninit(device: Device, len: usize) -> Result<Self> {
-        let data = unsafe { BufferRepr::uninit(device, len)?.into() };
+        let data = S::from_buffer(unsafe { BufferRepr::uninit(device, len)? });
         Ok(Self { data })
     }
     pub fn from_elem(device: Device, len: usize, elem: T) -> Result<Self> {
         let mut output = unsafe { Buffer::uninit(device, len)? };
         output.fill(elem)?;
         Ok(Self {
-            data: output.data.into(),
+            data: S::from_buffer(output.data),
         })
     }
     pub fn zeros(device: Device, len: usize) -> Result<Self> {
@@ -969,7 +1336,7 @@ impl<T: Scalar, S: DataOwned<Elem = T>> BufferBase<S> {
         Self::from_elem(device, len, T::one())
     }
     pub fn from_vec(vec: Vec<T>) -> Self {
-        let data = BufferRepr::from_vec(vec).into();
+        let data = S::from_buffer(BufferRepr::from_vec(vec));
         Self { data }
     }
 }
@@ -1040,6 +1407,24 @@ impl<T: Scalar, S: Data<Elem = T>> BufferBase<S> {
     }
     pub fn to_owned(&self) -> Result<Buffer<T>> {
         self.cast()
+    }
+    pub fn into_shared(self) -> Result<ArcBuffer<T>> {
+        let data = match self.data.try_into_arc_buffer() {
+            Ok(data) => data,
+            Err(data) => data.to_arc_buffer()?,
+        };
+        Ok(ArcBuffer { data })
+    }
+    pub fn to_shared(&self) -> Result<ArcBuffer<T>> {
+        let data = self.data.to_arc_buffer()?;
+        Ok(ArcBuffer { data })
+    }
+    pub fn into_device_shared(self, device: Device) -> Result<ArcBuffer<T>> {
+        if device == self.device() {
+            self.into_shared()
+        } else {
+            self.to_device(device).map(Into::into)
+        }
     }
     pub fn into_device(self, device: Device) -> Result<Buffer<T>> {
         if device == self.device() {
@@ -1160,6 +1545,14 @@ impl<T: Scalar, S: Data<Elem = T>> BufferBase<S> {
             Ok(ScalarBuffer::from(buffer).try_into().ok().unwrap())
         } else {
             self.cast()
+        }
+    }
+    pub fn cast_shared<Y: Scalar>(&self) -> Result<ArcBuffer<Y>> {
+        if T::scalar_type() == Y::scalar_type() {
+            let buffer = self.to_shared()?;
+            Ok(ScalarArcBuffer::from(buffer).try_into().ok().unwrap())
+        } else {
+            self.cast().map(Into::into)
         }
     }
     pub fn bitcast<Y: Scalar>(&self) -> Result<Slice<Y>, bytemuck::PodCastError> {

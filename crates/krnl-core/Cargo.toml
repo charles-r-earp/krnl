@@ -9,6 +9,10 @@ license.workspace = true
 readme.workspace = true
 repository.workspace = true
 publish = false
+autobins = false 
+autoexamples = false
+autotests = false
+autobenches = false
 
 [dependencies]
 krnl-macros = { path = "../krnl-macros" }

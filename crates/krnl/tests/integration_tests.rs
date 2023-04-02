@@ -11,7 +11,7 @@ use std::str::FromStr;
 
 fn main() {
     let args = Arguments::from_args();
-    let tests = if cfg!(feature = "device") {
+    let tests = if cfg!(feature = "device") && !cfg!(miri) {
         let devices: Vec<_> = [Device::builder().build().unwrap()]
             .into_iter()
             .chain((1..).map_while(|i| Device::builder().index(i).build().ok()))
@@ -63,7 +63,14 @@ fn buffer_tests(device: &Device, device2: Option<&Device>) -> impl IntoIterator<
         [0, 1, 3, 4, 16, 67, 157].into_iter()
     }
     fn buffer_transfer_test_lengths() -> impl ExactSizeIterator<Item = usize> {
-        [0, 1, 3, 4, 16, 55_337_791].into_iter()
+        #[cfg(miri)]
+        {
+            [0, 1, 3, 4, 16, 345].into_iter()
+        }
+        #[cfg(not(miri))]
+        {
+            [0, 1, 3, 4, 16, 345, 9_337_791].into_iter()
+        }
     }
     let features = device
         .info()
@@ -213,6 +220,9 @@ fn buffer_tests(device: &Device, device2: Option<&Device>) -> impl IntoIterator<
                 let bytemuck_result =
                     bytemuck::try_cast_slice::<X, Y>(&x_host[range.clone()]).map(|_| ());
                 let result = x.slice(range).unwrap().bitcast::<Y>().map(|_| ());
+                #[cfg(miri)]
+                let _ = (bytemuck_result, result);
+                #[cfg(not(miri))]
                 assert_eq!(result, bytemuck_result);
             }
         }

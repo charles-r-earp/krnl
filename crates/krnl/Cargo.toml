@@ -10,6 +10,10 @@ license.workspace = true
 readme.workspace = true
 repository.workspace = true
 publish = false
+autobins = false 
+autoexamples = false
+autotests = false
+autobenches = false
 
 [dependencies]
 krnl-macros = { path = "../krnl-macros" }
@@ -30,11 +34,11 @@ bincode.workspace = true
 dashmap = { version = "5.3.4", optional = true }
 rspirv = { workspace = true, optional = true }
 
-ash = { version = "0.37.1", optional = true }
+ash = { version = "0.37.1", optional = true, features = ["linked"] }
 atomicbox = { version = "0.4.0", optional = true }
 
 [target."cfg(any(target_os = \"ios\", target_os = \"macos\"))".dependencies]
-ash-molten = { version = "0.12.0", features = ["pre-built"], optional = true }
+ash-molten = { version = "0.13.1", features = ["pre-built"], optional = true }
 
 [features]
 device = ["dep:vulkano", "dep:ash", "dep:ash-molten", "dep:dashmap", "dep:rspirv", "dep:atomicbox"]
