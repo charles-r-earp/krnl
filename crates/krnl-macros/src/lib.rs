@@ -5,7 +5,7 @@ use proc_macro2::{Span as Span2, TokenStream as TokenStream2};
 use quote::{format_ident, quote, ToTokens};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::{
-    collections::HashMap,
+    collections::hash_map::{DefaultHasher, HashMap},
     hash::{Hash, Hasher},
     str::FromStr,
 };
@@ -102,7 +102,7 @@ pub fn module(attr: TokenStream, item: TokenStream) -> TokenStream {
     });
     if build {
         let source = item.tokens.to_string();
-        let mut hasher = std::collections::hash_map::DefaultHasher::default();
+        let mut hasher = DefaultHasher::default();
         source.hash(&mut hasher);
         let hash = hasher.finish();
         let name_with_hash = format_ident!("{ident}_{hash:x}", ident = item.ident);
@@ -772,10 +772,17 @@ struct KernelMeta {
 
 impl KernelMeta {
     fn desc(&self) -> Result<KernelDesc> {
-        let mut kernel_desc = KernelDesc::default();
-        kernel_desc.name = self.ident.to_string();
-        kernel_desc.safe = self.unsafe_token.is_none();
-        kernel_desc.threads = self.attr_meta.threads.clone();
+        let mut kernel_desc = KernelDesc {
+            name: self.ident.to_string(),
+            safe: self.unsafe_token.is_none(),
+            threads: self.attr_meta.threads.clone(),
+            ..KernelDesc::default()
+        };
+        kernel_desc.hash = {
+            let mut hasher = DefaultHasher::default();
+            self.block.to_token_stream().to_string().hash(&mut hasher);
+            hasher.finish()
+        };
         for spec in self.spec_metas.iter() {
             let thread_dim = self.attr_meta.thread_dims.iter().position(|dim| {
                 if let Some(ident) = dim.ident.as_ref() {
@@ -1210,6 +1217,7 @@ impl<'de> Deserialize<'de> for ScalarType {
 #[derive(Default, Serialize, Deserialize)]
 struct KernelDesc {
     name: String,
+    hash: u64,
     spirv: Vec<u32>,
     features: Features,
     threads: Vec<u32>,
@@ -1221,15 +1229,15 @@ struct KernelDesc {
 
 impl KernelDesc {
     fn encode(&self) -> Result<String> {
-        let mut entry_point = "__krnl_kernel_data_".to_string();
-        let bytes = bincode::serialize(self).map_err(|e| Error::new(Span2::call_site(), e))?;
-        for byte in bytes.iter().copied() {
+        //let mut entry_point = "__krnl_kernel_data_".to_string();
+        let bytes = bincode2::serialize(self).map_err(|e| Error::new(Span2::call_site(), e))?;
+        /*for byte in bytes.iter().copied() {
             let a = byte / 16;
             let b = byte % 16;
             entry_point.push(char::from_digit(a as _, 16).unwrap());
             entry_point.push(char::from_digit(b as _, 16).unwrap());
-        }
-        Ok(entry_point)
+        }*/
+        Ok(format!("__krnl_kernel_data_{}", hex::encode(&bytes)))
     }
     fn push_const_fields(&self) -> TokenStream2 {
         let mut tokens = TokenStream2::new();
@@ -1433,6 +1441,7 @@ fn kernel_impl(attr: KernelAttr, item: KernelItem) -> Result<TokenStream2> {
         let dispatch_slice_args = kernel_meta.dispatch_slice_args();
         let dispatch_push_args = kernel_meta.dispatch_push_args();
         let dimensionality = LitInt::new(&dimensionality.to_string(), Span2::call_site());
+        let hash = kernel_desc.hash;
         let safe = unsafe_token.is_none();
         let host_array_length_checks = kernel_meta.host_array_length_checks();
         let kernel_builder_specialize_fn = if !kernel_desc.spec_descs.is_empty() {
@@ -1472,6 +1481,7 @@ fn kernel_impl(attr: KernelAttr, item: KernelItem) -> Result<TokenStream2> {
                         let bytes = __krnl_kernel!(#ident);
                         let inner = KernelBuilderBase::from_bytes(bytes)
                             .map_err(|e| e.to_string())?;
+                        assert_eq!(inner.hash(), #hash);
                         assert_eq!(inner.safe(), #safe);
                         Ok(inner)
                     });
@@ -1532,15 +1542,21 @@ fn kernel_impl(attr: KernelAttr, item: KernelItem) -> Result<TokenStream2> {
 
 #[proc_macro]
 pub fn __krnl_module(input: TokenStream) -> TokenStream {
+    use flate2::read::GzDecoder;
+
     let version = env!("CARGO_PKG_VERSION");
     let input = parse_macro_input!(input as KrnlcCacheInput);
-    let cache_bytes: Vec<u8> = input
-        .bytes
+    let cache_bytes: Vec<_> = input
+        .data
         .iter()
-        .map(|x| x.base10_parse().unwrap())
+        .flat_map(|ident| {
+            let string = ident.to_string();
+            let data = string.strip_prefix("x").expect("Expected x!");
+            hex::decode(data).expect("Expected cache as hex string!")
+        })
         .collect();
     let krnlc_version: String =
-        bincode::deserialize(&cache_bytes).expect("Expected krnlc version!");
+        bincode2::deserialize_from(GzDecoder::new(&*cache_bytes)).expect("Expected krnlc version!");
     let mut error = None;
     if krnlc_version != version {
         error.replace(format!(
@@ -1549,18 +1565,20 @@ pub fn __krnl_module(input: TokenStream) -> TokenStream {
     }
     let mut macro_arms = Vec::new();
     if error.is_none() {
-        match bincode::deserialize::<KrnlcCache>(&cache_bytes) {
+        match bincode2::deserialize_from::<_, KrnlcCache>(GzDecoder::new(&*cache_bytes)) {
             Ok(cache) => {
                 if let Some(modules) = cache.modules.as_ref() {
                     let kernel_count = modules.values().map(|kernels| kernels.len()).sum();
                     macro_arms.reserve(kernel_count);
+                    let mut bytes = Vec::new();
                     if let Some(module) = modules.get(&input.module.to_string()) {
                         for (kernel, kernel_desc) in module {
                             let ident = format_ident!("{kernel}");
-                            let bytes = bincode::serialize(kernel_desc).unwrap();
-                            let bytes = bytes.into_iter().map(|x| {
+                            bytes.clear();
+                            bincode2::serialize_into(&mut bytes, kernel_desc).unwrap();
+                            let bytes = bytes.iter().map(|x| {
                                 use proc_macro2::{Literal, TokenTree};
-                                TokenTree::Literal(Literal::u8_unsuffixed(x))
+                                TokenTree::Literal(Literal::u8_unsuffixed(*x))
                             });
                             macro_arms.push(quote! {
                                 (#ident) => {
@@ -1601,11 +1619,8 @@ pub fn __krnl_module(input: TokenStream) -> TokenStream {
 struct KrnlcCacheInput {
     module: Ident,
     comma: Comma,
-    #[bracket]
-    bracket: Bracket,
-    #[inside(bracket)]
     #[call(Punctuated::parse_terminated)]
-    bytes: Punctuated<LitInt, Comma>,
+    data: Punctuated<Ident, Comma>,
 }
 
 #[derive(Deserialize)]

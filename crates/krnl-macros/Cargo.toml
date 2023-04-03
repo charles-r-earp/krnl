@@ -22,7 +22,9 @@ syn = { version = "1.0.33", features = ["full", "extra-traits"] }
 quote = "1.0.7"
 proc-macro2 = "1.0.18"
 derive-syn-parse = "0.1.5"
-bincode = { workspace = true }
+bincode2.workspace = true
+flate2.workspace = true
+hex.workspace = true
 prettyplease = "0.1.21"
 serde = { workspace = true, default-features = false, features = ["derive"] }
 derive_more = { workspace = true, default-features = false, features = ["is_variant"] }

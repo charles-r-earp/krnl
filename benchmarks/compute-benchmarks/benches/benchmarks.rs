@@ -282,7 +282,7 @@ pub fn criterion_benchmark(c: &mut Criterion) {
         }
         for (s, n) in lens {
             c.bench_function(&format!("upload_{s}_ocl"), |b| {
-                let upload = ocl.upload(&x[..n]).unwrap();
+                let mut upload = ocl.upload(&x[..n]).unwrap();
                 b.iter_custom(move |i| {
                     let mut duration = Duration::default();
                     for _ in 0..i {

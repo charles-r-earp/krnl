@@ -10,13 +10,19 @@ trait BufferExt {
     type Elem: OclPrm;
     fn from_slice(queue: Queue, data: &[Self::Elem]) -> Result<Self>
     where
+        Self: Sized,
+    {
+        Self::from_slice_with_flags(queue, data, MemFlags::READ_WRITE | MemFlags::HOST_NO_ACCESS)
+    }
+    fn from_slice_with_flags(queue: Queue, data: &[Self::Elem], flags: MemFlags) -> Result<Self>
+    where
         Self: Sized;
     fn to_vec(&self) -> Result<Vec<Self::Elem>>;
 }
 
 impl<T: OclPrm> BufferExt for Buffer<T> {
     type Elem = T;
-    fn from_slice(queue: Queue, data: &[Self::Elem]) -> Result<Self>
+    fn from_slice_with_flags(queue: Queue, data: &[Self::Elem], flags: MemFlags) -> Result<Self>
     where
         Self: Sized,
     {
@@ -28,7 +34,7 @@ impl<T: OclPrm> BufferExt for Buffer<T> {
         let x_device = Buffer::builder()
             .queue(queue.clone())
             .len(data.len())
-            .flags(MemFlags::READ_WRITE | MemFlags::HOST_NO_ACCESS)
+            .flags(flags)
             .build()?;
         x_host.copy(&x_device, None, None).enq()?;
         queue.finish()?;
@@ -76,7 +82,11 @@ impl OclBackend {
         })
     }
     pub fn upload(&self, x: &[f32]) -> Result<Upload> {
-        let y_device = Buffer::from_slice(self.pro_que.queue().clone(), &vec![0f32; x.len()])?;
+        let y_device = Buffer::from_slice_with_flags(
+            self.pro_que.queue().clone(),
+            &vec![0f32; x.len()],
+            MemFlags::READ_WRITE | MemFlags::ALLOC_HOST_PTR,
+        )?;
         Ok(Upload {
             pro_que: self.pro_que.clone(),
             x_host: x.to_vec(),

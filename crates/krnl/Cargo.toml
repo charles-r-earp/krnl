@@ -30,7 +30,8 @@ thiserror.workspace = true
 parking_lot = "0.12.1"
 once_cell = { version = "1.13.0", default-features = false, features = ["std", "alloc"] }
 bytemuck = { version = "1.11.0", default-features = false }
-bincode.workspace = true
+bincode2.workspace = true
+flate2.workspace = true
 dashmap = { version = "5.3.4", optional = true }
 rspirv = { workspace = true, optional = true }
 

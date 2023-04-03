@@ -1575,20 +1575,7 @@ impl<T: Scalar> Slice<'_, T> {
         }
         #[cfg(feature = "device")]
         {
-            return device_scalar_buffer_cast_impl(self.as_scalar_slice(), output.as_scalar_slice_mut());
-            /*
-            macro_for!($X in [u8, i8, u16, i16, f16, bf16, u32, i32, f32, u64, i64, f64] {
-                if let Ok(x) = Slice::<$X>::try_from(self.as_scalar_slice()) {
-                    /*macro_for!($Y in [u8, i8, u16, i16, f16, bf16, u32, i32, f32, u64, i64, f64] {
-                        if let Ok(y) = SliceMut::<$Y>::try_from(output.as_scalar_slice_mut()) {
-                            paste! {
-                                return Ok(());
-                                //return kernels::[<cast_ $X _ $Y>]::builder()?.build(y.device())?.dispatch(x, y);
-                            }
-                        }
-                    });*/
-                }
-            });*/
+            device_scalar_buffer_cast_impl(self.as_scalar_slice(), output.as_scalar_slice_mut())
         }
         #[cfg(not(feature = "device"))] {
             unreachable!()
@@ -1596,6 +1583,7 @@ impl<T: Scalar> Slice<'_, T> {
     }
 }
 
+#[cfg(feature = "device")]
 fn device_scalar_buffer_cast_impl(x: ScalarSlice, y: ScalarSliceMut) -> Result<()> {
     macro_for!($X in [u8, i8, u16, i16, f16, bf16, u32, i32, f32, u64, i64, f64] {
         let x = match Slice::<$X>::try_from(x) {

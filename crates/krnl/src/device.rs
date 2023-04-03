@@ -487,6 +487,7 @@ impl Hash for KernelKey {
 #[derive(Clone, Deserialize, Debug)]
 struct KernelDesc {
     name: String,
+    hash: u64,
     spirv: Vec<u32>,
     features: Features,
     threads: Vec<u32>,
@@ -589,7 +590,7 @@ pub struct KernelBuilder {
 
 impl KernelBuilder {
     pub fn from_bytes(bytes: &'static [u8]) -> Result<Self> {
-        let desc: Arc<KernelDesc> = Arc::new(bincode::deserialize(bytes)?);
+        let desc: Arc<KernelDesc> = Arc::new(bincode2::deserialize(bytes)?);
         let mut threads = [1, 1, 1];
         threads[..desc.threads.len()].copy_from_slice(&desc.threads);
         Ok(Self {
@@ -621,6 +622,9 @@ impl KernelBuilder {
     }
     pub fn features(&self) -> Features {
         self.desc.features
+    }
+    pub fn hash(&self) -> u64 {
+        self.desc.hash
     }
     pub fn safe(&self) -> bool {
         self.desc.safe

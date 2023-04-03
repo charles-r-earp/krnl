@@ -1,4 +1,6 @@
+use dry::macro_for;
 use krnl::macros::module;
+use paste::paste;
 
 #[module]
 pub mod kernels {
@@ -62,3 +64,17 @@ pub mod kernels {
         n_div_2(|n| (n / 2) as usize),
     );
 }
+
+macro_for!($T in [u8, i8, u16, i16, f16, bf16, u32, i32, f32, u64, i64, f64] {
+    paste! {
+        #[module]
+        mod [<kernels_ $T>] {
+            #[cfg(not(target_arch = "spirv"))]
+            use krnl::krnl_core;
+            use krnl_core::macros::kernel;
+
+           #[kernel(threads(1))]
+           fn foo() {}
+        }
+    }
+});
