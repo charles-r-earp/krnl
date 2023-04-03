@@ -586,15 +586,19 @@ impl<S: ScalarData> ScalarBufferBase<S> {
         }})
     }
     pub fn cast(&self, scalar_type: ScalarType) -> Result<ScalarBuffer> {
-        let slice = self.as_scalar_slice();
         macro_for!($X in [u8, i8, u16, i16, f16, bf16, u32, i32, f32, u64, i64, f64] {
-            macro_for!($Y in [u8, i8, u16, i16, f16, bf16, u32, i32, f32, u64, i64, f64] {
-                paste! {
-                    if self.scalar_type() == $X::scalar_type() && scalar_type == $Y::scalar_type() {
-                         return Ok(Slice::<$X>::try_from(slice).ok().unwrap().cast::<$Y>()?.into());
+            if let Ok(x) = Slice::<$X>::try_from(self.as_scalar_slice()) {
+                macro_wrap!(paste! {
+                    match scalar_type {
+                        macro_for!($Y in [u8, i8, u16, i16, f16, bf16, u32, i32, f32, u64, i64, f64] {
+                            ScalarType::[<$Y:upper>] => {
+                                return x.cast::<$Y>().map(Into::into);
+                            }
+                        })
+                        _ => (),
                     }
-                }
-            });
+                });
+            }
         });
         unreachable!()
     }
@@ -1571,22 +1575,50 @@ impl<T: Scalar> Slice<'_, T> {
         }
         #[cfg(feature = "device")]
         {
-            todo!();
-            /*let x = self.as_scalar_slice();
-            let y = output.as_scalar_slice_mut();
+            return device_scalar_buffer_cast_impl(self.as_scalar_slice(), output.as_scalar_slice_mut());
+            /*
             macro_for!($X in [u8, i8, u16, i16, f16, bf16, u32, i32, f32, u64, i64, f64] {
-                macro_for!($Y in [u8, i8, u16, i16, f16, bf16, u32, i32, f32, u64, i64, f64] {
-                    if T::scalar_type() == $X::scalar_type() && Y::scalar_type() == $Y::scalar_type() {
-                        paste! {
-                            kernels::[<cast_ $X _ $Y>]::builder()?.build(y.device())?.dispatch(x.try_into().ok().unwrap(), y.try_into().ok().unwrap())?;
+                if let Ok(x) = Slice::<$X>::try_from(self.as_scalar_slice()) {
+                    /*macro_for!($Y in [u8, i8, u16, i16, f16, bf16, u32, i32, f32, u64, i64, f64] {
+                        if let Ok(y) = SliceMut::<$Y>::try_from(output.as_scalar_slice_mut()) {
+                            paste! {
+                                return Ok(());
+                                //return kernels::[<cast_ $X _ $Y>]::builder()?.build(y.device())?.dispatch(x, y);
+                            }
                         }
-                        return Ok(());
-                    }
-                });
+                    });*/
+                }
             });*/
         }
-        unreachable!()
+        #[cfg(not(feature = "device"))] {
+            unreachable!()
+        }
     }
+}
+
+fn device_scalar_buffer_cast_impl(x: ScalarSlice, y: ScalarSliceMut) -> Result<()> {
+    macro_for!($X in [u8, i8, u16, i16, f16, bf16, u32, i32, f32, u64, i64, f64] {
+        let x = match Slice::<$X>::try_from(x) {
+            Ok(x) => {
+                macro_for!($Y in [u8, i8, u16, i16, f16, bf16, u32, i32, f32, u64, i64, f64] {
+                    let y = match SliceMut::<$Y>::try_from(y) {
+                        Ok(y) => {
+                            let builder = paste! {
+                                kernels::[<cast_ $X _ $Y>]::builder()?
+                            };
+                            return builder.build(y.device())?.dispatch(x, y);
+                        } 
+                        Err(y) => y,
+                    };
+                });
+                let _ = y;
+                unreachable!()
+            }
+            Err(x) => x,
+        };
+    });
+    let _ = x;
+    unreachable!()
 }
 
 #[cfg(feature = "device")]
