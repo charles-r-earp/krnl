@@ -1,3 +1,5 @@
+#[cfg(feature = "autograph")]
+use compute_benchmarks::autograph_backend::AutographBackend;
 #[cfg(feature = "cuda")]
 use compute_benchmarks::cuda_backend::CudaBackend;
 use compute_benchmarks::krnl_backend::KrnlBackend;
@@ -69,65 +71,137 @@ pub fn criterion_benchmark(c: &mut Criterion) {
     let alpha = 0.5;
     let y: Vec<f32> = thread_rng().sample_iter(OpenClosed01).take(n_max).collect();
 
-    let krnl = KrnlBackend::new(device_index).unwrap();
-    for (s, n) in lens {
-        c.bench_function(&format!("alloc_{s}_krnl"), |b| {
-            let krnl = krnl.clone();
-            b.iter_custom(move |i| {
-                let mut duration = Duration::default();
-                for _ in 0..i {
-                    let start = Instant::now();
-                    let _alloc = krnl.alloc(n).unwrap();
-                    duration += start.elapsed();
-                }
-                duration
+    {
+        let krnl = KrnlBackend::new(device_index).unwrap();
+        for (s, n) in lens {
+            c.bench_function(&format!("alloc_{s}_krnl"), |b| {
+                let krnl = krnl.clone();
+                b.iter_custom(move |i| {
+                    let mut duration = Duration::default();
+                    for _ in 0..i {
+                        let start = Instant::now();
+                        let _alloc = krnl.alloc(n).unwrap();
+                        duration += start.elapsed();
+                    }
+                    duration
+                });
             });
-        });
+        }
+        for (s, n) in lens {
+            let mut upload = krnl.upload(&x[..n]).unwrap();
+            c.bench_function(&format!("upload_{s}_krnl"), move |b| {
+                b.iter_custom(|i| {
+                    let mut duration = Duration::default();
+                    for _ in 0..i {
+                        let start = Instant::now();
+                        upload.run().unwrap();
+                        duration += start.elapsed();
+                    }
+                    duration
+                });
+            });
+        }
+        for (s, n) in lens {
+            let mut download = krnl.download(&x[..n]).unwrap();
+            c.bench_function(&format!("download_{s}_krnl"), move |b| {
+                b.iter_custom(|i| {
+                    let mut duration = Duration::default();
+                    for _ in 0..i {
+                        let start = Instant::now();
+                        download.run().unwrap();
+                        duration += start.elapsed();
+                    }
+                    duration
+                });
+            });
+        }
+        for (s, n) in lens {
+            let mut saxpy = krnl.saxpy(&x[..n], alpha, &y[..n]).unwrap();
+            c.bench_function(&format!("saxpy_{s}_krnl"), move |b| {
+                b.iter_custom(|i| {
+                    let mut duration = Duration::default();
+                    for _ in 0..i {
+                        let start = Instant::now();
+                        saxpy.run().unwrap();
+                        duration += start.elapsed();
+                    }
+                    duration
+                });
+            });
+        }
     }
-    for (s, n) in lens {
-        let krnl = krnl.clone();
-        let x = x.clone();
-        let mut upload = krnl.upload(&x[..n]).unwrap();
-        c.bench_function(&format!("upload_{s}_krnl"), move |b| {
-            b.iter_custom(|i| {
-                let mut duration = Duration::default();
-                for _ in 0..i {
-                    let start = Instant::now();
-                    upload.run().unwrap();
-                    duration += start.elapsed();
-                }
-                duration
+    #[cfg(feature = "autograph")]
+    {
+        let autograph = AutographBackend::new(device_index).unwrap();
+        let n_max = 64_000_000;
+        for (s, n) in lens {
+            if n > n_max {
+                break;
+            }
+            c.bench_function(&format!("alloc_{s}_autograph"), |b| {
+                let autograph = autograph.clone();
+                b.iter_custom(move |i| {
+                    let mut duration = Duration::default();
+                    for _ in 0..i {
+                        let start = Instant::now();
+                        let _alloc = autograph.alloc(n).unwrap();
+                        duration += start.elapsed();
+                    }
+                    duration
+                });
             });
-        });
-    }
-    for (s, n) in lens {
-        let krnl = krnl.clone();
-        let mut download = krnl.download(&x[..n]).unwrap();
-        c.bench_function(&format!("download_{s}_krnl"), move |b| {
-            b.iter_custom(|i| {
-                let mut duration = Duration::default();
-                for _ in 0..i {
-                    let start = Instant::now();
-                    download.run().unwrap();
-                    duration += start.elapsed();
-                }
-                duration
+        }
+        for (s, n) in lens {
+            if n > n_max {
+                break;
+            }
+            let upload = autograph.upload(&x[..n]).unwrap();
+            c.bench_function(&format!("upload_{s}_autograph"), |b| {
+                b.iter_custom(|i| {
+                    let mut duration = Duration::default();
+                    for _ in 0..i {
+                        let start = Instant::now();
+                        upload.run().unwrap();
+                        duration += start.elapsed();
+                    }
+                    duration
+                });
             });
-        });
-    }
-    for (s, n) in lens {
-        let mut saxpy = krnl.saxpy(&x[..n], alpha, &y[..n]).unwrap();
-        c.bench_function(&format!("saxpy_{s}_krnl"), move |b| {
-            b.iter_custom(|i| {
-                let mut duration = Duration::default();
-                for _ in 0..i {
-                    let start = Instant::now();
-                    saxpy.run().unwrap();
-                    duration += start.elapsed();
-                }
-                duration
+        }
+        for (s, n) in lens {
+            if n > n_max {
+                break;
+            }
+            let download = autograph.download(&x[..n]).unwrap();
+            c.bench_function(&format!("download_{s}_autograph"), move |b| {
+                b.iter_custom(|i| {
+                    let mut duration = Duration::default();
+                    for _ in 0..i {
+                        let start = Instant::now();
+                        download.run().unwrap();
+                        duration += start.elapsed();
+                    }
+                    duration
+                });
             });
-        });
+        }
+        for (s, n) in lens {
+            if n > n_max {
+                break;
+            }
+            let mut saxpy = autograph.saxpy(&x[..n], alpha, &y[..n]).unwrap();
+            c.bench_function(&format!("saxpy_{s}_autograph"), move |b| {
+                b.iter_custom(|i| {
+                    let mut duration = Duration::default();
+                    for _ in 0..i {
+                        let start = Instant::now();
+                        saxpy.run().unwrap();
+                        duration += start.elapsed();
+                    }
+                    duration
+                });
+            });
+        }
     }
     #[cfg(feature = "cuda")]
     {
@@ -207,17 +281,13 @@ pub fn criterion_benchmark(c: &mut Criterion) {
             });
         }
         for (s, n) in lens {
-            let ocl = ocl.clone();
-            let x = x.clone();
-            c.bench_function(&format!("upload_{s}_ocl"), move |b| {
-                let ocl = ocl.clone();
-                let x = x.clone();
+            c.bench_function(&format!("upload_{s}_ocl"), |b| {
+                let upload = ocl.upload(&x[..n]).unwrap();
                 b.iter_custom(move |i| {
-                    let x = &x[..n];
                     let mut duration = Duration::default();
                     for _ in 0..i {
                         let start = Instant::now();
-                        let _upload = ocl.upload(x).unwrap();
+                        upload.run().unwrap();
                         duration += start.elapsed();
                     }
                     duration

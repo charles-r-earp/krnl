@@ -1,5 +1,6 @@
 #[cfg(debug_assertions)]
 use crate::saxpy_host;
+use anyhow::Result;
 #[cfg(debug_assertions)]
 use approx::assert_relative_eq;
 use cust::{
@@ -10,7 +11,6 @@ use cust::{
     module::Module,
     stream::{Stream, StreamFlags},
 };
-use krnl::anyhow::Result;
 use std::sync::Arc;
 
 struct Cuda {

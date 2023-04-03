@@ -1506,37 +1506,9 @@ impl<T: Scalar, S: Data<Elem = T>> BufferBase<S> {
             }
         }
     }
-    fn cast_impl<Y: Scalar>(&self, output: &mut SliceMut<Y>) -> Result<()> {
-        debug_assert_eq!(self.len(), output.len());
-        if output.is_empty() {
-            return Ok(());
-        }
-        if let Some((x, y)) = self.as_host_slice().zip(output.as_host_slice_mut()) {
-            for (x, y) in x.iter().zip(y.iter_mut()) {
-                *y = x.cast();
-            }
-            return Ok(());
-        }
-        #[cfg(feature = "device")]
-        {
-            let x = self.as_scalar_slice();
-            let y = output.as_scalar_slice_mut();
-            macro_for!($X in [u8, i8, u16, i16, f16, bf16, u32, i32, f32, u64, i64, f64] {
-                macro_for!($Y in [u8, i8, u16, i16, f16, bf16, u32, i32, f32, u64, i64, f64] {
-                    if T::scalar_type() == $X::scalar_type() && Y::scalar_type() == $Y::scalar_type() {
-                        paste! {
-                            kernels::[<cast_ $X _ $Y>]::builder()?.build(y.device())?.dispatch(x.try_into().ok().unwrap(), y.try_into().ok().unwrap())?;
-                        }
-                        return Ok(());
-                    }
-                });
-            });
-        }
-        unreachable!()
-    }
     pub fn cast<Y: Scalar>(&self) -> Result<Buffer<Y>> {
         let mut output = unsafe { Buffer::uninit(self.device(), self.len())? };
-        self.cast_impl(&mut output.as_slice_mut())?;
+        self.as_slice().cast_impl(&mut output.as_slice_mut())?;
         Ok(output)
     }
     pub fn cast_into<Y: Scalar>(self) -> Result<Buffer<Y>> {
@@ -1582,6 +1554,38 @@ impl<T: Scalar, S: Data<Elem = T>> BufferBase<S> {
     {
         let data = self.data.as_slice_mut().slice(range)?;
         Some(SliceMut { data })
+    }
+}
+
+impl<T: Scalar> Slice<'_, T> {
+    fn cast_impl<Y: Scalar>(&self, output: &mut SliceMut<Y>) -> Result<()> {
+        debug_assert_eq!(self.len(), output.len());
+        if output.is_empty() {
+            return Ok(());
+        }
+        if let Some((x, y)) = self.as_host_slice().zip(output.as_host_slice_mut()) {
+            for (x, y) in x.iter().zip(y.iter_mut()) {
+                *y = x.cast();
+            }
+            return Ok(());
+        }
+        #[cfg(feature = "device")]
+        {
+            todo!();
+            /*let x = self.as_scalar_slice();
+            let y = output.as_scalar_slice_mut();
+            macro_for!($X in [u8, i8, u16, i16, f16, bf16, u32, i32, f32, u64, i64, f64] {
+                macro_for!($Y in [u8, i8, u16, i16, f16, bf16, u32, i32, f32, u64, i64, f64] {
+                    if T::scalar_type() == $X::scalar_type() && Y::scalar_type() == $Y::scalar_type() {
+                        paste! {
+                            kernels::[<cast_ $X _ $Y>]::builder()?.build(y.device())?.dispatch(x.try_into().ok().unwrap(), y.try_into().ok().unwrap())?;
+                        }
+                        return Ok(());
+                    }
+                });
+            });*/
+        }
+        unreachable!()
     }
 }
 

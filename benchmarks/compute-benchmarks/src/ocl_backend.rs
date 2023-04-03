@@ -1,5 +1,5 @@
+use anyhow::Result;
 use futures::future::Future;
-use krnl::anyhow::Result;
 use ocl::{
     flags::MemFlags,
     r#async::{BufferSink, BufferStream},

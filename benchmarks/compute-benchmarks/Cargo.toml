@@ -12,6 +12,7 @@ autobenches = false
 
 [dependencies]
 approx = "0.5.1"
+anyhow.workspace = true
 criterion = { version = "0.4.0", default-features = false }
 cust = { version = "0.3.2", optional = true }
 futures = { version = "0.1", optional = true }
@@ -19,8 +20,11 @@ krnl = { path = "../../crates/krnl", features = ["device"] }
 ocl = { version = "0.19.4", optional = true }
 qutex = { version = "=0.2.3", optional = true }
 rand = "0.8.5"
+autograph = { git = "https://github.com/charles-r-earp/autograph", optional = true }
+blocker = { version = "0.1.2", features = ["thread_yield"], optional = true }
 
 [features]
+autograph = ["dep:autograph", "dep:blocker"]
 cuda = ["dep:cust"]
 ocl = ["dep:ocl", "dep:futures", "dep:qutex"]
 
