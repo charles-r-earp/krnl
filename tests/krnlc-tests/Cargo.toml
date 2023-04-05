@@ -5,7 +5,7 @@ edition = "2021"
 publish = false
 
 [dependencies]
-krnl = { path = "../../crates/krnl" }
+krnl = { path = "../../crates/krnl", default-features = false }
 paste.workspace = true
 dry.workspace = true
 

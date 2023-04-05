@@ -1,9 +1,9 @@
 [workspace]
-members = ["crates/krnl", "crates/krnl-core", "crates/krnl-macros", "benchmarks/*", "tests/*"]
+members = ["crates/krnl", "crates/krnl-core", "crates/krnl-macros", "benchmarks/*", "tests/*", "xtask"]
 default-members = ["crates/krnl"]
 
 [workspace.package]
-version = "0.0.1"
+version = "0.0.1-unstable"
 authors = ["Charles R Earp <charles.r.earp@gmail.com>"]
 edition = "2021"
 homepage = "https://github.com/charles-r-earp/krnl"
@@ -25,3 +25,6 @@ bincode2 = "2.0.1"
 rspirv = "0.11.0"
 flate2 = "1.0.25"
 hex = "0.4.3"
+rustversion = "1.0.12"
+clap = { version = "4.0.22", features = ["derive"] }
+fxhash = "0.2.1"

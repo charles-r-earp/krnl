@@ -1,14 +1,14 @@
 #[cfg(debug_assertions)]
 use crate::saxpy_host;
 use anyhow::Result;
+#[cfg(debug_assertions)]
+use approx::assert_relative_eq;
 use autograph::{
     buffer::{Buffer, Slice},
     device::Device,
     shader::Module,
 };
 use blocker::Blocker;
-#[cfg(debug_assertions)]
-use approx::assert_relative_eq;
 
 #[derive(Clone)]
 pub struct AutographBackend {
@@ -53,7 +53,10 @@ impl AutographBackend {
             saxpy_host(x, alpha, &mut y_host);
             y_host
         };
-        let spirv = include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/shader-builder/shader.spv"));
+        let spirv = include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/shader-builder/shader.spv"
+        ));
         let module = Module::from_spirv(spirv.to_vec()).unwrap();
         Ok(Saxpy {
             device,
@@ -131,7 +134,8 @@ impl Saxpy {
     pub fn run(&mut self) -> Result<()> {
         let n = self.y_device.len() as u32;
         unsafe {
-            self.module.compute_pass("saxpy")?
+            self.module
+                .compute_pass("saxpy")?
                 .push(n)?
                 .slice(self.x_device.as_slice())?
                 .push(self.alpha)?

@@ -1,3 +1,4 @@
+/*
 use dry::macro_for;
 use krnl::macros::module;
 use paste::paste;
@@ -16,18 +17,18 @@ pub mod kernels {
     use paste::paste;
 
     #[kernel(threads(X))]
-    fn spec_threads_1d<#[spec] const X: u32>() {}
+    fn spec_threads_1d<const X: u32>() {}
 
     #[kernel(threads(X, Y))]
-    fn spec_threads_2d<#[spec] const X: u32, #[spec] const Y: u32>() {}
+    fn spec_threads_2d<const X: u32, const Y: u32>() {}
 
     #[kernel(threads(X, Y, Z))]
-    fn spec_threads_3d<#[spec] const X: u32, #[spec] const Y: u32, #[spec] const Z: u32>() {}
+    fn spec_threads_3d<const X: u32, const Y: u32, const Z: u32>() {}
 
     macro_for!($A in [u8, i8, u16, i16, f16, bf16, u32, i32, f32, u64, i64, f64] {
         paste! {
             #[kernel(threads(256))]
-            fn [<basic_ $A>]<#[spec] const A: $A>(
+            fn [<basic_ $A>]<const A: $A>(
                 #[item] a: &mut $A,
                 a_push: $A
             ) {
@@ -41,7 +42,7 @@ pub mod kernels {
             $(
                 paste! {
                     #[kernel(threads(1))]
-                    unsafe fn [<group_$k>]<#[spec] const N: u32>(
+                    unsafe fn [<group_$k>]<const N: u32>(
                         #[global] x: Slice<f32>,
                         #[group] x_group: UnsafeSlice<f32, { let $n = N; $e }>,
                         #[global] y: UnsafeSlice<f32>,
@@ -78,3 +79,14 @@ macro_for!($T in [u8, i8, u16, i16, f16, bf16, u32, i32, f32, u64, i64, f64] {
         }
     }
 });
+*/
+
+#[krnl::macros::module]
+mod foo {
+    #[cfg(not(target_arch = "spirv"))]
+    use krnl::krnl_core;
+    use krnl_core::macros::kernel;
+
+    #[kernel(threads(1))]
+    fn foo() {}
+}

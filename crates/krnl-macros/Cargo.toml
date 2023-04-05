@@ -28,4 +28,6 @@ hex.workspace = true
 prettyplease = "0.1.21"
 serde = { workspace = true, default-features = false, features = ["derive"] }
 derive_more = { workspace = true, default-features = false, features = ["is_variant"] }
+rustversion.workspace = true
+fxhash.workspace = true
 

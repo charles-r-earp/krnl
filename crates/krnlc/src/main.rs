@@ -2,17 +2,13 @@ use anyhow::{bail, format_err, Result};
 use cargo_metadata::{Metadata, Package, PackageId};
 use clap::Parser;
 use clap_cargo::{Manifest, Workspace};
+use fxhash::FxHashMap;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use spirv_builder::{MetadataPrintout, SpirvBuilder, SpirvMetadata};
 use std::{
-    collections::HashMap,
     path::PathBuf,
     process::{Command, Stdio},
     str::FromStr,
-    sync::{
-        atomic::{AtomicBool, Ordering},
-        Arc,
-    },
 };
 use syn::{visit::Visit, Expr, Item, ItemMod, Lit, Visibility};
 
@@ -26,16 +22,15 @@ struct Cli {
     target_dir: Option<PathBuf>,
     #[arg(long = "non-semantic-info")]
     non_semantic_info: bool,
+    #[arg(long = "check")]
+    check: bool,
 }
 
 fn main() -> Result<()> {
-    let ctrlc_signal = CtrlcSignal::new()?;
+    //let ctrlc_signal = CtrlcSignal::new()?;
     let cli = Cli::parse();
     let metadata = cli.manifest.metadata().exec()?;
-    if cli.manifest.manifest_path.is_none()
-        && cli.workspace == Workspace::default()
-        && metadata.workspace_members.len() > 1
-    {
+    if cli.workspace == Workspace::default() && metadata.workspace_members.len() > 1 {
         bail!("Found a workspace. Specify packages with `-p` or use `--workspace` to build all packages.");
     }
     let (selected, _) = cli.workspace.partition_packages(&metadata);
@@ -44,30 +39,31 @@ fn main() -> Result<()> {
         .as_ref()
         .map(|x| x.to_string_lossy())
         .unwrap_or(metadata.target_directory.as_str().into());
-    let cache_guards: Vec<_> = selected.iter().copied().map(CacheGuard::new).collect();
+    /*let cache_guards: Vec<_> = selected.iter().copied().map(CacheGuard::new).collect();
     for package in selected.iter() {
         ctrlc_signal.check()?;
-        cache(package, None)?;
-    }
-    for (package, cache_guard) in selected.iter().copied().zip(cache_guards) {
-        ctrlc_signal.check()?;
-        let (features, dependencies) = extract_features_dependencies(&metadata, &package)?;
-        ctrlc_signal.check()?;
-        let module_datas = cargo_expand(&package, &target_dir, &features)?;
-        ctrlc_signal.check()?;
+        //cache(package, None)?;
+    }*/
+    for package in selected.iter().copied() {
+        //ctrlc_signal.check()?;
+        let krnlc_metadata = KrnlcMetadata::new(&metadata, package)?;
+        //ctrlc_signal.check()?;
+        let module_datas = cargo_expand(package, &target_dir, &krnlc_metadata)?;
+        //ctrlc_signal.check()?;
         let modules = compile(
-            &package,
+            package,
             &target_dir,
-            &dependencies,
+            &krnlc_metadata.dependencies,
             module_datas,
             cli.non_semantic_info,
         )?;
-        cache(&package, Some(modules))?;
-        cache_guard.finish();
+        cache(package, modules, cli.check)?;
+        //cache_guard.finish();
     }
     Ok(())
 }
 
+/*
 struct CtrlcSignal {
     signal: Arc<AtomicBool>,
 }
@@ -111,13 +107,13 @@ impl Drop for CacheGuard<'_> {
             cache(package, Some(Default::default())).unwrap();
         }
     }
-}
+}*/
 
 fn cargo_expand(
     package: &Package,
     target_dir: &str,
-    features: &str,
-) -> Result<HashMap<String, ModuleData>> {
+    krnlc_metadata: &KrnlcMetadata,
+) -> Result<FxHashMap<String, ModuleData>> {
     let mut command = Command::new("cargo");
     command.args([
         "+nightly",
@@ -127,11 +123,19 @@ fn cargo_expand(
         "--target-dir",
         target_dir,
     ]);
-    if !features.is_empty() {
-        command.args(["--features", &features]);
+    if !krnlc_metadata.default_features {
+        command.arg("--no-default-features");
+    }
+    if !krnlc_metadata.features.is_empty() {
+        command.args(["--features", &krnlc_metadata.features]);
     }
     command
-        .args(&["--profile=check", "--", "-Zunpretty=expanded"])
+        .args(&[
+            "--profile=check",
+            "--",
+            "--cfg=krnlc",
+            "-Zunpretty=expanded",
+        ])
         .stderr(Stdio::inherit());
     let output = command.output()?;
     if !output.status.success() {
@@ -139,7 +143,7 @@ fn cargo_expand(
     }
     let expanded = std::str::from_utf8(&output.stdout)?;
     let file: syn::File = syn::parse_str(expanded)?;
-    let mut modules = HashMap::new();
+    let mut modules = FxHashMap::default();
     let mut result = Ok(());
     let mut visitor = ModuleVisitor {
         path: String::new(),
@@ -151,159 +155,180 @@ fn cargo_expand(
     Ok(modules)
 }
 
-fn extract_features_dependencies(
-    metadata: &Metadata,
-    package: &Package,
-) -> Result<(String, String)> {
-    use std::fmt::Write;
+struct KrnlcMetadata {
+    default_features: bool,
+    features: String,
+    dependencies: String,
+}
 
-    fn find_krnl_core<'a>(metadata: &'a Metadata, root: &PackageId) -> Option<&'a Package> {
-        let node = metadata
-            .resolve
-            .as_ref()?
-            .nodes
-            .iter()
-            .find(|x| &x.id == root)?;
-        let package = metadata.packages.iter().find(|x| x.id == node.id)?;
-        if package.name == "krnl-core"
-            && package.repository.as_deref() == Some("https://github.com/charles-r-earp/krnl")
-        {
-            return Some(package);
-        }
-        for id in node.dependencies.iter() {
-            if let Some(package) = find_krnl_core(metadata, id) {
+impl KrnlcMetadata {
+    fn new(metadata: &Metadata, package: &Package) -> Result<Self> {
+        use std::fmt::Write;
+
+        fn find_krnl_core<'a>(metadata: &'a Metadata, root: &PackageId) -> Option<&'a Package> {
+            let node = metadata
+                .resolve
+                .as_ref()?
+                .nodes
+                .iter()
+                .find(|x| &x.id == root)?;
+            let package = metadata.packages.iter().find(|x| x.id == node.id)?;
+            if package.name == "krnl-core"
+                && package.repository.as_deref() == Some("https://github.com/charles-r-earp/krnl")
+            {
                 return Some(package);
             }
-        }
-        None
-    }
-    let krnl_core_package = if let Some(package) = find_krnl_core(&metadata, &package.id) {
-        package
-    } else {
-        bail!(
-            "krnl-core is not in dependency tree of package {:?}!",
-            package.name
-        );
-    };
-    let krnl_core_source = format!(
-        " path = {:?}",
-        krnl_core_package.manifest_path.parent().unwrap()
-    );
-    let manifest_path_str = package.manifest_path.as_str();
-    let mut features = String::new();
-    let mut dependencies = String::new();
-    let mut has_krnl_core = false;
-    if let Some(krnlc_metadata) = package.metadata.get("krnlc") {
-        if let Some(metadata_features) = krnlc_metadata.get("features") {
-            if let Some(metadata_features) = metadata_features.as_array() {
-                for feature in metadata_features {
-                    if let Some(feature) = feature.as_str() {
-                        write!(&mut features, "{feature} ").unwrap();
-                    } else {
-                        bail!("{manifest_path_str:?} [package.metadata.krnlc] features, expected array of strings!");
-                    }
+            for id in node.dependencies.iter() {
+                if let Some(package) = find_krnl_core(metadata, id) {
+                    return Some(package);
                 }
-            } else {
-                bail!("{manifest_path_str:?} [package.metadata.krnlc] features, expected array!");
             }
+            None
         }
-        if let Some(metadata_dependencies) = krnlc_metadata.get("dependencies") {
-            if let Some(metadata_dependencies) = metadata_dependencies.as_object() {
-                for (dep, value) in metadata_dependencies.iter() {
-                    let (dep_source, dep_default_features, dep_features) = if dep == "krnl-core" {
-                        has_krnl_core = true;
-                        (krnl_core_source.clone(), true, Vec::new())
-                    } else if let Some(dependency) = package
-                        .dependencies
-                        .iter()
-                        .find(|x| x.rename.as_deref().unwrap_or(x.name.as_str()) == dep)
-                    {
-                        let source = if let Some(path) = dependency.path.as_ref() {
-                            let path = path.canonicalize()?;
-                            format!("path = {path:?}")
-                        } else if let Some(source) = dependency.source.as_ref() {
-                            if source == "registry+https://github.com/rust-lang/crates.io-index" {
-                                format!("version = \"{}\"", dependency.req)
-                            } else if let Some((key, value)) = source.split_once("+") {
-                                format!("{key} = {value:?}")
-                            } else {
-                                bail!("Unsupported source {source:?} for dependency {dep:?}!");
-                            }
+        let krnl_core_package = if let Some(package) = find_krnl_core(&metadata, &package.id) {
+            package
+        } else {
+            bail!(
+                "krnl-core is not in dependency tree of package {:?}!",
+                package.name
+            );
+        };
+        let krnl_core_source = format!(
+            " path = {:?}",
+            krnl_core_package.manifest_path.parent().unwrap()
+        );
+        let manifest_path_str = package.manifest_path.as_str();
+        let mut default_features = true;
+        let mut features = String::new();
+        let mut dependencies = String::new();
+        let mut has_krnl_core = false;
+        if let Some(krnlc_metadata) = package.metadata.get("krnlc") {
+            if let Some(metadata_default_features) = krnlc_metadata.get("default-features") {
+                if let Some(metadata_default_features) = metadata_default_features.as_bool() {
+                    default_features = metadata_default_features;
+                } else {
+                    bail!("{manifest_path_str:?} [package.metadata.krnlc] default-features, expected bool!");
+                }
+            }
+            if let Some(metadata_features) = krnlc_metadata.get("features") {
+                if let Some(metadata_features) = metadata_features.as_array() {
+                    for feature in metadata_features {
+                        if let Some(feature) = feature.as_str() {
+                            write!(&mut features, "{feature} ").unwrap();
                         } else {
-                            bail!("Source not found for dependency {dep:?}!");
-                        };
-                        (
-                            source,
-                            dependency.uses_default_features,
-                            dependency.features.clone(),
-                        )
-                    } else {
-                        bail!("{manifest_path_str:?} [package.metadata.krnlc.dependencies] {dep:?} is not a dependency of {:?}!", package.name);
-                    };
-                    let mut default_features = None;
-                    let mut features = Vec::new();
-                    if let Some(table) = value.as_object() {
-                        for (key, value) in table.iter() {
-                            match key.as_str() {
-                                "default-features" => {
-                                    if let Some(value) = value.as_bool() {
-                                        default_features.replace(value);
-                                    }
+                            bail!("{manifest_path_str:?} [package.metadata.krnlc] features, expected array of strings!");
+                        }
+                    }
+                } else {
+                    bail!(
+                        "{manifest_path_str:?} [package.metadata.krnlc] features, expected array!"
+                    );
+                }
+            }
+            if let Some(metadata_dependencies) = krnlc_metadata.get("dependencies") {
+                if let Some(metadata_dependencies) = metadata_dependencies.as_object() {
+                    for (dep, value) in metadata_dependencies.iter() {
+                        let (dep_source, dep_default_features, dep_features) = if dep == "krnl-core"
+                        {
+                            has_krnl_core = true;
+                            (krnl_core_source.clone(), true, Vec::new())
+                        } else if let Some(dependency) = package
+                            .dependencies
+                            .iter()
+                            .find(|x| x.rename.as_deref().unwrap_or(x.name.as_str()) == dep)
+                        {
+                            let source = if let Some(path) = dependency.path.as_ref() {
+                                let path = path.canonicalize()?;
+                                format!("path = {path:?}")
+                            } else if let Some(source) = dependency.source.as_ref() {
+                                if source == "registry+https://github.com/rust-lang/crates.io-index"
+                                {
+                                    format!("version = \"{}\"", dependency.req)
+                                } else if let Some((key, value)) = source.split_once("+") {
+                                    format!("{key} = {value:?}")
+                                } else {
+                                    bail!("Unsupported source {source:?} for dependency {dep:?}!");
                                 }
-                                "features" => {
-                                    if let Some(value) = value.as_array() {
-                                        for value in value.iter() {
-                                            if let Some(value) = value.as_str() {
-                                                features.push(value.to_string());
-                                            } else {
-                                                bail!(
+                            } else {
+                                bail!("Source not found for dependency {dep:?}!");
+                            };
+                            (
+                                source,
+                                dependency.uses_default_features,
+                                dependency.features.clone(),
+                            )
+                        } else {
+                            bail!("{manifest_path_str:?} [package.metadata.krnlc.dependencies] {dep:?} is not a dependency of {:?}!", package.name);
+                        };
+                        let mut default_features = None;
+                        let mut features = Vec::new();
+                        if let Some(table) = value.as_object() {
+                            for (key, value) in table.iter() {
+                                match key.as_str() {
+                                    "default-features" => {
+                                        if let Some(value) = value.as_bool() {
+                                            default_features.replace(value);
+                                        }
+                                    }
+                                    "features" => {
+                                        if let Some(value) = value.as_array() {
+                                            for value in value.iter() {
+                                                if let Some(value) = value.as_str() {
+                                                    features.push(value.to_string());
+                                                } else {
+                                                    bail!(
                                                         "{manifest_path_str:?} [package.metadata.krnlc.dependencies] {dep:?} features, expected array of strings!"
                                                     );
+                                                }
                                             }
-                                        }
-                                    } else {
-                                        bail!(
+                                        } else {
+                                            bail!(
                                                 "{manifest_path_str:?} [package.metadata.krnlc.dependencies] {dep:?} features, expected array!"
                                             );
+                                        }
                                     }
-                                }
-                                _ => {
-                                    bail!(
+                                    _ => {
+                                        bail!(
                                             "{manifest_path_str:?} [package.metadata.krnlc.dependencies] {dep:?}, unexpected key {key:?}!"
                                         );
+                                    }
                                 }
                             }
-                        }
-                    } else {
-                        bail!(
+                        } else {
+                            bail!(
                                 "{manifest_path_str:?} [package.metadata.krnlc.dependencies] {dep:?}, expected table!"
                             );
+                        }
+                        let default_features = default_features.unwrap_or(dep_default_features);
+                        if features.is_empty() {
+                            features = dep_features;
+                        }
+                        let mut features = itertools::join(features, ", ");
+                        if !features.is_empty() {
+                            features = format!("{features:?}");
+                        }
+                        writeln!(&mut dependencies, "{dep:?} = {{ {dep_source}, features = [{features}], default-features = {default_features} }}").unwrap();
                     }
-                    let default_features = default_features.unwrap_or(dep_default_features);
-                    if features.is_empty() {
-                        features = dep_features;
-                    }
-                    let mut features = itertools::join(features, ", ");
-                    if !features.is_empty() {
-                        features = format!("{features:?}");
-                    }
-                    writeln!(&mut dependencies, "{dep:?} = {{ {dep_source}, features = [{features}], default-features = {default_features} }}").unwrap();
-                }
-            } else {
-                bail!(
+                } else {
+                    bail!(
                     "{manifest_path_str:?} [package.metadata.krnlc.dependencies], expected table!"
                 );
+                }
             }
         }
+        if !has_krnl_core {
+            writeln!(
+                &mut dependencies,
+                "\"krnl-core\" = {{ {krnl_core_source} }}"
+            )
+            .unwrap();
+        }
+        Ok(Self {
+            default_features,
+            features,
+            dependencies,
+        })
     }
-    if !has_krnl_core {
-        writeln!(
-            &mut dependencies,
-            "\"krnl-core\" = {{ {krnl_core_source} }}"
-        )
-        .unwrap();
-    }
-    Ok((features, dependencies))
 }
 
 #[derive(Debug)]
@@ -315,10 +340,7 @@ struct ModuleData {
 
 impl ModuleData {
     fn new(path: String, source: String) -> Self {
-        use std::hash::{Hash, Hasher};
-        let mut hasher = std::collections::hash_map::DefaultHasher::default();
-        source.hash(&mut hasher);
-        let hash = hasher.finish();
+        let hash = fxhash::hash64(&source);
         let name = if let Some((_, last)) = path.rsplit_once("::") {
             last
         } else {
@@ -335,7 +357,7 @@ impl ModuleData {
 
 struct ModuleVisitor<'a> {
     path: String,
-    modules: &'a mut HashMap<String, ModuleData>,
+    modules: &'a mut FxHashMap<String, ModuleData>,
     result: &'a mut Result<()>,
 }
 
@@ -382,11 +404,19 @@ impl<'a, 'ast> Visit<'ast> for ModuleVisitor<'a> {
 
 fn cache(
     package: &Package,
-    modules: Option<HashMap<String, HashMap<String, KernelDesc>>>,
+    modules: FxHashMap<String, FxHashMap<String, KernelDesc>>,
+    check: bool,
 ) -> Result<()> {
     use flate2::{write::GzEncoder, Compression};
 
     let version = env!("CARGO_PKG_VERSION");
+    let modules = modules
+        .into_iter()
+        .map(|(module, kernels)| {
+            let kernels = kernels.into_iter().collect();
+            (module, kernels)
+        })
+        .collect();
     let cache = KrnlcCache {
         version: version.to_string(),
         modules,
@@ -394,20 +424,31 @@ fn cache(
     let mut bytes = Vec::new();
     let encoder = GzEncoder::new(&mut bytes, Compression::fast());
     bincode2::serialize_into(encoder, &cache)?;
-    let cache_string = itertools::join(bytes.chunks(40).map(hex::encode), ",\nx");
+    let cache = itertools::join(bytes.chunks(40).map(hex::encode), ",\nx");
     let manifest_dir = package.manifest_path.parent().unwrap();
-    std::fs::write(
-        manifest_dir.join("krnl-cache.rs"),
-        format!(
-            r#"/* generated by krnlc {version} */
-macro_rules! __krnl_cache {{
-    ($m:ident) => {{ 
-        __krnl::macros::__krnl_module!($m, x{cache_string});
-    }}; 
-}}"#
-        )
-        .as_bytes(),
-    )?;
+    let cache_path = manifest_dir.join("krnl-cache.rs");
+    let cache = format!(
+        r#"/* generated by krnlc {version} */
+    #[doc(hidden)]
+    macro_rules! __krnl_cache {{
+        ($m:ident) => {{
+            __krnl::macros::__krnl_module!($m, x{cache});
+        }};
+    }}"#
+    );
+    if check {
+        let prev = std::fs::read_to_string(&cache_path)?;
+        for (i, (a, b)) in prev.chars().zip(cache.chars()).enumerate() {
+            if a != b {
+                panic!("\n{}\n{}", &prev[..=i], &cache[..=i]);
+            }
+        }
+        if prev != cache {
+            bail!("{cache_path:?} check failed!");
+        }
+    } else {
+        std::fs::write(cache_path, cache.as_bytes())?;
+    }
     Ok(())
 }
 
@@ -415,9 +456,9 @@ fn compile(
     package: &Package,
     target_dir: &str,
     dependencies: &str,
-    module_datas: HashMap<String, ModuleData>,
+    module_datas: FxHashMap<String, ModuleData>,
     non_semantic_info: bool,
-) -> Result<HashMap<String, HashMap<String, KernelDesc>>> {
+) -> Result<FxHashMap<String, FxHashMap<String, KernelDesc>>> {
     use std::fmt::Write;
     let target_krnl_dir = PathBuf::from(target_dir).join("krnlc");
     std::fs::create_dir_all(&target_krnl_dir)?;
@@ -478,9 +519,15 @@ fn compile(
         std::fs::create_dir_all(&config_dir)?;
         let config = format!(
             r#"[build]
-target-dir = {target_dir:?}"#
+target-dir = {target_dir:?}
+"#
         );
         std::fs::write(config_dir.join("config.toml"), config.as_bytes())?;
+        let build_script = r#"fn main() {
+            println!("cargo:rustc-cfg=krnlc");
+        }
+                "#;
+        std::fs::write(device_crate_dir.join("build.rs"), build_script.as_bytes())?;
         let manifest = format!(
             r#"# generated by krnlc 
 [package]
@@ -577,7 +624,10 @@ extern crate krnl_core;
             })
             .collect();
         let mut modules =
-            HashMap::<String, HashMap<String, KernelDesc>>::with_capacity(module_datas.len());
+            FxHashMap::<String, FxHashMap<String, KernelDesc>>::with_capacity_and_hasher(
+                module_datas.len(),
+                Default::default(),
+            );
         let mut kernels = kernels.into_iter();
         while let Some((module_name_with_hash, (kernel_name, kernel_desc))) =
             kernels.next().transpose()?
@@ -596,7 +646,7 @@ fn kernel_post_process(
     crate_name_ident: &str,
     entry_point: &str,
     spirv_path: &std::path::Path,
-    module_datas: &HashMap<String, ModuleData>,
+    module_datas: &FxHashMap<String, ModuleData>,
 ) -> Result<(String, (String, KernelDesc))> {
     use rspirv::{
         binary::Assemble,
@@ -606,10 +656,6 @@ fn kernel_post_process(
     use spirv_tools::{opt::Optimizer, val::Validator, TargetEnv};
     let spirv = std::fs::read(spirv_path)?;
     let mut spirv_module = rspirv::dr::load_bytes(&spirv).unwrap();
-    /*{
-        use rspirv::binary::Disassemble;
-        eprintln!("{}", spirv_module.disassemble());
-    }*/
     let (module_name_with_hash, kernel_name) = entry_point.split_once("::").unwrap();
     let module_data = module_datas.get(module_name_with_hash).unwrap();
     let module_path = &module_data.path;
@@ -657,7 +703,7 @@ fn kernel_post_process(
                 .to_vec();
             spirv_module = rspirv::dr::load_words(&spirv).unwrap();
         }*/
-        let mut constants = HashMap::new();
+        let mut constants = FxHashMap::default();
         for inst in spirv_module.types_global_values.iter() {
             if let Some(result_id) = inst.result_id {
                 let op = inst.class.opcode;
@@ -667,8 +713,8 @@ fn kernel_post_process(
                 }
             }
         }
-        let mut kernel_data_ptrs = HashMap::new();
-        let mut kernel_data_stores = HashMap::new();
+        let mut kernel_data_ptrs = FxHashMap::default();
+        let mut kernel_data_stores = FxHashMap::default();
         for function in spirv_module.functions.iter_mut() {
             for block in function.blocks.iter_mut() {
                 block.instructions.retain(|inst| {
@@ -701,8 +747,10 @@ fn kernel_post_process(
             }
         }
         let mut kernel_data = None;
-        let mut array_ids =
-            HashMap::with_capacity(kernel_data_stores.len().checked_sub(1).unwrap_or_default());
+        let mut array_ids = FxHashMap::with_capacity_and_hasher(
+            kernel_data_stores.len().checked_sub(1).unwrap_or_default(),
+            Default::default(),
+        );
         spirv_module.debug_names.retain_mut(|inst| {
             let op = inst.class.opcode;
             let operands = inst.operands.as_mut_slice();
@@ -728,9 +776,9 @@ fn kernel_post_process(
             true
         });
         if !array_ids.is_empty() {
-            let mut array_types = HashMap::new();
-            let mut pointer_types = HashMap::new();
-            let mut pointer_lens = HashMap::new();
+            let mut array_types = FxHashMap::default();
+            let mut pointer_types = FxHashMap::default();
+            let mut pointer_lens = FxHashMap::default();
             for inst in spirv_module.types_global_values.iter() {
                 if let Some(result_id) = inst.result_id {
                     let op = inst.class.opcode;
@@ -939,10 +987,6 @@ fn kernel_post_process(
             _ => true,
         }
     });
-    /*{
-        use rspirv::binary::Disassemble;
-        eprintln!("{}", spirv_module.disassemble());
-    }*/
     let spirv = spirv_module.assemble();
     kernel_desc.spirv = {
         use spirv_tools::assembler::{Assembler, DisassembleOptions};
@@ -971,15 +1015,6 @@ fn kernel_post_process(
             .to_vec();
         spirv
     };
-    /*{
-        use rspirv::binary::Disassemble;
-        eprintln!(
-            "{}",
-            rspirv::dr::load_words(&kernel_desc.spirv)
-                .unwrap()
-                .disassemble()
-        );
-    }*/
     Ok((
         module_name_with_hash.to_string(),
         (kernel_name.to_string(), kernel_desc),
@@ -1279,5 +1314,5 @@ struct PushDesc {
 #[derive(Serialize, serde::Deserialize, Debug)]
 struct KrnlcCache {
     version: String,
-    modules: Option<HashMap<String, HashMap<String, KernelDesc>>>,
+    modules: Vec<(String, Vec<(String, KernelDesc)>)>,
 }

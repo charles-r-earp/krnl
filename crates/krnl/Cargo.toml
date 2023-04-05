@@ -18,7 +18,7 @@ autobenches = false
 [dependencies]
 krnl-macros = { path = "../krnl-macros" }
 krnl-core = { path = "../krnl-core" }
-vulkano = { git = "https://github.com/vulkano-rs/vulkano", branch = "0.32.X", optional = true }
+vulkano = { git = "https://github.com/vulkano-rs/vulkano", branch = "0.32.X", optional = true, default-features = false }
 serde = { workspace = true, default-features = false, features = ["derive", "rc"] }
 anyhow.workspace = true
 half = { workspace = true, features = ["std"] }
@@ -34,6 +34,7 @@ bincode2.workspace = true
 flate2.workspace = true
 dashmap = { version = "5.3.4", optional = true }
 rspirv = { workspace = true, optional = true }
+fxhash = { workspace = true, optional = true }
 
 ash = { version = "0.37.1", optional = true, features = ["linked"] }
 atomicbox = { version = "0.4.0", optional = true }
@@ -42,9 +43,11 @@ atomicbox = { version = "0.4.0", optional = true }
 ash-molten = { version = "0.13.1", features = ["pre-built"], optional = true }
 
 [features]
-device = ["dep:vulkano", "dep:ash", "dep:ash-molten", "dep:dashmap", "dep:rspirv", "dep:atomicbox"]
+default = ["device"]
+device = ["dep:vulkano", "dep:ash", "dep:ash-molten", "dep:dashmap", "dep:rspirv", "dep:atomicbox", "dep:fxhash"]
 
 [package.metadata.krnlc]
+default-features = false
 features = ["device"]
 
 [package.metadata.krnlc.dependencies]
@@ -56,5 +59,12 @@ name = "integration_tests"
 path = "tests/integration_tests.rs"
 harness = false
 
-[dev-dependencies]
+[[test]]
+name = "wasm_integration_tests"
+path = "tests/wasm_integration_tests.rs"
+
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 libtest-mimic = "0.6.0"
+
+[target.'cfg(target_arch = "wasm32")'.dev-dependencies]
+wasm-bindgen-test = "0.3.33"

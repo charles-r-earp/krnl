@@ -1577,7 +1577,8 @@ impl<T: Scalar> Slice<'_, T> {
         {
             device_scalar_buffer_cast_impl(self.as_scalar_slice(), output.as_scalar_slice_mut())
         }
-        #[cfg(not(feature = "device"))] {
+        #[cfg(not(feature = "device"))]
+        {
             unreachable!()
         }
     }
@@ -1595,7 +1596,7 @@ fn device_scalar_buffer_cast_impl(x: ScalarSlice, y: ScalarSliceMut) -> Result<(
                                 kernels::[<cast_ $X _ $Y>]::builder()?
                             };
                             return builder.build(y.device())?.dispatch(x, y);
-                        } 
+                        }
                         Err(y) => y,
                     };
                 });

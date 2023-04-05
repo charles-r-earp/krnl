@@ -578,103 +578,6 @@ struct PushDesc {
     scalar_type: ScalarType,
 }
 
-#[doc(hidden)]
-#[cfg_attr(not(feature = "device"), allow(dead_code))]
-#[derive(Clone)]
-pub struct KernelBuilder {
-    id: usize,
-    desc: Arc<KernelDesc>,
-    spec_consts: Vec<ScalarElem>,
-    threads: [u32; 3],
-}
-
-impl KernelBuilder {
-    pub fn from_bytes(bytes: &'static [u8]) -> Result<Self> {
-        let desc: Arc<KernelDesc> = Arc::new(bincode2::deserialize(bytes)?);
-        let mut threads = [1, 1, 1];
-        threads[..desc.threads.len()].copy_from_slice(&desc.threads);
-        Ok(Self {
-            id: bytes.as_ptr() as usize,
-            desc,
-            spec_consts: Vec::new(),
-            threads,
-        })
-    }
-    pub fn specialize(mut self, spec_consts: &[ScalarElem]) -> Result<Self> {
-        assert_eq!(spec_consts.len(), self.desc.spec_descs.len());
-        for (spec_const, spec_desc) in spec_consts.iter().copied().zip(self.desc.spec_descs.iter())
-        {
-            assert_eq!(spec_const.scalar_type(), spec_desc.scalar_type);
-            if let Some(dim) = spec_desc.thread_dim {
-                if let ScalarElem::U32(value) = spec_const {
-                    if value == 0 {
-                        bail!("threads.{} cannot be zero!", ["x", "y", "z"][dim],);
-                    }
-                    self.threads[dim] = value;
-                } else {
-                    unreachable!()
-                }
-            }
-        }
-        self.spec_consts.clear();
-        self.spec_consts.extend_from_slice(spec_consts);
-        Ok(self)
-    }
-    pub fn features(&self) -> Features {
-        self.desc.features
-    }
-    pub fn hash(&self) -> u64 {
-        self.desc.hash
-    }
-    pub fn safe(&self) -> bool {
-        self.desc.safe
-    }
-    pub fn build(&self, device: Device) -> Result<Kernel> {
-        match device.inner {
-            DeviceInner::Host => {
-                bail!("Kernel `{}` expected device, found host!", self.desc.name);
-            }
-            #[cfg(feature = "device")]
-            DeviceInner::Device(device) => {
-                let desc = &self.desc;
-                let spec_bytes = if !self.desc.spec_descs.is_empty() {
-                    if self.spec_consts.is_empty() {
-                        bail!("Kernel `{}` must be specialized!", self.desc.name);
-                    }
-                    self.spec_consts
-                        .iter()
-                        .flat_map(|x| x.as_bytes())
-                        .copied()
-                        .collect()
-                } else {
-                    Vec::new()
-                };
-                let key = KernelKey {
-                    id: self.id,
-                    spec_bytes,
-                };
-                let inner = if !desc.spec_descs.is_empty() {
-                    <<Engine as DeviceEngine>::Kernel>::cached(device.engine, key, || {
-                        desc.specialize(
-                            self.threads[..self.desc.threads.len()].to_vec(),
-                            &self.spec_consts,
-                        )
-                        .map(Arc::new)
-                    })?
-                } else {
-                    <<Engine as DeviceEngine>::Kernel>::cached(device.engine, key, || {
-                        Ok(desc.clone())
-                    })?
-                };
-                Ok(Kernel {
-                    inner,
-                    groups: None,
-                })
-            }
-        }
-    }
-}
-
 #[cfg(feature = "device")]
 #[derive(PartialEq, Eq, Hash, Debug)]
 struct KernelKey {
@@ -683,195 +586,298 @@ struct KernelKey {
 }
 
 #[doc(hidden)]
-#[derive(Clone)]
-pub struct Kernel {
-    #[cfg(feature = "device")]
-    inner: Arc<<Engine as DeviceEngine>::Kernel>,
-    #[cfg(feature = "device")]
-    groups: Option<[u32; 3]>,
-}
+pub mod __private {
+    use super::*;
 
-#[cfg(feature = "device")]
-fn global_threads_to_groups(global_threads: &[u32], threads: &[u32]) -> [u32; 3] {
-    debug_assert_eq!(global_threads.len(), threads.len());
-    let mut groups = [1; 3];
-    for (gt, (g, t)) in global_threads
-        .iter()
-        .copied()
-        .zip(groups.iter_mut().zip(threads.iter().copied()))
-    {
-        *g = gt / t + if gt % t != 0 { 1 } else { 0 };
+    #[doc(hidden)]
+    #[cfg_attr(not(feature = "device"), allow(dead_code))]
+    #[derive(Clone)]
+    pub struct KernelBuilder {
+        id: usize,
+        desc: Arc<KernelDesc>,
+        spec_consts: Vec<ScalarElem>,
+        threads: [u32; 3],
     }
-    groups
-}
 
-impl Kernel {
-    pub fn global_threads(
-        #[cfg_attr(not(feature = "device"), allow(unused_mut))] mut self,
-        global_threads: &[u32],
-    ) -> Self {
-        #[cfg(feature = "device")]
-        {
-            let desc = &self.inner.desc();
-            let groups = global_threads_to_groups(global_threads, &desc.threads);
-            self.groups.replace(groups);
-            self
+    impl KernelBuilder {
+        pub fn from_bytes(bytes: &'static [u8]) -> Result<Self> {
+            let desc: Arc<KernelDesc> = Arc::new(bincode2::deserialize(bytes).unwrap());
+            let mut threads = [1, 1, 1];
+            threads[..desc.threads.len()].copy_from_slice(&desc.threads);
+            Ok(Self {
+                id: bytes.as_ptr() as usize,
+                desc,
+                spec_consts: Vec::new(),
+                threads,
+            })
         }
-        #[cfg(not(feature = "device"))]
-        {
-            let _ = global_threads;
-            unreachable!()
-        }
-    }
-    pub fn groups(
-        #[cfg_attr(not(feature = "device"), allow(unused_mut))] mut self,
-        groups: &[u32],
-    ) -> Self {
-        #[cfg(feature = "device")]
-        {
-            debug_assert_eq!(groups.len(), self.inner.desc().threads.len());
-            let mut new_groups = [1; 3];
-            new_groups[..groups.len()].copy_from_slice(groups);
-            self.groups.replace(new_groups);
-            self
-        }
-        #[cfg(not(feature = "device"))]
-        {
-            let _ = groups;
-            unreachable!()
-        }
-    }
-    pub unsafe fn dispatch(
-        &self,
-        slices: &[KernelSliceArg],
-        push_consts: &[ScalarElem],
-    ) -> Result<()> {
-        #[cfg(feature = "device")]
-        {
-            let desc = &self.inner.desc();
-            let kernel_name = &desc.name;
-            let mut buffers = Vec::with_capacity(desc.slice_descs.len());
-            let mut items: Option<usize> = None;
-            for (slice, slice_desc) in slices.into_iter().zip(desc.slice_descs.iter()) {
-                debug_assert_eq!(slice.scalar_type(), slice_desc.scalar_type);
-                debug_assert!(!slice_desc.mutable || slice.mutable());
-                let slice_name = &slice_desc.name;
-                let buffer = if let Some(buffer) = slice.device_buffer() {
-                    buffer
-                } else {
-                    bail!("Kernel `{kernel_name}`.`{slice_name}` expected device, found host!");
-                };
-                if !Arc::ptr_eq(buffer.inner.engine(), self.inner.engine()) {
-                    let device = RawDevice {
-                        engine: self.inner.engine().clone(),
-                    };
-                    let buffer_device = buffer.device();
-                    bail!(
-                        "Kernel `{kernel_name}`.`{slice_name}`, expected `{device:?}`, found {buffer_device:?}!"
-                    );
-                }
-                buffers.push(buffer.inner.clone());
-                if slice_desc.item {
-                    items.replace(if let Some(items) = items {
-                        items.min(slice.len())
+        pub fn specialize(mut self, spec_consts: &[ScalarElem]) -> Result<Self> {
+            assert_eq!(spec_consts.len(), self.desc.spec_descs.len());
+            for (spec_const, spec_desc) in
+                spec_consts.iter().copied().zip(self.desc.spec_descs.iter())
+            {
+                assert_eq!(spec_const.scalar_type(), spec_desc.scalar_type);
+                if let Some(dim) = spec_desc.thread_dim {
+                    if let ScalarElem::U32(value) = spec_const {
+                        if value == 0 {
+                            bail!("threads.{} cannot be zero!", ["x", "y", "z"][dim],);
+                        }
+                        self.threads[dim] = value;
                     } else {
-                        slice.len()
-                    });
+                        unreachable!()
+                    }
                 }
             }
-            let groups = if let Some(groups) = self.groups {
-                groups
-            } else if let Some(items) = items {
-                if desc.threads.iter().skip(1).any(|t| *t > 1) {
-                    bail!("Kernel `{kernel_name}` cannot infer global_threads if threads.y > 1 or threads.z > 1, threads = {threads:?}!", threads = desc.threads);
+            self.spec_consts.clear();
+            self.spec_consts.extend_from_slice(spec_consts);
+            Ok(self)
+        }
+        pub fn features(&self) -> Features {
+            self.desc.features
+        }
+        pub fn hash(&self) -> u64 {
+            self.desc.hash
+        }
+        pub fn safe(&self) -> bool {
+            self.desc.safe
+        }
+        pub fn build(&self, device: Device) -> Result<Kernel> {
+            match device.inner {
+                DeviceInner::Host => {
+                    bail!("Kernel `{}` expected device, found host!", self.desc.name);
                 }
-                global_threads_to_groups(&[items as u32], &[desc.threads[0]])
-            } else {
-                bail!("Kernel `{kernel_name}` global_threads or groups not provided!");
-            };
-            let mut push_bytes = Vec::with_capacity(desc.push_consts_range() as usize);
-            for (push, push_desc) in push_consts.iter().zip(desc.push_descs.iter()) {
-                debug_assert_eq!(push.scalar_type(), push_desc.scalar_type);
-                push_bytes.extend_from_slice(push.as_bytes());
+                #[cfg(feature = "device")]
+                DeviceInner::Device(device) => {
+                    let desc = &self.desc;
+                    let spec_bytes = if !self.desc.spec_descs.is_empty() {
+                        if self.spec_consts.is_empty() {
+                            bail!("Kernel `{}` must be specialized!", self.desc.name);
+                        }
+                        self.spec_consts
+                            .iter()
+                            .flat_map(|x| x.as_bytes())
+                            .copied()
+                            .collect()
+                    } else {
+                        Vec::new()
+                    };
+                    let key = KernelKey {
+                        id: self.id,
+                        spec_bytes,
+                    };
+                    let inner = if !desc.spec_descs.is_empty() {
+                        <<Engine as DeviceEngine>::Kernel>::cached(device.engine, key, || {
+                            desc.specialize(
+                                self.threads[..self.desc.threads.len()].to_vec(),
+                                &self.spec_consts,
+                            )
+                            .map(Arc::new)
+                        })?
+                    } else {
+                        <<Engine as DeviceEngine>::Kernel>::cached(device.engine, key, || {
+                            Ok(desc.clone())
+                        })?
+                    };
+                    Ok(Kernel {
+                        inner,
+                        groups: None,
+                    })
+                }
             }
-            unsafe { self.inner.dispatch(groups, &buffers, push_bytes) }
-        }
-        #[cfg(not(feature = "device"))]
-        {
-            let _ = (slices, push_consts);
-            unreachable!()
         }
     }
-    pub fn threads(&self) -> &[u32] {
+
+    #[doc(hidden)]
+    #[derive(Clone)]
+    pub struct Kernel {
         #[cfg(feature = "device")]
-        {
-            return self.inner.desc().threads.as_ref();
-        }
-        #[cfg(not(feature = "device"))]
-        {
-            unreachable!()
-        }
-    }
-    pub fn features(&self) -> Features {
+        inner: Arc<<Engine as DeviceEngine>::Kernel>,
         #[cfg(feature = "device")]
+        groups: Option<[u32; 3]>,
+    }
+
+    #[cfg(feature = "device")]
+    fn global_threads_to_groups(global_threads: &[u32], threads: &[u32]) -> [u32; 3] {
+        debug_assert_eq!(global_threads.len(), threads.len());
+        let mut groups = [1; 3];
+        for (gt, (g, t)) in global_threads
+            .iter()
+            .copied()
+            .zip(groups.iter_mut().zip(threads.iter().copied()))
         {
-            return self.inner.desc().features;
+            *g = gt / t + if gt % t != 0 { 1 } else { 0 };
         }
-        #[cfg(not(feature = "device"))]
-        {
-            unreachable!()
-        }
+        groups
     }
-}
 
-#[doc(hidden)]
-pub enum KernelSliceArg<'a> {
-    Slice(ScalarSlice<'a>),
-    SliceMut(ScalarSliceMut<'a>),
-}
+    impl Kernel {
+        pub fn global_threads(
+            #[cfg_attr(not(feature = "device"), allow(unused_mut))] mut self,
+            global_threads: &[u32],
+        ) -> Self {
+            #[cfg(feature = "device")]
+            {
+                let desc = &self.inner.desc();
+                let groups = global_threads_to_groups(global_threads, &desc.threads);
+                self.groups.replace(groups);
+                self
+            }
+            #[cfg(not(feature = "device"))]
+            {
+                let _ = global_threads;
+                unreachable!()
+            }
+        }
+        pub fn groups(
+            #[cfg_attr(not(feature = "device"), allow(unused_mut))] mut self,
+            groups: &[u32],
+        ) -> Self {
+            #[cfg(feature = "device")]
+            {
+                debug_assert_eq!(groups.len(), self.inner.desc().threads.len());
+                let mut new_groups = [1; 3];
+                new_groups[..groups.len()].copy_from_slice(groups);
+                self.groups.replace(new_groups);
+                self
+            }
+            #[cfg(not(feature = "device"))]
+            {
+                let _ = groups;
+                unreachable!()
+            }
+        }
+        pub unsafe fn dispatch(
+            &self,
+            slices: &[KernelSliceArg],
+            push_consts: &[ScalarElem],
+        ) -> Result<()> {
+            #[cfg(feature = "device")]
+            {
+                let desc = &self.inner.desc();
+                let kernel_name = &desc.name;
+                let mut buffers = Vec::with_capacity(desc.slice_descs.len());
+                let mut items: Option<usize> = None;
+                for (slice, slice_desc) in slices.into_iter().zip(desc.slice_descs.iter()) {
+                    debug_assert_eq!(slice.scalar_type(), slice_desc.scalar_type);
+                    debug_assert!(!slice_desc.mutable || slice.mutable());
+                    let slice_name = &slice_desc.name;
+                    let buffer = if let Some(buffer) = slice.device_buffer() {
+                        buffer
+                    } else {
+                        bail!("Kernel `{kernel_name}`.`{slice_name}` expected device, found host!");
+                    };
+                    if !Arc::ptr_eq(buffer.inner.engine(), self.inner.engine()) {
+                        let device = RawDevice {
+                            engine: self.inner.engine().clone(),
+                        };
+                        let buffer_device = buffer.device();
+                        bail!(
+                            "Kernel `{kernel_name}`.`{slice_name}`, expected `{device:?}`, found {buffer_device:?}!"
+                        );
+                    }
+                    buffers.push(buffer.inner.clone());
+                    if slice_desc.item {
+                        items.replace(if let Some(items) = items {
+                            items.min(slice.len())
+                        } else {
+                            slice.len()
+                        });
+                    }
+                }
+                let groups = if let Some(groups) = self.groups {
+                    groups
+                } else if let Some(items) = items {
+                    if desc.threads.iter().skip(1).any(|t| *t > 1) {
+                        bail!("Kernel `{kernel_name}` cannot infer global_threads if threads.y > 1 or threads.z > 1, threads = {threads:?}!", threads = desc.threads);
+                    }
+                    global_threads_to_groups(&[items as u32], &[desc.threads[0]])
+                } else {
+                    bail!("Kernel `{kernel_name}` global_threads or groups not provided!");
+                };
+                let mut push_bytes = Vec::with_capacity(desc.push_consts_range() as usize);
+                for (push, push_desc) in push_consts.iter().zip(desc.push_descs.iter()) {
+                    debug_assert_eq!(push.scalar_type(), push_desc.scalar_type);
+                    push_bytes.extend_from_slice(push.as_bytes());
+                }
+                unsafe { self.inner.dispatch(groups, &buffers, push_bytes) }
+            }
+            #[cfg(not(feature = "device"))]
+            {
+                let _ = (slices, push_consts);
+                unreachable!()
+            }
+        }
+        pub fn threads(&self) -> &[u32] {
+            #[cfg(feature = "device")]
+            {
+                return self.inner.desc().threads.as_ref();
+            }
+            #[cfg(not(feature = "device"))]
+            {
+                unreachable!()
+            }
+        }
+        pub fn features(&self) -> Features {
+            #[cfg(feature = "device")]
+            {
+                return self.inner.desc().features;
+            }
+            #[cfg(not(feature = "device"))]
+            {
+                unreachable!()
+            }
+        }
+    }
 
-#[cfg(feature = "device")]
-impl KernelSliceArg<'_> {
-    fn scalar_type(&self) -> ScalarType {
-        match self {
-            Self::Slice(x) => x.scalar_type(),
-            Self::SliceMut(x) => x.scalar_type(),
-        }
+    #[doc(hidden)]
+    pub enum KernelSliceArg<'a> {
+        Slice(ScalarSlice<'a>),
+        SliceMut(ScalarSliceMut<'a>),
     }
-    fn mutable(&self) -> bool {
-        match self {
-            Self::Slice(_) => false,
-            Self::SliceMut(_) => true,
-        }
-    }
-    /*fn device(&self) -> Device {
-        match self {
-            Self::Slice(x) => x.device(),
-            Self::SliceMut(x) => x.device(),
-        }
-    }*/
-    fn device_buffer(&self) -> Option<&DeviceBuffer> {
-        match self {
-            Self::Slice(x) => x.device_buffer(),
-            Self::SliceMut(x) => x.device_buffer_mut(),
-        }
-    }
-    fn len(&self) -> usize {
-        match self {
-            Self::Slice(x) => x.len(),
-            Self::SliceMut(x) => x.len(),
-        }
-    }
-}
 
-impl<'a, T: Scalar> From<Slice<'a, T>> for KernelSliceArg<'a> {
-    fn from(slice: Slice<'a, T>) -> Self {
-        Self::Slice(slice.into())
+    #[cfg(feature = "device")]
+    impl KernelSliceArg<'_> {
+        fn scalar_type(&self) -> ScalarType {
+            match self {
+                Self::Slice(x) => x.scalar_type(),
+                Self::SliceMut(x) => x.scalar_type(),
+            }
+        }
+        fn mutable(&self) -> bool {
+            match self {
+                Self::Slice(_) => false,
+                Self::SliceMut(_) => true,
+            }
+        }
+        /*fn device(&self) -> Device {
+            match self {
+                Self::Slice(x) => x.device(),
+                Self::SliceMut(x) => x.device(),
+            }
+        }*/
+        fn device_buffer(&self) -> Option<&DeviceBuffer> {
+            match self {
+                Self::Slice(x) => x.device_buffer(),
+                Self::SliceMut(x) => x.device_buffer_mut(),
+            }
+        }
+        fn len(&self) -> usize {
+            match self {
+                Self::Slice(x) => x.len(),
+                Self::SliceMut(x) => x.len(),
+            }
+        }
     }
-}
 
-impl<'a, T: Scalar> From<SliceMut<'a, T>> for KernelSliceArg<'a> {
-    fn from(slice: SliceMut<'a, T>) -> Self {
-        Self::SliceMut(slice.into())
+    impl<'a, T: Scalar> From<Slice<'a, T>> for KernelSliceArg<'a> {
+        fn from(slice: Slice<'a, T>) -> Self {
+            Self::Slice(slice.into())
+        }
+    }
+
+    impl<'a, T: Scalar> From<SliceMut<'a, T>> for KernelSliceArg<'a> {
+        fn from(slice: SliceMut<'a, T>) -> Self {
+            Self::SliceMut(slice.into())
+        }
     }
 }

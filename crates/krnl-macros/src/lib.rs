@@ -1,30 +1,26 @@
-#![allow(unused_imports, dead_code)]
 use derive_syn_parse::Parse;
+use fxhash::FxHashMap;
 use proc_macro::TokenStream;
 use proc_macro2::{Span as Span2, TokenStream as TokenStream2};
 use quote::{format_ident, quote, ToTokens};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
-use std::{
-    collections::hash_map::{DefaultHasher, HashMap},
-    hash::{Hash, Hasher},
-    str::FromStr,
-};
+use std::{hash::Hash, str::FromStr};
 use syn::{
     parse::{Parse, ParseStream},
     parse_macro_input, parse_quote,
     punctuated::Punctuated,
     token::{
-        And, Brace, Bracket, Colon, Colon2, Comma, Const, Eq as SynEq, Fn, Gt, Lt, Mod, Mut, Paren,
-        Pound, Pub, Semi, Unsafe,
+        And, Brace, Bracket, Colon, Comma, Const, Eq as SynEq, Fn, Gt, Lt, Mod, Mut, Paren, Pound,
+        Unsafe,
     },
-    Attribute, Block, Error, Expr, ExprParen, FnArg, Ident, ItemFn, ItemMod, Lit, LitBool, LitInt,
-    LitStr, Stmt, Type, Visibility,
+    Attribute, Block, Error, Ident, LitInt, Visibility,
 };
 
 type Result<T, E = Error> = std::result::Result<T, E>;
 
 #[derive(Parse, Debug)]
 struct InsideParen<T> {
+    #[allow(unused)]
     #[paren]
     paren: Paren,
     #[inside(paren)]
@@ -102,23 +98,32 @@ pub fn module(attr: TokenStream, item: TokenStream) -> TokenStream {
     });
     if build {
         let source = item.tokens.to_string();
-        let mut hasher = DefaultHasher::default();
-        source.hash(&mut hasher);
-        let hash = hasher.finish();
+        let hash = fxhash::hash64(&source);
         let name_with_hash = format_ident!("{ident}_{hash:x}", ident = item.ident);
         let tokens = item.tokens;
         item.tokens = quote! {
+            #[doc(hidden)]
             mod __krnl_module_data {
                 #[allow(non_upper_case_globals)]
                 const __krnl_module_source: &'static str = #source;
             }
+            #[cfg(not(krnlc))]
             include!(concat!(env!("CARGO_MANIFEST_DIR"), "/krnl-cache.rs"));
+            #[cfg(not(krnlc))]
             __krnl_cache!(#name_with_hash);
+            #[cfg(krnlc)]
+            #[doc(hidden)]
+            macro_rules! __krnl_kernel {
+                ($k:ident) => {
+                    &[]
+                };
+            }
             #tokens
         };
     } else {
         let tokens = item.tokens;
         item.tokens = quote! {
+            #[doc(hidden)]
             macro_rules! __krnl_kernel {
                 ($k:ident) => {
                     &[]
@@ -133,6 +138,7 @@ pub fn module(attr: TokenStream, item: TokenStream) -> TokenStream {
 
 #[derive(Parse, Debug)]
 struct ModuleKrnlArgs {
+    #[allow(unused)]
     #[paren]
     paren: Paren,
     #[inside(paren)]
@@ -142,7 +148,9 @@ struct ModuleKrnlArgs {
 
 #[derive(Parse, Debug)]
 struct ModuleKrnlArg {
+    #[allow(unused)]
     crate_token: Option<syn::token::Crate>,
+    #[allow(unused)]
     #[parse_if(crate_token.is_some())]
     eq: Option<SynEq>,
     #[parse_if(crate_token.is_some())]
@@ -179,9 +187,7 @@ impl ToTokens for ModuleItem {
 
 #[proc_macro_attribute]
 pub fn kernel(attr: TokenStream, item: TokenStream) -> TokenStream {
-    let attr = parse_macro_input!(attr as KernelAttr);
-    let item = parse_macro_input!(item as KernelItem);
-    match kernel_impl(attr, item) {
+    match kernel_impl(attr.into(), item.into()) {
         Ok(tokens) => tokens.into(),
         Err(e) => e.into_compile_error().into(),
     }
@@ -272,28 +278,11 @@ impl ToTokens for KernelThreadDim {
     }
 }
 
-/*
-#[derive(Parse, Debug, Clone)]
-struct IdentOrLiteral {
-    ident: Option<Ident>,
-    #[parse_if(ident.is_none())]
-    lit: Option<LitInt>,
-}
-
-impl ToTokens for IdentOrLiteral {
-    fn to_tokens(&self, tokens: &mut TokenStream2) {
-        if let Some(ident) = self.ident.as_ref() {
-            ident.to_tokens(tokens);
-        } else if let Some(lit) = self.lit.as_ref() {
-            lit.to_tokens(tokens);
-        }
-    }
-}*/
-
 #[derive(Parse, Debug)]
 struct KernelItem {
     #[call(Attribute::parse_outer)]
     attrs: Vec<Attribute>,
+    #[allow(unused)]
     vis: Visibility,
     unsafe_token: Option<Unsafe>,
     #[allow(unused)]
@@ -301,6 +290,7 @@ struct KernelItem {
     ident: Ident,
     #[peek(Lt)]
     generics: Option<KernelGenerics>,
+    #[allow(unused)]
     #[paren]
     paren: Paren,
     #[inside(paren)]
@@ -319,7 +309,7 @@ impl KernelItem {
             arg_metas: Vec::with_capacity(self.args.len()),
             block: self.block.clone(),
             itemwise: false,
-            arrays: HashMap::new(),
+            arrays: FxHashMap::default(),
         };
         let mut spec_id = 0;
         if let Some(generics) = self.generics.as_ref() {
@@ -354,23 +344,28 @@ impl KernelItem {
             }
             meta.arg_metas.push(arg_meta);
         }
+        if meta.itemwise && meta.attr_meta.thread_dims.len() > 1 {
+            return Err(Error::new_spanned(
+                &meta.attr_meta.thread_dims,
+                "`item` kernels are 1 dimensional",
+            ));
+        }
         Ok(meta)
     }
 }
 
 #[derive(Parse, Debug)]
 struct KernelGenerics {
+    #[allow(unused)]
     lt: Lt,
     #[call(Punctuated::parse_separated_nonempty)]
     specs: Punctuated<KernelSpec, Comma>,
+    #[allow(unused)]
     gt: Gt,
 }
 
 #[derive(Parse, Debug)]
 struct KernelSpec {
-    #[allow(unused)]
-    pound: Pound,
-    spec: InsideBracket<Ident>,
     #[allow(unused)]
     const_token: Const,
     ident: Ident,
@@ -428,22 +423,8 @@ struct KernelTypeScalar {
     scalar_type: ScalarType,
 }
 
-/*
-impl ScalarType {
-    fn size(&self) -> usize {
-        match self.name {
-            "u8" | "i8" => 1,
-            "u16" | "i16" | "f16" | "bf16" => 2,
-            "u32" | "i32" | "f32" => 4,
-            "u64" | "i64" | "f64" => 8,
-            _ => unreachable!(),
-        }
-    }
-}*/
-
 impl Parse for KernelTypeScalar {
     fn parse(input: ParseStream<'_>) -> Result<Self> {
-        use ScalarType::*;
         let ident = input.parse()?;
         if let Some(scalar_type) = ScalarType::iter().find(|x| ident == x.name()) {
             Ok(Self { ident, scalar_type })
@@ -626,12 +607,12 @@ impl KernelArgMeta {
                     quote! {
                         unsafe {
                             use ::krnl_core::buffer::UnsafeIndex;
-                            #ident.unsafe_index_mut(kernel.item_id() as usize)
+                            #ident.unsafe_index_mut(__krnl_item_index as usize)
                         }
                     }
                 } else {
                     quote! {
-                        #ident[kernel.item_id() as usize]
+                        #ident[__krnl_item_index as usize]
                     }
                 }
             }
@@ -644,6 +625,7 @@ impl KernelArgMeta {
 
 #[derive(Parse, Debug)]
 struct KernelArgAttr {
+    #[allow(unused)]
     pound: Option<Pound>,
     #[parse_if(pound.is_some())]
     ident: Option<InsideBracket<Ident>>,
@@ -689,6 +671,7 @@ impl Parse for KernelArgKind {
 
 #[derive(Parse, Debug)]
 struct KernelTypeItem {
+    #[allow(unused)]
     and: Option<And>,
     #[parse_if(and.is_some())]
     mut_token: Option<Mut>,
@@ -698,18 +681,24 @@ struct KernelTypeItem {
 #[derive(Parse, Debug)]
 struct KernelTypeSlice {
     ty: Ident,
+    #[allow(unused)]
     lt: Lt,
     scalar_ty: KernelTypeScalar,
+    #[allow(unused)]
     gt: Gt,
 }
 
 #[derive(Parse, Debug)]
 struct KernelTypeArray {
+    #[allow(unused)]
     ty: Ident,
+    #[allow(unused)]
     lt: Lt,
     scalar_ty: KernelTypeScalar,
+    #[allow(unused)]
     comma: Comma,
     len: KernelArrayLength,
+    #[allow(unused)]
     gt: Gt,
 }
 
@@ -767,7 +756,7 @@ struct KernelMeta {
     arg_metas: Vec<KernelArgMeta>,
     itemwise: bool,
     block: Block,
-    arrays: HashMap<ScalarType, Vec<(Ident, TokenStream2)>>,
+    arrays: FxHashMap<ScalarType, Vec<(Ident, TokenStream2)>>,
 }
 
 impl KernelMeta {
@@ -778,11 +767,7 @@ impl KernelMeta {
             threads: self.attr_meta.threads.clone(),
             ..KernelDesc::default()
         };
-        kernel_desc.hash = {
-            let mut hasher = DefaultHasher::default();
-            self.block.to_token_stream().to_string().hash(&mut hasher);
-            hasher.finish()
-        };
+        kernel_desc.hash = fxhash::hash64(&self.block.to_token_stream().to_string());
         for spec in self.spec_metas.iter() {
             let thread_dim = self.attr_meta.thread_dims.iter().position(|dim| {
                 if let Some(ident) = dim.ident.as_ref() {
@@ -1169,7 +1154,6 @@ impl ScalarType {
 impl FromStr for ScalarType {
     type Err = ();
     fn from_str(input: &str) -> Result<Self, ()> {
-        use ScalarType::*;
         Self::iter()
             .find(|x| x.as_str() == input || x.name() == input)
             .ok_or(())
@@ -1214,7 +1198,7 @@ impl<'de> Deserialize<'de> for ScalarType {
     }
 }
 
-#[derive(Default, Serialize, Deserialize)]
+#[derive(Default, Serialize, Deserialize, Debug)]
 struct KernelDesc {
     name: String,
     hash: u64,
@@ -1229,14 +1213,7 @@ struct KernelDesc {
 
 impl KernelDesc {
     fn encode(&self) -> Result<String> {
-        //let mut entry_point = "__krnl_kernel_data_".to_string();
         let bytes = bincode2::serialize(self).map_err(|e| Error::new(Span2::call_site(), e))?;
-        /*for byte in bytes.iter().copied() {
-            let a = byte / 16;
-            let b = byte % 16;
-            entry_point.push(char::from_digit(a as _, 16).unwrap());
-            entry_point.push(char::from_digit(b as _, 16).unwrap());
-        }*/
         Ok(format!("__krnl_kernel_data_{}", hex::encode(&bytes)))
     }
     fn push_const_fields(&self) -> TokenStream2 {
@@ -1280,14 +1257,14 @@ struct Features {
     shader_float64: bool,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Debug)]
 struct SpecDesc {
     name: String,
     scalar_type: ScalarType,
     thread_dim: Option<usize>,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Debug)]
 struct SliceDesc {
     name: String,
     scalar_type: ScalarType,
@@ -1295,13 +1272,15 @@ struct SliceDesc {
     item: bool,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Debug)]
 struct PushDesc {
     name: String,
     scalar_type: ScalarType,
 }
 
-fn kernel_impl(attr: KernelAttr, item: KernelItem) -> Result<TokenStream2> {
+fn kernel_impl(attr_tokens: TokenStream2, item_tokens: TokenStream2) -> Result<TokenStream2> {
+    let attr: KernelAttr = syn::parse2(attr_tokens.clone())?;
+    let item: KernelItem = syn::parse2(item_tokens.clone())?;
     let kernel_meta = item.meta(attr.meta()?)?;
     let kernel_desc = kernel_meta.desc()?;
     let unsafe_token = kernel_meta.unsafe_token;
@@ -1341,19 +1320,35 @@ fn kernel_impl(attr: KernelAttr, item: KernelItem) -> Result<TokenStream2> {
         let mut device_fn_call = quote! {
             #unsafe_token {
                 #ident (
-                    &kernel,
+                    kernel,
                     #device_fn_call_args
                 );
             }
         };
         if kernel_meta.itemwise {
             device_fn_call = quote! {
-                while kernel.item_id() < kernel.items() {
-                    #device_fn_call
-                    kernel.next_item();
+                let __krnl_items = #items;
+                let mut __krnl_item_index = kernel.global_index();
+                while __krnl_item_index < __krnl_items {
+                    {
+                        let kernel = ::krnl_core::kernel::ItemKernel::from(::krnl_core::kernel::__private::ItemKernelArgs {
+                            item_index: __krnl_item_index,
+                            item_id: __krnl_item_index,
+                            items: __krnl_items,
+                        });
+                        #device_fn_call
+                    }
+                    __krnl_item_index += kernel.global_threads();
                 }
-            }
+            };
         }
+        let kernel_type = if kernel_meta.itemwise {
+            quote! { ItemKernel<u32> }
+        } else {
+            quote! {
+                Kernel<#kernel_dim>
+            }
+        };
         quote! {
             #push_struct_tokens
             #[cfg(target_arch = "spirv")]
@@ -1394,7 +1389,7 @@ fn kernel_impl(attr: KernelAttr, item: KernelItem) -> Result<TokenStream2> {
             ) {
                 #unsafe_token fn #ident(
                     #[allow(unused)]
-                    kernel: &::krnl_core::kernel::Kernel<#kernel_dim>,
+                    kernel: ::krnl_core::kernel::#kernel_type,
                     #device_fn_def_args
                 ) #block
                 {
@@ -1405,20 +1400,7 @@ fn kernel_impl(attr: KernelAttr, item: KernelItem) -> Result<TokenStream2> {
                     }
                     #declare_specs
                     let __krnl_threads = ::krnl_core::glam::UVec3::new(#threads3);
-                    /*unsafe {
-                        ::core::arch::asm!(
-                            "%uint = OpTypeInt 32 0",
-                            "%uvec3 = OpTypeVector %uint 3",
-                            "%spec = OpSpecConstant %uint 1",
-                            "OpDecorate %spec SpecId 100",
-                            "%threads = OpSpecConstantComposite %uvec3 %spec %spec %spec",
-                            "OpDecorate %threads BuiltIn WorkgroupSize",
-                            /*threads_x = in(reg) __krnl_threads.x,
-                            threads_y = in(reg) __krnl_threads.y,
-                            threads_z = in(reg) __krnl_threads.z,*/
-                        );
-                    }*/
-                    let mut kernel = ::krnl_core::kernel::Kernel::<#kernel_dim>::from(::krnl_core::kernel::KernelArgs {
+                    let mut kernel = ::krnl_core::kernel::Kernel::<#kernel_dim>::from(::krnl_core::kernel::__private::KernelArgs {
                         groups: __krnl_groups,
                         group_id: __krnl_group_id,
                         subgroups: __krnl_subgroups,
@@ -1427,7 +1409,6 @@ fn kernel_impl(attr: KernelAttr, item: KernelItem) -> Result<TokenStream2> {
                         subgroup_thread_id: __krnl_subgroup_thread_id,
                         threads: __krnl_threads,
                         thread_id: __krnl_thread_id,
-                        items: #items,
                     });
                     #device_arrays
                     #device_slices
@@ -1437,10 +1418,34 @@ fn kernel_impl(attr: KernelAttr, item: KernelItem) -> Result<TokenStream2> {
         }
     };
     let host_tokens = {
+        let kernel_dim = if dimensionality == 1 {
+            quote! { u32 }
+        } else if dimensionality == 2 {
+            quote! {
+                UVec2
+            }
+        } else {
+            quote! { UVec3 }
+        };
+        let to_array_ext = if dimensionality == 1 {
+            quote! {
+                #[doc(hidden)]
+                trait ToArrayExt {
+                    fn to_array(&self) -> [u32; 1];
+                }
+                #[doc(hidden)]
+                impl ToArrayExt for u32 {
+                    fn to_array(&self) -> [u32; 1] {
+                        [*self]
+                    }
+                }
+            }
+        } else {
+            TokenStream2::new()
+        };
         let dispatch_args = kernel_meta.dispatch_args();
         let dispatch_slice_args = kernel_meta.dispatch_slice_args();
         let dispatch_push_args = kernel_meta.dispatch_push_args();
-        let dimensionality = LitInt::new(&dimensionality.to_string(), Span2::call_site());
         let hash = kernel_desc.hash;
         let safe = unsafe_token.is_none();
         let host_array_length_checks = kernel_meta.host_array_length_checks();
@@ -1458,21 +1463,50 @@ fn kernel_impl(attr: KernelAttr, item: KernelItem) -> Result<TokenStream2> {
         } else {
             TokenStream2::new()
         };
+        let input_docs = {
+            let input_tokens_string = prettyplease::unparse(&syn::parse2(quote! {
+                #[kernel(#attr_tokens)]
+                #item_tokens
+            })?);
+            let input_doc_string = format!("```\n{input_tokens_string}\n```");
+            quote! {
+                #![cfg_attr(not(doctest), doc = #input_doc_string)]
+            }
+        };
+        let expansion = if rustversion::cfg!(nightly) {
+            let expansion_tokens_string =
+                prettyplease::unparse(&syn::parse2(device_tokens.clone())?);
+            let expansion_doc_string = format!("```\n{expansion_tokens_string}\n```");
+            quote! {
+                #[cfg(all(doc, not(doctest)))]
+                mod expansion {
+                    #![doc = #expansion_doc_string]
+                }
+            }
+        } else {
+            TokenStream2::new()
+        };
+        let item_attrs = &item.attrs;
         quote! {
             #[cfg(not(target_arch = "spirv"))]
+            #(#[#item_attrs])*
             #[automatically_derived]
             pub mod #ident {
+                #input_docs
+                #expansion
+
                 use super::__krnl::{
                     anyhow::{self, Result},
-                    krnl_core::half::{f16, bf16},
+                    krnl_core::{half::{f16, bf16}, glam::{UVec2, UVec3}},
                     buffer::{Slice, SliceMut},
-                    device::{Device, Kernel as KernelBase, KernelBuilder as KernelBuilderBase},
+                    device::{Device, __private::{Kernel as KernelBase, KernelBuilder as KernelBuilderBase}},
                     once_cell::sync::Lazy,
                 };
 
                 #host_array_length_checks
 
                 pub struct KernelBuilder {
+                    #[doc(hidden)]
                     inner: KernelBuilderBase,
                 }
 
@@ -1502,41 +1536,34 @@ fn kernel_impl(attr: KernelAttr, item: KernelItem) -> Result<TokenStream2> {
                 }
 
                 pub struct Kernel {
+                    #[doc(hidden)]
                     inner: KernelBase,
                 }
 
                 impl Kernel {
-                    pub fn with_global_threads(mut self, global_threads: [u32; #dimensionality]) -> Self {
-                        self.inner = self.inner.global_threads(&global_threads);
+                    pub fn with_global_threads(mut self, global_threads: #kernel_dim) -> Self {
+                        self.inner = self.inner.global_threads(&global_threads.to_array());
                         self
                     }
-                    pub fn with_groups(mut self, groups: [u32; #dimensionality]) -> Self {
-                        self.inner = self.inner.groups(&groups);
+                    pub fn with_groups(mut self, groups: #kernel_dim) -> Self {
+                        self.inner = self.inner.groups(&groups.to_array());
                         self
                     }
                     pub #unsafe_token fn dispatch(&self, #dispatch_args) -> Result<()> {
                         unsafe { self.inner.dispatch(&[#dispatch_slice_args], &[#dispatch_push_args]) }
                     }
                 }
+
+                #to_array_ext
             }
         }
     };
     let tokens = quote! {
         #host_tokens
         #device_tokens
+        #[cfg(all(target_arch = "spirv", not(krnlc)))]
+        compile_error!("kernel cannot be used without krnlc!");
     };
-    /*if ident == "unary_u8" {
-        let file = syn::parse2(tokens.clone()).map_err(|e| {
-            let mut err = Error::new_spanned(
-                &tokens,
-                &format!("unable to parse module tokens:\n{tokens}"),
-            );
-            err.combine(e);
-            err
-        })?;
-        let source = prettyplease::unparse(&file);
-        eprintln!("{source}");
-    }*/
     Ok(tokens)
 }
 
@@ -1567,27 +1594,24 @@ pub fn __krnl_module(input: TokenStream) -> TokenStream {
     if error.is_none() {
         match bincode2::deserialize_from::<_, KrnlcCache>(GzDecoder::new(&*cache_bytes)) {
             Ok(cache) => {
-                if let Some(modules) = cache.modules.as_ref() {
-                    let kernel_count = modules.values().map(|kernels| kernels.len()).sum();
-                    macro_arms.reserve(kernel_count);
-                    let mut bytes = Vec::new();
-                    if let Some(module) = modules.get(&input.module.to_string()) {
-                        for (kernel, kernel_desc) in module {
-                            let ident = format_ident!("{kernel}");
-                            bytes.clear();
-                            bincode2::serialize_into(&mut bytes, kernel_desc).unwrap();
-                            let bytes = bytes.iter().map(|x| {
-                                use proc_macro2::{Literal, TokenTree};
-                                TokenTree::Literal(Literal::u8_unsuffixed(*x))
-                            });
-                            macro_arms.push(quote! {
-                                (#ident) => {
-                                    &[#(#bytes),*]
-                                };
-                            });
-                        }
-                    } else {
-                        error.replace("cache modified, recompile with krnlc".to_string());
+                let modules = &cache.modules;
+                let kernel_count = modules.iter().map(|(_, kernels)| kernels.len()).sum();
+                macro_arms.reserve(kernel_count);
+                let mut bytes = Vec::new();
+                if let Some((_, kernels)) = modules.iter().find(|(m, _)| input.module == m) {
+                    for (kernel, kernel_desc) in kernels {
+                        let ident = format_ident!("{kernel}");
+                        bytes.clear();
+                        bincode2::serialize_into(&mut bytes, kernel_desc).unwrap();
+                        let bytes = bytes.iter().map(|x| {
+                            use proc_macro2::{Literal, TokenTree};
+                            TokenTree::Literal(Literal::u8_unsuffixed(*x))
+                        });
+                        macro_arms.push(quote! {
+                            (#ident) => {
+                                &[#(#bytes),*]
+                            };
+                        });
                     }
                 }
             }
@@ -1605,19 +1629,21 @@ pub fn __krnl_module(input: TokenStream) -> TokenStream {
     } else {
         TokenStream2::new()
     };
-    quote! {
+    let tokens = quote! {
+        #[doc(hidden)]
         macro_rules! __krnl_kernel {
             #(#macro_arms)*
             ($i:ident) => { &[] };
         }
         #error
-    }
-    .into()
+    };
+    tokens.into()
 }
 
 #[derive(Parse, Debug)]
 struct KrnlcCacheInput {
     module: Ident,
+    #[allow(unused)]
     comma: Comma,
     #[call(Punctuated::parse_terminated)]
     data: Punctuated<Ident, Comma>,
@@ -1625,6 +1651,7 @@ struct KrnlcCacheInput {
 
 #[derive(Deserialize)]
 struct KrnlcCache {
+    #[allow(unused)]
     version: String,
-    modules: Option<HashMap<String, HashMap<String, KernelDesc>>>,
+    modules: Vec<(String, Vec<(String, KernelDesc)>)>,
 }

@@ -143,7 +143,7 @@ mod kernels {
     use krnl_core::krnl_macros::kernel;
 
     #[kernel(threads(TS))]
-    pub fn saxpy<#[spec] const TS: u32>(#[item] x: f32, alpha: f32, #[item] y: &mut f32) {
+    pub fn saxpy<const TS: u32>(#[item] x: f32, alpha: f32, #[item] y: &mut f32) {
         *y += alpha * x;
     }
 }

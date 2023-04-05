@@ -1,14 +1,23 @@
 use dry::macro_for;
 use half::{bf16, f16};
-use krnl::{
-    buffer::Slice,
-    device::{Device, Features},
-    scalar::{Scalar, ScalarType},
-};
+use krnl::{buffer::Slice, device::Device, scalar::Scalar};
+#[cfg(not(target_arch = "wasm32"))]
+use krnl::{device::Features, scalar::ScalarType};
+#[cfg(not(target_arch = "wasm32"))]
 use libtest_mimic::{Arguments, Trial};
 use paste::paste;
+#[cfg(not(target_arch = "wasm32"))]
 use std::str::FromStr;
+#[cfg(target_arch = "wasm32")]
+use wasm_bindgen_test::wasm_bindgen_test as test;
 
+#[cfg(all(target_arch = "wasm32", run_in_browser))]
+wasm_bindgen_test::wasm_bindgen_test_configure!(run_in_browser);
+
+#[cfg(target_arch = "wasm32")]
+fn main() {}
+
+#[cfg(not(target_arch = "wasm32"))]
 fn main() {
     let args = Arguments::from_args();
     let tests = if cfg!(feature = "device") && !cfg!(miri) {
@@ -45,6 +54,7 @@ fn main() {
     libtest_mimic::run(&args, tests).exit()
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn device_test(device: &Device, name: &str, f: impl Fn(Device) + Send + Sync + 'static) -> Trial {
     let name = format!(
         "{name}_{}",
@@ -54,69 +64,20 @@ fn device_test(device: &Device, name: &str, f: impl Fn(Device) + Send + Sync + '
     Trial::test(name, move || Ok(f(device)))
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn tests(device: &Device, device2: Option<&Device>) -> impl IntoIterator<Item = Trial> {
     buffer_tests(device, device2)
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn buffer_tests(device: &Device, device2: Option<&Device>) -> impl IntoIterator<Item = Trial> {
-    fn buffer_test_lengths() -> impl ExactSizeIterator<Item = usize> {
-        [0, 1, 3, 4, 16, 67, 157].into_iter()
-    }
-    fn buffer_transfer_test_lengths() -> impl ExactSizeIterator<Item = usize> {
-        #[cfg(miri)]
-        {
-            [0, 1, 3, 4, 16, 345].into_iter()
-        }
-        #[cfg(not(miri))]
-        {
-            [0, 1, 3, 4, 16, 345, 9_337_791].into_iter()
-        }
-    }
     let features = device
         .info()
         .map(|x| x.features())
         .unwrap_or(Features::empty());
     let mut tests = Vec::new();
 
-    fn buffer_from_vec(device: Device) {
-        let n = buffer_transfer_test_lengths().max().unwrap();
-        let x = (10..20).cycle().take(n).collect::<Vec<_>>();
-        for n in buffer_transfer_test_lengths() {
-            let x = &x[..n];
-            let y = Slice::from(x)
-                .to_device(device.clone())
-                .unwrap()
-                .into_vec()
-                .unwrap();
-            assert_eq!(y.len(), n);
-            if x != y.as_slice() {
-                for (x, y) in x.iter().zip(y) {
-                    assert_eq!(&y, x);
-                }
-            }
-        }
-    }
     tests.push(device_test(device, "buffer_from_vec", buffer_from_vec));
-
-    fn buffer_transfer(device: Device, device2: Device) {
-        let n = buffer_transfer_test_lengths().max().unwrap();
-        let x = (10..20).cycle().take(n).collect::<Vec<_>>();
-        for n in buffer_transfer_test_lengths() {
-            let x = &x[..n];
-            let y = Slice::from(x)
-                .to_device(device.clone())
-                .unwrap()
-                .to_device(device2.clone())
-                .unwrap()
-                .into_vec()
-                .unwrap();
-            if x != y.as_slice() {
-                for (x, y) in x.iter().zip(y) {
-                    assert_eq!(&y, x);
-                }
-            }
-        }
-    }
 
     if device.is_device() {
         tests.push(
@@ -127,25 +88,6 @@ fn buffer_tests(device: &Device, device2: Option<&Device>) -> impl IntoIterator<
             })
             .with_ignored_flag(device2.is_none()),
         );
-    }
-
-    fn buffer_fill<T: Scalar>(device: Device) {
-        let elem = T::one();
-        let n = buffer_test_lengths().max().unwrap();
-        let x = (10..20)
-            .cycle()
-            .map(|x| T::from_u32(x).unwrap())
-            .take(n)
-            .collect::<Vec<_>>();
-        for n in buffer_test_lengths() {
-            let x = &x[..n];
-            let mut y = Slice::from(x).to_device(device.clone()).unwrap();
-            y.fill(elem).unwrap();
-            let y: Vec<T> = y.into_vec().unwrap();
-            for y in y.into_iter() {
-                assert_eq!(y, elem);
-            }
-        }
     }
 
     macro_for!($T in [u8, i8, u16, i16, f16, bf16, u32, i32, f32, u64, i64, f64] {
@@ -170,28 +112,6 @@ fn buffer_tests(device: &Device, device2: Option<&Device>) -> impl IntoIterator<
         }
     });
 
-    fn buffer_cast<X: Scalar, Y: Scalar>(device: Device) {
-        let n = buffer_test_lengths().max().unwrap();
-        let x = (10..20)
-            .cycle()
-            .map(|x| X::from_u32(x).unwrap())
-            .take(n)
-            .collect::<Vec<_>>();
-        for n in buffer_test_lengths() {
-            let x = &x[..n];
-            let y = Slice::<X>::from(x)
-                .into_device(device.clone())
-                .unwrap()
-                .cast_into::<Y>()
-                .unwrap()
-                .into_vec()
-                .unwrap();
-            for (x, y) in x.iter().zip(y.iter()) {
-                assert_eq!(*y, x.cast::<Y>());
-            }
-        }
-    }
-
     fn buffer_cast_features(x: ScalarType, y: ScalarType) -> Features {
         fn features(ty: ScalarType) -> Features {
             use ScalarType::*;
@@ -212,22 +132,6 @@ fn buffer_tests(device: &Device, device2: Option<&Device>) -> impl IntoIterator<
         features(x).union(&features(y))
     }
 
-    fn buffer_bitcast<X: Scalar, Y: Scalar>(device: Device) {
-        let x_host = &[X::default(); 16];
-        let x = Slice::from(x_host.as_ref()).to_device(device).unwrap();
-        for i in 0..=16 {
-            for range in [i..16, 0..i] {
-                let bytemuck_result =
-                    bytemuck::try_cast_slice::<X, Y>(&x_host[range.clone()]).map(|_| ());
-                let result = x.slice(range).unwrap().bitcast::<Y>().map(|_| ());
-                #[cfg(miri)]
-                let _ = (bytemuck_result, result);
-                #[cfg(not(miri))]
-                assert_eq!(result, bytemuck_result);
-            }
-        }
-    }
-
     macro_for!($X in [u8, i8, u16, i16, f16, bf16, u32, i32, f32, u64, i64, f64] {
         macro_for!($Y in [u8, i8, u16, i16, f16, bf16, u32, i32, f32, u64, i64, f64] {
             {
@@ -244,3 +148,144 @@ fn buffer_tests(device: &Device, device2: Option<&Device>) -> impl IntoIterator<
 
     tests
 }
+
+fn buffer_test_lengths() -> impl ExactSizeIterator<Item = usize> {
+    [0, 1, 3, 4, 16, 67, 157].into_iter()
+}
+fn buffer_transfer_test_lengths() -> impl ExactSizeIterator<Item = usize> {
+    #[cfg(not(miri))]
+    {
+        [0, 1, 3, 4, 16, 345, 9_337_791].into_iter()
+    }
+    #[cfg(miri)]
+    {
+        [0, 1, 3, 4, 16, 345].into_iter()
+    }
+}
+
+fn buffer_from_vec(device: Device) {
+    let n = buffer_transfer_test_lengths().last().unwrap();
+    let x = (10..20).cycle().take(n).collect::<Vec<_>>();
+    for n in buffer_transfer_test_lengths() {
+        let x = &x[..n];
+        let y = Slice::from(x)
+            .to_device(device.clone())
+            .unwrap()
+            .into_vec()
+            .unwrap();
+        assert_eq!(y.len(), n);
+        if x != y.as_slice() {
+            for (x, y) in x.iter().zip(y) {
+                assert_eq!(&y, x);
+            }
+        }
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn buffer_transfer(device: Device, device2: Device) {
+    let n = buffer_transfer_test_lengths().last().unwrap();
+    let x = (10..20).cycle().take(n).collect::<Vec<_>>();
+    for n in buffer_transfer_test_lengths() {
+        let x = &x[..n];
+        let y = Slice::from(x)
+            .to_device(device.clone())
+            .unwrap()
+            .to_device(device2.clone())
+            .unwrap()
+            .into_vec()
+            .unwrap();
+        if x != y.as_slice() {
+            for (x, y) in x.iter().zip(y) {
+                assert_eq!(&y, x);
+            }
+        }
+    }
+}
+
+fn buffer_fill<T: Scalar>(device: Device) {
+    let elem = T::one();
+    let n = buffer_test_lengths().last().unwrap();
+    let x = (10..20)
+        .cycle()
+        .map(|x| T::from_u32(x).unwrap())
+        .take(n)
+        .collect::<Vec<_>>();
+    for n in buffer_test_lengths() {
+        let x = &x[..n];
+        let mut y = Slice::from(x).to_device(device.clone()).unwrap();
+        y.fill(elem).unwrap();
+        let y: Vec<T> = y.into_vec().unwrap();
+        for y in y.into_iter() {
+            assert_eq!(y, elem);
+        }
+    }
+}
+
+fn buffer_cast<X: Scalar, Y: Scalar>(device: Device) {
+    let n = buffer_test_lengths().last().unwrap();
+    let x = (10..20)
+        .cycle()
+        .map(|x| X::from_u32(x).unwrap())
+        .take(n)
+        .collect::<Vec<_>>();
+    for n in buffer_test_lengths() {
+        let x = &x[..n];
+        let y = Slice::<X>::from(x)
+            .into_device(device.clone())
+            .unwrap()
+            .cast_into::<Y>()
+            .unwrap()
+            .into_vec()
+            .unwrap();
+        for (x, y) in x.iter().zip(y.iter()) {
+            assert_eq!(*y, x.cast::<Y>());
+        }
+    }
+}
+
+fn buffer_bitcast<X: Scalar, Y: Scalar>(device: Device) {
+    let x_host = &[X::default(); 16];
+    let x = Slice::from(x_host.as_ref()).to_device(device).unwrap();
+    for i in 0..=16 {
+        for range in [i..16, 0..i] {
+            let bytemuck_result =
+                bytemuck::try_cast_slice::<X, Y>(&x_host[range.clone()]).map(|_| ());
+            let result = x.slice(range).unwrap().bitcast::<Y>().map(|_| ());
+            #[cfg(miri)]
+            let _ = (bytemuck_result, result);
+            #[cfg(not(miri))]
+            assert_eq!(result, bytemuck_result);
+        }
+    }
+}
+
+#[test]
+fn buffer_from_vec_host() {
+    buffer_from_vec(Device::host());
+}
+
+#[cfg(target_arch = "wasm32")]
+macro_for!($T in [u8, i8, u16, i16, f16, bf16, u32, i32, f32, u64, i64, f64] {
+    paste! {
+        #[test]
+        fn [<buffer_fill_ $T _host>]() {
+            buffer_fill::<$T>(Device::host());
+        }
+    }
+});
+
+macro_for!($X in [u8, i8, u16, i16, f16, bf16, u32, i32, f32, u64, i64, f64] {
+    macro_for!($Y in [u8, i8, u16, i16, f16, bf16, u32, i32, f32, u64, i64, f64] {
+        paste! {
+            #[test]
+            fn [<buffer_cast_ $X _ $Y _host>]() {
+                buffer_cast::<$X, $Y>(Device::host());
+            }
+            #[test]
+            fn [<buffer_bitcast_ $X _ $Y _host>]() {
+                buffer_bitcast::<$X, $Y>(Device::host());
+            }
+        }
+    });
+});
