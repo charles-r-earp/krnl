@@ -222,12 +222,23 @@ fn run_lints(verbose: bool) {
     let manifest_dir = PathBuf::from(var("CARGO_MANIFEST_DIR").unwrap());
     let workspace_dir = manifest_dir.parent().unwrap();
     let krnlc_dir = workspace_dir.join("crates/krnlc");
+    let cuda = has_cuda();
+    if cuda && verbose {
+        eprintln!("found cuda");
+    }
     Command::new("cargo")
         .args(["fmt", "--all", "--check"])
         .status()
         .expect2("cargo fmt failed!");
     let mut command = Command::new("cargo");
-    command.args(["clippy", "--workspace", "--all-features", "--all-targets"]);
+    command.args([
+        "clippy",
+        "--workspace",
+        "--all-features",
+        "--all-targets",
+        "--exclude",
+        "compute-benchmarks",
+    ]);
     if verbose {
         command.arg("-v");
     }
@@ -250,6 +261,22 @@ fn run_lints(verbose: bool) {
         ])
         .current_dir(krnlc_dir.to_str().unwrap())
         .env_remove("RUSTUP_TOOLCHAIN");
+    command.status().expect2("clippy failed!");
+    let mut command = Command::new("cargo");
+    command.args([
+        "clippy",
+        "-p",
+        "compute-benchmarks",
+        "--features",
+        "autograph ocl",
+    ]);
+    if cuda {
+        command.args(["--features", "cuda"]);
+    }
+    if verbose {
+        command.arg("-v");
+    }
+    command.args(["--", "-D", "warnings"]);
     command.status().expect2("clippy failed!");
 }
 

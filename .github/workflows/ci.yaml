@@ -3,13 +3,15 @@ name: Continuous Integration
 
 on:
   push:
+    branches: 
+      - main 
   pull_request:
 
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  check:
+  validate:
     runs-on: ${{ matrix.os }}
     env:
       RUST_BACKTRACE: 1
@@ -32,3 +34,9 @@ jobs:
             components: miri
     - name: validate
       run: cargo xtask validate -v
+
+  cargo-deny:
+    runs-on: ubuntu-20.04
+    steps:
+      - uses: actions/checkout@v2
+      - uses: EmbarkStudios/cargo-deny-action@v1

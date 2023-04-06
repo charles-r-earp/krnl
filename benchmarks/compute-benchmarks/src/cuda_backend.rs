@@ -30,7 +30,7 @@ impl Cuda {
         let stream = Stream::new(StreamFlags::DEFAULT, None)?;
         let ptx = include_bytes!(concat!(env!("OUT_DIR"), "/kernels.ptx"));
         let ptx = String::from_utf8(ptx.as_ref().to_vec())?;
-        let module = Module::from_ptx(&ptx, &[])?;
+        let module = Module::from_ptx(ptx, &[])?;
         Ok(Self {
             module,
             stream,

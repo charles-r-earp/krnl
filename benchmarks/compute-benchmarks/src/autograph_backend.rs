@@ -140,7 +140,7 @@ impl Saxpy {
                 .slice(self.x_device.as_slice())?
                 .push(self.alpha)?
                 .slice_mut(self.y_device.as_slice_mut())?
-                .submit([n as u32, 1, 1])?;
+                .submit([n, 1, 1])?;
         }
         self.device.sync().block()?;
         #[cfg(debug_assertions)]

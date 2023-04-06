@@ -364,7 +364,7 @@ impl Worker {
                     ..Default::default()
                 },
                 true,
-                (0..DeviceBuffer::HOST_BUFFER_SIZE).into_iter().map(|_| 0u8),
+                (0..DeviceBuffer::HOST_BUFFER_SIZE).map(|_| 0u8),
             )?;
             Some(buffer)
         } else {
