@@ -24,10 +24,11 @@ struct Cli {
     non_semantic_info: bool,
     #[arg(long = "check")]
     check: bool,
+    #[arg(short = 'v', long = "verbose")]
+    verbose: bool,
 }
 
 fn main() -> Result<()> {
-    //let ctrlc_signal = CtrlcSignal::new()?;
     let cli = Cli::parse();
     let metadata = cli.manifest.metadata().exec()?;
     if cli.workspace == Workspace::default() && metadata.workspace_members.len() > 1 {
@@ -39,80 +40,27 @@ fn main() -> Result<()> {
         .as_ref()
         .map(|x| x.to_string_lossy())
         .unwrap_or(metadata.target_directory.as_str().into());
-    /*let cache_guards: Vec<_> = selected.iter().copied().map(CacheGuard::new).collect();
-    for package in selected.iter() {
-        ctrlc_signal.check()?;
-        //cache(package, None)?;
-    }*/
     for package in selected.iter().copied() {
-        //ctrlc_signal.check()?;
         let krnlc_metadata = KrnlcMetadata::new(&metadata, package)?;
-        //ctrlc_signal.check()?;
-        let module_datas = cargo_expand(package, &target_dir, &krnlc_metadata)?;
-        //ctrlc_signal.check()?;
+        let module_datas = cargo_expand(package, &target_dir, &krnlc_metadata, cli.verbose)?;
         let modules = compile(
             package,
             &target_dir,
             &krnlc_metadata.dependencies,
             module_datas,
             cli.non_semantic_info,
+            cli.verbose,
         )?;
         cache(package, modules, cli.check)?;
-        //cache_guard.finish();
     }
     Ok(())
 }
-
-/*
-struct CtrlcSignal {
-    signal: Arc<AtomicBool>,
-}
-
-impl CtrlcSignal {
-    fn new() -> Result<Self> {
-        let signal = Arc::new(AtomicBool::default());
-        let signal2 = signal.clone();
-        ctrlc::set_handler(move || {
-            signal2.store(true, Ordering::SeqCst);
-        })?;
-        Ok(Self { signal })
-    }
-    fn check(&self) -> Result<()> {
-        if self.signal.load(Ordering::SeqCst) {
-            Err(format_err!("Process interupted!"))
-        } else {
-            Ok(())
-        }
-    }
-}
-
-struct CacheGuard<'a> {
-    package: Option<&'a Package>,
-}
-
-impl<'a> CacheGuard<'a> {
-    fn new(package: &'a Package) -> Self {
-        Self {
-            package: Some(package),
-        }
-    }
-    fn finish(mut self) {
-        self.package.take();
-    }
-}
-
-impl Drop for CacheGuard<'_> {
-    fn drop(&mut self) {
-        if let Some(package) = self.package {
-            cache(package, Some(Default::default())).unwrap();
-        }
-    }
-}*/
 
 fn cargo_expand(
     package: &Package,
     target_dir: &str,
     krnlc_metadata: &KrnlcMetadata,
+    verbose: bool,
 ) -> Result<FxHashMap<String, ModuleData>> {
     let mut command = Command::new("cargo");
     command.args([
@@ -123,6 +71,9 @@ fn cargo_expand(
         "--target-dir",
         target_dir,
     ]);
+    if verbose {
+        command.arg("-v");
+    }
     if !krnlc_metadata.default_features {
         command.arg("--no-default-features");
     }
@@ -130,7 +81,7 @@ fn cargo_expand(
         command.args(["--features", &krnlc_metadata.features]);
     }
     command
-        .args(&[
+        .args([
             "--profile=check",
             "--",
             "--cfg=krnlc",
@@ -185,7 +136,7 @@ impl KrnlcMetadata {
             }
             None
         }
-        let krnl_core_package = if let Some(package) = find_krnl_core(&metadata, &package.id) {
+        let krnl_core_package = if let Some(package) = find_krnl_core(metadata, &package.id) {
             package
         } else {
             bail!(
@@ -244,7 +195,7 @@ impl KrnlcMetadata {
                                 if source == "registry+https://github.com/rust-lang/crates.io-index"
                                 {
                                     format!("version = \"{}\"", dependency.req)
-                                } else if let Some((key, value)) = source.split_once("+") {
+                                } else if let Some((key, value)) = source.split_once('+') {
                                     format!("{key} = {value:?}")
                                 } else {
                                     bail!("Unsupported source {source:?} for dependency {dep:?}!");
@@ -366,22 +317,22 @@ impl<'a, 'ast> Visit<'ast> for ModuleVisitor<'a> {
         if self.result.is_err() {
             return;
         }
-        if !self.path.is_empty() {
-            if i.ident == "__krnl_module_data" && i.vis == Visibility::Inherited {
-                if let Some((_, items)) = i.content.as_ref() {
-                    if let [Item::Const(item_const)] = items.as_slice() {
-                        if item_const.ident == "__krnl_module_source" {
-                            if let Expr::Lit(expr_lit) = item_const.expr.as_ref() {
-                                if let Lit::Str(lit_str) = &expr_lit.lit {
-                                    let module =
-                                        ModuleData::new(self.path.clone(), lit_str.value());
-                                    if let Some(other) = self.modules.get(&module.name_with_hash) {
-                                        *self.result = Err(format_err!("Modules are not unique, collision between {} and {}! Try renaming a module.", other.path, module.path));
-                                    } else {
-                                        self.modules.insert(module.name_with_hash.clone(), module);
-                                    }
-                                    return;
+        if !self.path.is_empty()
+            && i.ident == "__krnl_module_data"
+            && i.vis == Visibility::Inherited
+        {
+            if let Some((_, items)) = i.content.as_ref() {
+                if let [Item::Const(item_const)] = items.as_slice() {
+                    if item_const.ident == "__krnl_module_source" {
+                        if let Expr::Lit(expr_lit) = item_const.expr.as_ref() {
+                            if let Lit::Str(lit_str) = &expr_lit.lit {
+                                let module = ModuleData::new(self.path.clone(), lit_str.value());
+                                if let Some(other) = self.modules.get(&module.name_with_hash) {
+                                    *self.result = Err(format_err!("Modules are not unique, collision between {} and {}! Try renaming a module.", other.path, module.path));
+                                } else {
+                                    self.modules.insert(module.name_with_hash.clone(), module);
                                 }
+                                return;
                             }
                         }
                     }
@@ -440,11 +391,9 @@ fn cache(
         let prev = std::fs::read_to_string(&cache_path)?;
         for (i, (a, b)) in prev.chars().zip(cache.chars()).enumerate() {
             if a != b {
-                panic!("\n{}\n{}", &prev[..=i], &cache[..=i]);
+                eprintln!("\n{}\n{}", &prev[..=i], &cache[..=i]);
+                bail!("{cache_path:?} check failed!");
             }
-        }
-        if prev != cache {
-            bail!("{cache_path:?} check failed!");
         }
     } else {
         std::fs::write(cache_path, cache.as_bytes())?;
@@ -458,6 +407,7 @@ fn compile(
     dependencies: &str,
     module_datas: FxHashMap<String, ModuleData>,
     non_semantic_info: bool,
+    verbose: bool,
 ) -> Result<FxHashMap<String, FxHashMap<String, KernelDesc>>> {
     use std::fmt::Write;
     let target_krnl_dir = PathBuf::from(target_dir).join("krnlc");
@@ -485,6 +435,7 @@ fn compile(
             env!("OUT_DIR"),
             "/../../../librustc_codegen_spirv.so"
         ));
+        assert!(!librustc_codegen_spirv.is_empty());
         std::fs::write(
             lib_dir.join("librustc_codegen_spirv.so"),
             librustc_codegen_spirv.as_ref(),
@@ -509,7 +460,7 @@ fn compile(
         std::env::set_var(path_var, path);
     }
     let crate_name = package.name.as_str();
-    let device_crate_dir = target_krnl_dir.join("crates").join(&crate_name);
+    let device_crate_dir = target_krnl_dir.join("crates").join(crate_name);
     let device_crate_manifest_path = device_crate_dir.join("Cargo.toml");
     let mut update = false;
     {
@@ -520,6 +471,9 @@ fn compile(
         let config = format!(
             r#"[build]
 target-dir = {target_dir:?}
+
+[term]
+verbose = {verbose}
 "#
         );
         std::fs::write(config_dir.join("config.toml"), config.as_bytes())?;
@@ -586,7 +540,7 @@ extern crate krnl_core;
     }
     if update {
         let status = Command::new("cargo")
-            .args(&[
+            .args([
                 "update",
                 "--manifest-path",
                 device_crate_manifest_path.to_string_lossy().as_ref(),
@@ -596,7 +550,7 @@ extern crate krnl_core;
             bail!("cargo update failed!");
         }
     }
-    let crate_name_ident = crate_name.replace("-", "_");
+    let crate_name_ident = crate_name.replace('-', "_");
     let modules = {
         // run spirv-builder
         let mut builder = SpirvBuilder::new(&device_crate_dir, "spirv-unknown-vulkan1.2")
@@ -754,7 +708,7 @@ fn kernel_post_process(
         spirv_module.debug_names.retain_mut(|inst| {
             let op = inst.class.opcode;
             let operands = inst.operands.as_mut_slice();
-            match (op, operands) {
+            /*match (op, operands) {
                 (Op::Name, [Operand::IdRef(var), Operand::LiteralString(name)]) => {
                     if *var == kernel_data_var {
                         kernel_data.replace(std::mem::take(name));
@@ -762,16 +716,25 @@ fn kernel_post_process(
                     } else if name.starts_with("__krnl_group_array_")
                         || name.starts_with("__krnl_subgroup_array_")
                     {
-                        if let Some(id) = name
-                            .rsplit_once("_")
-                            .map(|x| u32::from_str_radix(x.1, 10).ok())
-                            .flatten()
-                        {
+                        if let Some(id) = name.rsplit_once('_').and_then(|x| x.1.parse().ok()) {
                             array_ids.insert(*var, id);
                         }
                     }
                 }
                 _ => {}
+            }*/
+            if let (Op::Name, [Operand::IdRef(var), Operand::LiteralString(name)]) = (op, operands)
+            {
+                if *var == kernel_data_var {
+                    kernel_data.replace(std::mem::take(name));
+                    return false;
+                } else if name.starts_with("__krnl_group_array_")
+                    || name.starts_with("__krnl_subgroup_array_")
+                {
+                    if let Some(id) = name.rsplit_once('_').and_then(|x| x.1.parse().ok()) {
+                        array_ids.insert(*var, id);
+                    }
+                }
             }
             true
         });
@@ -900,28 +863,13 @@ fn kernel_post_process(
         }
         let kernel_data = if let Some(kernel_data) = kernel_data
             .as_ref()
-            .map(|x| x.strip_prefix("__krnl_kernel_data_"))
-            .flatten()
+            .and_then(|x| x.strip_prefix("__krnl_kernel_data_"))
         {
             kernel_data
         } else {
             bail!("Unable to decode kernel {module_path}::{kernel_name}, found {kernel_data:?}!");
         };
-        /*let mut bytes = Vec::with_capacity(kernel_data.len() / 2);
-        let mut iter = kernel_data.chars();
-        while let Some((a, b)) = iter.next().zip(iter.next()) {
-            let byte = a
-                .to_digit(16)
-                .unwrap()
-                .checked_mul(16)
-                .unwrap()
-                .checked_add(b.to_digit(16).unwrap())
-                .unwrap()
-                .try_into()
-                .unwrap();
-            bytes.push(byte);
-        }*/
-        let bytes = hex::decode(&kernel_data)?;
+        let bytes = hex::decode(kernel_data)?;
         bincode2::deserialize(&bytes)?
     };
     if kernel_desc

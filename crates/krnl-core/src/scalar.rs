@@ -370,7 +370,7 @@ macro_for!($X in [f16, bf16] {
 
 #[cfg(target_arch = "spirv")]
 /// Base trait for numerical types.
-pub unsafe trait Scalar:
+pub trait Scalar:
     Default + Copy + 'static + Send + Sync + NumCast + FromPrimitive + NumAssign + PartialEq + Sealed
 {
     /// The [`ScalarType`] of the scalar.
@@ -381,7 +381,7 @@ pub unsafe trait Scalar:
 
 #[cfg(not(target_arch = "spirv"))]
 /// Base trait for numerical types.
-pub unsafe trait Scalar:
+pub trait Scalar:
     Default
     + Copy
     + 'static
@@ -406,7 +406,7 @@ pub unsafe trait Scalar:
 
 macro_for!($X in [u8, i8, u16, i16, f16, bf16, u32, i32, f32, u64, i64, f64] {
     paste! {
-        unsafe impl Scalar for $X {
+        impl Scalar for $X {
             fn scalar_type() -> ScalarType {
                 ScalarType::[<$X:upper>]
             }

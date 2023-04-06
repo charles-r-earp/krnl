@@ -140,7 +140,7 @@ impl Saxpy {
 mod kernels {
     #[cfg(not(target_arch = "spirv"))]
     use krnl::krnl_core;
-    use krnl_core::krnl_macros::kernel;
+    use krnl_core::macros::kernel;
 
     #[kernel(threads(TS))]
     pub fn saxpy<const TS: u32>(#[item] x: f32, alpha: f32, #[item] y: &mut f32) {

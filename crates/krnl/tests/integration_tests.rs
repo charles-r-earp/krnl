@@ -32,11 +32,11 @@ fn main() {
         println!("devices: {device_infos:#?}");
         let krnl_device = std::env::var("KRNL_DEVICE");
         let device_index = if let Ok(krnl_device) = krnl_device.as_ref() {
-            usize::from_str(&krnl_device).unwrap()
+            usize::from_str(krnl_device).unwrap()
         } else {
             0
         };
-        let device_index2 = if device_index == 0 { 1 } else { 0 };
+        let device_index2 = usize::from(device_index == 0);
         println!("KRNL_DEVICE = {krnl_device:?}");
         println!("testing device {device_index}");
         let device = devices.get(0).unwrap();
@@ -61,7 +61,10 @@ fn device_test(device: &Device, name: &str, f: impl Fn(Device) + Send + Sync + '
         if device.is_host() { "host" } else { "device" }
     );
     let device = device.clone();
-    Trial::test(name, move || Ok(f(device)))
+    Trial::test(name, move || {
+        f(device);
+        Ok(())
+    })
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -84,7 +87,10 @@ fn buffer_tests(device: &Device, device2: Option<&Device>) -> impl IntoIterator<
             Trial::test("buffer_device_to_device", {
                 let device = device.clone();
                 let device2 = device2.cloned();
-                move || Ok(buffer_transfer(device, device2.unwrap()))
+                move || {
+                    buffer_transfer(device, device2.unwrap());
+                    Ok(())
+                }
             })
             .with_ignored_flag(device2.is_none()),
         );
@@ -104,9 +110,9 @@ fn buffer_tests(device: &Device, device2: Option<&Device>) -> impl IntoIterator<
                         _ => unreachable!(),
                     }
                 };
-                paste! {
-                    let trial = device_test(device, stringify!([<buffer_fill_ $T>]), |device| [<buffer_fill>]::<$T>(device));
-                }
+                let trial = paste! {
+                    device_test(device, stringify!([<buffer_fill_ $T>]), [<buffer_fill>]::<$T>)
+                };
                 tests.push(trial.with_ignored_flag(ignore));
             }
         }
@@ -137,9 +143,9 @@ fn buffer_tests(device: &Device, device2: Option<&Device>) -> impl IntoIterator<
             {
                 let ignore = !device.is_host() && !features.contains(&buffer_cast_features($X::scalar_type(), $Y::scalar_type()));
                 paste! {
-                    let trial = device_test(device, stringify!([<buffer_cast_ $X _ $Y>]), |device| [<buffer_cast>]::<$X, $Y>(device));
+                    let trial = device_test(device, stringify!([<buffer_cast_ $X _ $Y>]), [<buffer_cast>]::<$X, $Y>);
                     tests.push(trial.with_ignored_flag(ignore));
-                    let trial = device_test(device, stringify!([<buffer_bitcast_ $X _ $Y>]), |device| [<buffer_bitcast>]::<$X, $Y>(device));
+                    let trial = device_test(device, stringify!([<buffer_bitcast_ $X _ $Y>]), [<buffer_bitcast>]::<$X, $Y>);
                     tests.push(trial.with_ignored_flag(ignore));
                 }
             }

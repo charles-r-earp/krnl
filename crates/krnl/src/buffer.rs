@@ -194,6 +194,10 @@ pub trait ScalarData: Sealed {
         slice.raw.len() / slice.scalar_type().size()
     }
     #[doc(hidden)]
+    fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+    #[doc(hidden)]
     fn try_into_scalar_buffer(self) -> Result<ScalarBufferRepr, Self>
     where
         Self: Sized,
@@ -551,6 +555,10 @@ pub type ScalarArcBuffer = ScalarBufferBase<ScalarArcBufferRepr>;
 pub type ScalarCowBuffer<'a> = ScalarBufferBase<ScalarCowBufferRepr<'a>>;
 
 impl<S: ScalarDataOwned> ScalarBufferBase<S> {
+    /** # Safety
+    The buffer will not be initialized.
+
+    See [`ScalarBuffer::zeros()`] for a safe alternative.**/
     pub unsafe fn uninit(device: Device, len: usize, scalar_type: ScalarType) -> Result<Self> {
         macro_wrap!(paste! {
             match scalar_type {
@@ -588,6 +596,9 @@ impl<S: ScalarData> ScalarBufferBase<S> {
     }
     pub fn len(&self) -> usize {
         self.data.len()
+    }
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
     }
     pub fn as_scalar_slice(&self) -> ScalarSlice {
         let data = self.data.as_scalar_slice();
@@ -1492,6 +1503,10 @@ impl<'a, T: Scalar> TryFrom<ScalarCowBuffer<'a>> for CowBuffer<'a, T> {
 }
 
 impl<T: Scalar, S: DataOwned<Elem = T>> BufferBase<S> {
+    /** # Safety
+    The buffer will not be initialized.
+
+    See [`Buffer::zeros()`] for a safe alternative.**/
     pub unsafe fn uninit(device: Device, len: usize) -> Result<Self> {
         let data = S::from_buffer(unsafe { BufferRepr::uninit(device, len)? });
         Ok(Self { data })
@@ -1650,7 +1665,6 @@ impl<T: Scalar, S: Data<Elem = T>> BufferBase<S> {
                 }
                 y
             }
-
             let device = self.device();
             let features = device.info().unwrap().features();
             if let Ok(y) = self.bitcast_mut::<u64>() {
@@ -1676,7 +1690,7 @@ impl<T: Scalar, S: Data<Elem = T>> BufferBase<S> {
             if self.bitcast::<u16>().is_ok() {
                 bail!("Device {device:?} does not support 16 bit operations!");
             } else {
-                bail!("Device {device:?} does not support 16 bit operations!");
+                bail!("Device {device:?} does not support 8 bit operations!");
             }
         }
     }

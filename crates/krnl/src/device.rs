@@ -235,12 +235,7 @@ pub(crate) enum DeviceInner {
 
 impl DeviceInner {
     pub(crate) fn is_host(&self) -> bool {
-        #[cfg_attr(not(feature = "device"), allow(irrefutable_let_patterns))]
-        if let Self::Host = self {
-            true
-        } else {
-            false
-        }
+        matches!(self, Self::Host)
     }
     pub(crate) fn is_device(&self) -> bool {
         !self.is_host()
@@ -705,7 +700,7 @@ pub mod __private {
             .copied()
             .zip(groups.iter_mut().zip(threads.iter().copied()))
         {
-            *g = gt / t + if gt % t != 0 { 1 } else { 0 };
+            *g = gt / t + u32::from(gt % t != 0);
         }
         groups
     }
@@ -757,7 +752,7 @@ pub mod __private {
                 let kernel_name = &desc.name;
                 let mut buffers = Vec::with_capacity(desc.slice_descs.len());
                 let mut items: Option<usize> = None;
-                for (slice, slice_desc) in slices.into_iter().zip(desc.slice_descs.iter()) {
+                for (slice, slice_desc) in slices.iter().zip(desc.slice_descs.iter()) {
                     debug_assert_eq!(slice.scalar_type(), slice_desc.scalar_type);
                     debug_assert!(!slice_desc.mutable || slice.mutable());
                     let slice_name = &slice_desc.name;

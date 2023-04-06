@@ -1,10 +1,10 @@
 #![forbid(unsafe_op_in_unsafe_fn)]
 
-pub use anyhow;
-pub use krnl_core;
-pub use krnl_macros as macros;
+pub extern crate anyhow;
+pub extern crate krnl_core;
+pub extern crate krnl_macros as macros;
 #[doc(hidden)]
-pub use once_cell;
+pub extern crate once_cell;
 
 #[doc(inline)]
 pub use krnl_core::scalar;

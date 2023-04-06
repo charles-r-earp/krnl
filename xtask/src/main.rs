@@ -29,6 +29,10 @@ enum Cli {
         #[arg(short = 'v', long = "verbose")]
         verbose: bool,
     },
+    Lint {
+        #[arg(short = 'v', long = "verbose")]
+        verbose: bool,
+    },
     Validate {
         #[arg(long = "device")]
         device: bool,
@@ -71,6 +75,9 @@ fn main() {
                 run_wasm_tests(None, verbose);
             }
         }
+        Cli::Lint { verbose } => {
+            run_lints(verbose);
+        }
         Cli::Validate { device, verbose } => {
             run_validation(device, verbose);
         }
@@ -89,7 +96,15 @@ impl<E: Debug> ExitStatusExpect for Result<ExitStatus, E> {
     }
 }
 
+fn has_spirv_tools() -> bool {
+    Command::new("spirv-val").arg("--version").output().is_ok()
+}
+
 fn run_krnlc(workspace: bool, check: bool, verbose: bool) {
+    let spirv_tools = has_spirv_tools();
+    if spirv_tools && verbose {
+        eprintln!("found spirv-tools");
+    }
     let manifest_dir = PathBuf::from(var("CARGO_MANIFEST_DIR").unwrap());
     let workspace_dir = manifest_dir.parent().unwrap();
     let krnlc_dir = workspace_dir.join("crates/krnlc");
@@ -102,9 +117,17 @@ fn run_krnlc(workspace: bool, check: bool, verbose: bool) {
         krnlc_args.push("--check");
     }
     let mut command = Command::new("cargo");
-    command.args(["run", "--release"]);
+    command.args([
+        "run",
+        "--release",
+        "--target-dir",
+        workspace_dir.join("target").to_str().unwrap(),
+    ]);
     if verbose {
         command.arg("-v");
+    }
+    if has_spirv_tools() {
+        command.args(["--no-default-features", "--features", "use-installed-tools"]);
     }
     command
         .args([
@@ -146,16 +169,13 @@ impl WasmRunner {
         }
     }
     fn installed(&self) -> bool {
-        Command::new(self.app()).arg("--version").status().is_ok()
+        Command::new(self.app()).arg("--version").output().is_ok()
     }
     fn get() -> Option<Self> {
         use WasmRunner::*;
-        for runner in [Firefox, Safari, Chrome, Node] {
-            if runner.installed() {
-                return Some(runner);
-            }
-        }
-        None
+        [Firefox, Safari, Chrome, Node]
+            .into_iter()
+            .find(|&runner| runner.installed())
     }
 }
 
@@ -198,12 +218,42 @@ fn run_wasm_tests(runner: Option<WasmRunner>, verbose: bool) {
     command.status().expect2("test failed!");
 }
 
-fn run_validation(device: bool, verbose: bool) {
-    let start = Instant::now();
+fn run_lints(verbose: bool) {
+    let manifest_dir = PathBuf::from(var("CARGO_MANIFEST_DIR").unwrap());
+    let workspace_dir = manifest_dir.parent().unwrap();
+    let krnlc_dir = workspace_dir.join("crates/krnlc");
     Command::new("cargo")
         .args(["fmt", "--all", "--check"])
         .status()
         .expect2("cargo fmt failed!");
+    let mut command = Command::new("cargo");
+    command.args(["clippy", "--workspace", "--all-features", "--all-targets"]);
+    if verbose {
+        command.arg("-v");
+    }
+    command.args(["--", "-D", "warnings"]);
+    command.status().expect2("clippy failed!");
+    let mut command = Command::new("cargo");
+    command.arg("clippy");
+    //if has_spirv_tools() {
+    command.args(["--no-default-features", "--features", "use-installed-tools"]);
+    //}
+    command
+        .args([
+            "--target-dir",
+            workspace_dir.join("target").to_str().unwrap(),
+            "--",
+            "-D",
+            "warnings",
+        ])
+        .current_dir(krnlc_dir.to_str().unwrap())
+        .env_remove("RUSTUP_TOOLCHAIN");
+    command.status().expect2("clippy failed!");
+}
+
+fn run_validation(device: bool, verbose: bool) {
+    let start = Instant::now();
+    run_lints(verbose);
     let targets = [
         "x86_64-unknown-linux-gnu",
         "x86_64-apple-darwin",
@@ -212,7 +262,7 @@ fn run_validation(device: bool, verbose: bool) {
     ];
     Command::new("rustup")
         .args(["target", "add"])
-        .args(&targets)
+        .args(targets)
         .status()
         .expect2("target add failed!");
     for target in targets {
@@ -226,7 +276,7 @@ fn run_validation(device: bool, verbose: bool) {
     Command::new("rustup")
         .args(["toolchain", "install", "nightly"])
         .status()
-        .expect2("Failed to install miri!");
+        .expect2("Failed to install nightly!");
     run_krnlc(true, true, verbose);
     let mut command = Command::new("cargo");
     command.args(["build", "--all-targets"]);
@@ -255,7 +305,8 @@ fn run_validation(device: bool, verbose: bool) {
         "autograph ocl",
     ]);
     let cuda = device && has_cuda();
-    if cuda {
+    if cuda && verbose {
+        eprintln!("found cuda");
         command.args(["--features", "cuda"]);
     }
     if verbose {
@@ -312,5 +363,5 @@ fn run_validation(device: bool, verbose: bool) {
 }
 
 fn has_cuda() -> bool {
-    Command::new("nvcc").arg("--version").status().is_ok()
+    Command::new("nvcc").arg("--version").output().is_ok()
 }

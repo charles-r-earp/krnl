@@ -10,7 +10,7 @@ fn main() -> Result<()> {
         let out_dir = PathBuf::from(var("OUT_DIR").unwrap());
         let output_path = out_dir.join("kernels.ptx");
         let status = Command::new("nvcc")
-            .args(&[
+            .args([
                 "src/kernels.cu",
                 "--ptx",
                 "--output-file",

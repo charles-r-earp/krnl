@@ -23,13 +23,12 @@ symlink = "0.1.0"
 rspirv = "0.11.0"
 spirv-tools = { version = "0.9.0", default-features = false }
 itertools = "0.10.5"
-#ctrlc = { version = "3.2.5", features = ["termination"] }
 rayon = "1.7.0"
 flate2 = "1.0.25"
 hex = "0.4.3"
 fxhash = "0.2.1"
 
 [features]
-default = ["use-installed-tools"]
+default = ["use-compiled-tools"]
 use-compiled-tools = ["spirv-builder/use-compiled-tools", "spirv-tools/use-compiled-tools"]
 use-installed-tools = ["spirv-builder/use-installed-tools", "spirv-builder/use-installed-tools"]

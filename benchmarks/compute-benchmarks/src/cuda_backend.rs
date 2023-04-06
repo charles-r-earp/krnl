@@ -170,7 +170,7 @@ unsafe fn saxpy(
 ) -> Result<()> {
     let n = x.len() as u32;
     let block = 256;
-    let grid = n / block + if n % block != 0 { 1 } else { 0 };
+    let grid = n / block + u32::from(n % block != 0);
     let shared_memory_size = 0;
     let stream = &cuda.stream;
     let function = cuda.module.get_function("saxpy")?;

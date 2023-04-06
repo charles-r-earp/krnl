@@ -80,7 +80,7 @@ pub fn module(attr: TokenStream, item: TokenStream) -> TokenStream {
                         build = false;
                     } else {
                         return Error::new_spanned(
-                            &ident,
+                            ident,
                             format!("unknown krnl arg `{ident}`, expected `crate` or `no_build`"),
                         )
                         .into_compile_error()
@@ -387,11 +387,7 @@ impl KernelSpecMeta {
         use ScalarType::*;
         let scalar_type = self.ty.scalar_type;
         let bits = scalar_type.size() * 8;
-        let signed = if matches!(scalar_type, I8 | I16 | I32 | I64) {
-            1
-        } else {
-            0
-        };
+        let signed = matches!(scalar_type, I8 | I16 | I32 | I64) as u32;
         let float = matches!(scalar_type, F32 | F64);
         let ty_string = if float {
             format!("%ty = OpTypeFloat {bits}")
@@ -460,10 +456,10 @@ impl KernelArg {
             } else if slice_ty.ty == "UnsafeSlice" {
                 true
             } else if slice_ty.ty == "SliceMut" {
-                return Err(Error::new_spanned(&slice_ty_ident, "try `UnsafeSlice`"));
+                return Err(Error::new_spanned(slice_ty_ident, "try `UnsafeSlice`"));
             } else {
                 return Err(Error::new_spanned(
-                    &slice_ty_ident,
+                    slice_ty_ident,
                     "expected `Slice` or `UnsafeSlice`",
                 ));
             };
@@ -1578,7 +1574,7 @@ pub fn __krnl_module(input: TokenStream) -> TokenStream {
         .iter()
         .flat_map(|ident| {
             let string = ident.to_string();
-            let data = string.strip_prefix("x").expect("Expected x!");
+            let data = string.strip_prefix('x').expect("Expected x!");
             hex::decode(data).expect("Expected cache as hex string!")
         })
         .collect();

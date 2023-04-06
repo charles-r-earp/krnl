@@ -63,7 +63,7 @@ pub struct OclBackend {
 impl OclBackend {
     pub fn new(platform_index: usize, device_index: usize) -> Result<Self> {
         let platform = Platform::list()[platform_index];
-        let device = Device::list_all(&platform)?[device_index];
+        let device = Device::list_all(platform)?[device_index];
         let pro_que = ProQue::builder()
             .platform(platform)
             .device(device)
@@ -92,32 +92,6 @@ impl OclBackend {
             x_host: x.to_vec(),
             y_device,
         })
-        /*
-        let x_host = Buffer::builder()
-            .queue(self.pro_que.queue().clone())
-            .len(x.len())
-            .copy_host_slice(x)
-            .build()?;
-        let x_device = Buffer::builder()
-            .queue(self.pro_que.queue().clone())
-            .len(x.len())
-            .flags(MemFlags::READ_WRITE | MemFlags::HOST_NO_ACCESS)
-            .build()?;
-        assert_eq!(x_device.len(), x.len());
-        x_host.copy(&x_device, None, None).enq()?;
-        self.pro_que.finish()?;
-        #[cfg(debug_assertions)]
-        {
-            let y_host = Buffer::builder()
-                .queue(self.pro_que.queue().clone())
-                .len(x.len())
-                .build()?;
-            x_device.copy(&y_host, None, None).enq()?;
-            let mut y_vec = vec![0f32; x.len()];
-            y_host.read(&mut y_vec).enq()?;
-            assert_eq!(x, y_vec.as_slice());
-        }
-        Ok(Upload { x_device })*/
     }
     pub fn download(&self, x: &[f32]) -> Result<Download> {
         let queue = self.pro_que.queue();
@@ -235,13 +209,13 @@ impl Saxpy {
     pub fn run(&mut self) -> Result<()> {
         let n = self.x_device.len() as u32;
         let lws = 256;
-        let wgs = n / lws + if n % lws != 0 { 1 } else { 0 };
+        let wgs = n / lws + u32::from(n % lws != 0);
         let kernel = self
             .pro_que
             .kernel_builder("saxpy")
-            .arg(&n)
+            .arg(n)
             .arg(&self.x_device)
-            .arg(&self.alpha)
+            .arg(self.alpha)
             .arg(&self.y_device)
             .global_work_size(wgs * lws)
             .local_work_size(lws)
@@ -267,7 +241,7 @@ impl Saxpy {
     }
 }
 
-static KERNELS: &'static str = r#"
+static KERNELS: &str = r#"
 kernel void saxpy(uint n, global float* const x, float alpha, global float* __restrict__ y) {
     uint idx = get_global_id(0);
     if (idx < n) {

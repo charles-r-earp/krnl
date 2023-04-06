@@ -20,7 +20,12 @@ fn debug_index_out_of_bounds(index: usize, len: usize) {
 
 pub trait UnsafeIndex<Idx> {
     type Output;
+    /** # Safety
+    The caller must ensure that the returned reference is not aliased by a mutable borrow, ie by a call to `.unsafe_index_mut()` with the same index.**/
     unsafe fn unsafe_index(&self, index: Idx) -> &Self::Output;
+    /** # Safety
+    The caller must ensure that the returned reference is not aliased by another borrow, ie by a call to `.unsafe_index()` or `.unsafe_index_mut()` with the same index.**/
+    #[allow(clippy::mut_from_ref)]
     unsafe fn unsafe_index_mut(&self, index: Idx) -> &mut Self::Output;
 }
 
@@ -51,8 +56,10 @@ mod sealed {
 }
 use sealed::Sealed;
 
+#[allow(clippy::len_without_is_empty)]
 pub trait DataBase: Sealed {
     type Elem: Scalar;
+    #[doc(hidden)]
     fn len(&self) -> usize;
 }
 
@@ -87,19 +94,17 @@ impl<T: Scalar> DataBase for SliceRepr<'_, T> {
 
 impl<T: Scalar> Index<usize> for SliceRepr<'_, T> {
     type Output = T;
-    #[cfg(not(target_arch = "spirv"))]
     fn index(&self, index: usize) -> &Self::Output {
-        self.inner.index(index)
-    }
-    #[cfg(target_arch = "spirv")]
-    fn index(&self, index: usize) -> &Self::Output {
+        #[cfg(target_arch = "spirv")]
         if index < self.len {
             unsafe { self.inner.index_unchecked(self.offset + index) }
         } else {
             #[cfg(feature = "ext:SPV_KHR_non_semantic_info")]
             debug_index_out_of_bounds(index, self.len);
-            panic!();
+            panic!()
         }
+        #[cfg(not(target_arch = "spirv"))]
+        self.inner.index(index)
     }
 }
 
@@ -129,48 +134,65 @@ impl<T: Scalar> DataBase for UnsafeSliceRepr<'_, T> {
     }
 }
 
+#[doc(hidden)]
 impl<T: Scalar> UnsafeIndex<usize> for UnsafeSliceRepr<'_, T> {
     type Output = T;
-    #[cfg(not(target_arch = "spirv"))]
     unsafe fn unsafe_index(&self, index: usize) -> &Self::Output {
         if index < self.len {
-            unsafe { &*self.ptr.add(index) }
+            #[cfg(target_arch = "spirv")]
+            unsafe {
+                self.inner.index_unchecked(self.offset + index)
+            }
+            #[cfg(not(target_arch = "spirv"))]
+            unsafe {
+                &*self.ptr.add(index)
+            }
         } else {
-            panic!(
-                "index out of bounds: the len is {index} but the index is {len}",
-                len = self.len
-            );
-        }
-    }
-    #[cfg(target_arch = "spirv")]
-    unsafe fn unsafe_index(&self, index: usize) -> &Self::Output {
-        if index < self.len {
-            unsafe { self.inner.index_unchecked(self.offset + index) }
-        } else {
-            #[cfg(feature = "ext:SPV_KHR_non_semantic_info")]
+            #[cfg(all(
+                target_arch = "spirv",
+                target_feature = "ext:SPV_KHR_non_semantic_info"
+            ))]
             debug_index_out_of_bounds(index, self.len);
-            panic!();
+            #[cfg(target_arch = "spirv")]
+            {
+                panic!()
+            }
+            #[cfg(not(target_arch = "spirv"))]
+            {
+                panic!(
+                    "index out of bounds: the len is {index} but the index is {len}",
+                    len = self.len
+                )
+            }
         }
     }
-    #[cfg(not(target_arch = "spirv"))]
     unsafe fn unsafe_index_mut(&self, index: usize) -> &mut Self::Output {
         if index < self.len {
-            unsafe { &mut *self.ptr.add(index) }
+            #[cfg(target_arch = "spirv")]
+            unsafe {
+                self.inner.index_unchecked_mut_ext(self.offset + index)
+            }
+            #[cfg(not(target_arch = "spirv"))]
+            unsafe {
+                &mut *self.ptr.add(index)
+            }
         } else {
-            panic!(
-                "index out of bounds: the len is {index} but the index is {len}",
-                len = self.len
-            );
-        }
-    }
-    #[cfg(target_arch = "spirv")]
-    unsafe fn unsafe_index_mut(&self, index: usize) -> &mut Self::Output {
-        if index < self.len {
-            unsafe { self.inner.index_unchecked_mut_ext(self.offset + index) }
-        } else {
-            #[cfg(feature = "ext:SPV_KHR_non_semantic_info")]
+            #[cfg(all(
+                target_arch = "spirv",
+                target_feature = "ext:SPV_KHR_non_semantic_info"
+            ))]
             debug_index_out_of_bounds(index, self.len);
-            panic!();
+            #[cfg(target_arch = "spirv")]
+            {
+                panic!()
+            }
+            #[cfg(not(target_arch = "spirv"))]
+            {
+                panic!(
+                    "index out of bounds: the len is {index} but the index is {len}",
+                    len = self.len
+                )
+            }
         }
     }
 }
@@ -192,6 +214,9 @@ impl<S: DataBase> BufferBase<S> {
     pub fn len(&self) -> usize {
         self.data.len()
     }
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
     pub fn scalar_type(&self) -> ScalarType {
         S::Elem::scalar_type()
     }
@@ -206,9 +231,13 @@ impl<S: Data> Index<usize> for BufferBase<S> {
 
 impl<S: UnsafeData> UnsafeIndex<usize> for BufferBase<S> {
     type Output = S::Elem;
+    /** # Safety
+    The caller must ensure that the returned reference is not aliased by a mutable borrow, ie by a call to `.unsafe_index_mut()` with the same index.**/
     unsafe fn unsafe_index(&self, index: usize) -> &Self::Output {
         unsafe { self.data.unsafe_index(index) }
     }
+    /** # Safety
+    The caller must ensure that the returned reference is not aliased by another borrow, ie by a call to `.unsafe_index()` or `.unsafe_index_mut()` with the same index.**/
     unsafe fn unsafe_index_mut(&self, index: usize) -> &mut Self::Output {
         unsafe { self.data.unsafe_index_mut(index) }
     }

@@ -124,9 +124,9 @@ impl DeviceEngine for Engine {
         } = options;
         let library = vulkan_library()?;
         let instance = Instance::new(library, InstanceCreateInfo::application_from_cargo_toml())?;
-        let physical_devices = instance.enumerate_physical_devices()?;
+        let mut physical_devices = instance.enumerate_physical_devices()?;
         let devices = physical_devices.len();
-        let physical_device = if let Some(physical_device) = physical_devices.skip(index).next() {
+        let physical_device = if let Some(physical_device) = physical_devices.nth(index) {
             physical_device
         } else {
             return Err(super::DeviceIndexOutOfRange { index, devices }.into());
@@ -519,6 +519,7 @@ impl Worker {
                                         .next()
                                         .unwrap()
                                 };
+                                #[allow(clippy::map_clone)]
                                 let buffer_iter = buffers
                                     .iter()
                                     .map(|x| -> Arc<dyn BufferAccess> { x.clone() });
@@ -654,6 +655,7 @@ enum Op {
     },
     Compute {
         compute_pipeline: Arc<ComputePipeline>,
+        #[allow(clippy::type_complexity)]
         buffers: Vec<Arc<BufferSlice<[u8], DeviceLocalBuffer<[u8]>>>>,
         push_consts: Vec<u8>,
         groups: [u32; 3],
@@ -686,8 +688,8 @@ impl Deref for WorkerFutureGuard<'_> {
     type Target = WorkerFuture;
     fn deref(&self) -> &Self::Target {
         match self {
-            Self::UpgradableRead(x) => &*x,
-            Self::Read(x) => &*x,
+            Self::UpgradableRead(x) => x,
+            Self::Read(x) => x,
         }
     }
 }
@@ -878,19 +880,17 @@ impl DeviceEngineBuffer for DeviceBuffer {
         let buffer_inner2 = buffer2.inner();
         if self.host_visible() {
             engine1.wait_for_future(&prev_future)?;
-            loop {
-                let mapped1 = buffer_inner1
-                    .buffer
-                    .read(buffer_inner1.offset..buffer_inner1.offset + self.len() as u64)
-                    .unwrap();
-                if dst.host_visible() {
-                    let mut mapped2 = buffer_inner2.buffer.write(0..output.len() as u64).unwrap();
-                    mapped2.copy_from_slice(&mapped1[..output.len()]);
-                } else {
-                    output.upload(&mapped1)?;
-                }
-                return Ok(());
+            let mapped1 = buffer_inner1
+                .buffer
+                .read(buffer_inner1.offset..buffer_inner1.offset + self.len() as u64)
+                .unwrap();
+            if dst.host_visible() {
+                let mut mapped2 = buffer_inner2.buffer.write(0..output.len() as u64).unwrap();
+                mapped2.copy_from_slice(&mapped1[..output.len()]);
+            } else {
+                output.upload(&mapped1)?;
             }
+            return Ok(());
         } else if output.host_visible() {
             let mut mapped2 = buffer_inner2.buffer.write(0..output.len() as u64).unwrap();
             self.download(&mut mapped2)?;
@@ -1103,6 +1103,7 @@ impl KernelInner {
         };
         let pipeline_layout = PipelineLayout::new(device.clone(), pipeline_layout_create_info)?;
         let cache = None;
+        #[allow(clippy::let_unit_value)]
         let specialization_constants = ();
         let compute_pipeline = ComputePipeline::with_pipeline_layout(
             device.clone(),
@@ -1208,11 +1209,14 @@ impl DeviceEngineKernel for Kernel {
                 for [worker1, worker2] in workers {
                     let ready1 = worker1.ready();
                     let ready2 = worker2.ready();
-                    if ready1 && (ready1 || max_workers == 2) {
+                    if ready1 && ready2 {
                         break 'outer worker1;
-                    }
-                    if ready2 && (ready1 || max_workers == 2) {
-                        break 'outer worker2;
+                    } else if max_workers == 2 {
+                        if ready1 {
+                            break 'outer worker1;
+                        } else if ready2 {
+                            break 'outer worker2;
+                        }
                     }
                 }
             }
