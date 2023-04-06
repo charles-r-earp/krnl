@@ -476,6 +476,27 @@ pub enum ScalarCowBufferRepr<'a> {
     Owned(ScalarBufferRepr),
 }
 
+impl<'a> From<ScalarSliceRepr<'a>> for ScalarCowBufferRepr<'a> {
+    fn from(slice: ScalarSliceRepr<'a>) -> Self {
+        Self::Borrowed(slice)
+    }
+}
+
+impl<'a> From<ScalarBufferRepr> for ScalarCowBufferRepr<'a> {
+    fn from(buffer: ScalarBufferRepr) -> Self {
+        Self::Owned(buffer)
+    }
+}
+
+impl<'a, T: Scalar> From<CowBufferRepr<'a, T>> for ScalarCowBufferRepr<'a> {
+    fn from(buffer: CowBufferRepr<'a, T>) -> Self {
+        match buffer {
+            CowBufferRepr::Borrowed(slice) => Self::Borrowed(slice.into()),
+            CowBufferRepr::Owned(buffer) => Self::Owned(buffer.into()),
+        }
+    }
+}
+
 impl<'a> ScalarData for ScalarCowBufferRepr<'a> {
     fn as_scalar_slice(&self) -> ScalarSliceRepr {
         match self {
@@ -518,6 +539,7 @@ impl<'a> ScalarDataOwned for ScalarCowBufferRepr<'a> {
     }
 }
 
+#[derive(Clone)]
 pub struct ScalarBufferBase<S: ScalarData> {
     data: S,
 }
@@ -755,13 +777,21 @@ impl<T: Scalar> From<ArcBuffer<T>> for ScalarArcBuffer {
     }
 }
 
+impl<'a> From<ScalarSlice<'a>> for ScalarCowBuffer<'a> {
+    fn from(slice: ScalarSlice<'a>) -> Self {
+        Self {
+            data: slice.data.into(),
+        }
+    }
+}
+
 macro_for!($S in [BufferRepr, ArcBufferRepr] {
     impl<T: Scalar> Sealed for $S<T> {}
     unsafe impl<T: Scalar> Send for $S<T> {}
     unsafe impl<T: Scalar> Sync for $S<T> {}
 });
 
-macro_for!($S in [SliceRepr, SliceMutRepr] {
+macro_for!($S in [SliceRepr, SliceMutRepr, CowBufferRepr] {
     impl<T: Scalar> Sealed for $S<'_, T> {}
     unsafe impl<T: Scalar> Send for $S<'_, T> {}
     unsafe impl<T: Scalar> Sync for $S<'_, T> {}
@@ -973,7 +1003,7 @@ impl<T: Scalar> TryFrom<ScalarBufferRepr> for BufferRepr<T> {
 }
 
 #[derive(Clone)]
-pub struct SliceRepr<'a, T: Scalar> {
+pub struct SliceRepr<'a, T> {
     raw: RawSlice,
     _m: PhantomData<&'a T>,
 }
@@ -1294,6 +1324,71 @@ impl<T: Scalar> DataOwned for ArcBufferRepr<T> {
     }
 }
 
+pub enum CowBufferRepr<'a, T> {
+    Borrowed(SliceRepr<'a, T>),
+    Owned(BufferRepr<T>),
+}
+
+impl<'a, T> From<SliceRepr<'a, T>> for CowBufferRepr<'a, T> {
+    fn from(slice: SliceRepr<'a, T>) -> Self {
+        Self::Borrowed(slice)
+    }
+}
+
+impl<'a, T> From<BufferRepr<T>> for CowBufferRepr<'a, T> {
+    fn from(buffer: BufferRepr<T>) -> Self {
+        Self::Owned(buffer)
+    }
+}
+
+impl<'a, T: Scalar> TryFrom<ScalarCowBufferRepr<'a>> for CowBufferRepr<'a, T> {
+    type Error = ScalarCowBufferRepr<'a>;
+    fn try_from(buffer: ScalarCowBufferRepr<'a>) -> Result<Self, Self::Error> {
+        match buffer {
+            ScalarCowBufferRepr::Borrowed(slice) => SliceRepr::try_from(slice)
+                .map(Into::into)
+                .map_err(Into::into),
+            ScalarCowBufferRepr::Owned(buffer) => BufferRepr::try_from(buffer)
+                .map(Into::into)
+                .map_err(Into::into),
+        }
+    }
+}
+
+impl<'a, T: Scalar> ScalarData for CowBufferRepr<'a, T> {
+    fn as_scalar_slice(&self) -> ScalarSliceRepr {
+        self.as_slice().into()
+    }
+    fn get_scalar_slice_mut(&mut self) -> Option<ScalarSliceMutRepr> {
+        self.get_slice_mut().map(Into::into)
+    }
+    fn try_into_scalar_buffer(self) -> Result<ScalarBufferRepr, Self> {
+        self.try_into_buffer().map(Into::into)
+    }
+}
+
+impl<'a, T: Scalar> Data for CowBufferRepr<'a, T> {
+    type Elem = T;
+    fn as_slice(&self) -> SliceRepr<T> {
+        match self {
+            Self::Borrowed(slice) => slice.clone(),
+            Self::Owned(buffer) => buffer.as_slice(),
+        }
+    }
+    fn get_slice_mut(&mut self) -> Option<SliceMutRepr<T>> {
+        match self {
+            Self::Borrowed(_) => None,
+            Self::Owned(buffer) => buffer.get_slice_mut(),
+        }
+    }
+    fn try_into_buffer(self) -> Result<BufferRepr<T>, Self> {
+        match self {
+            Self::Borrowed(_) => Err(self),
+            Self::Owned(buffer) => Ok(buffer),
+        }
+    }
+}
+
 pub struct BufferBase<S: Data> {
     data: S,
 }
@@ -1302,6 +1397,7 @@ pub type Buffer<T> = BufferBase<BufferRepr<T>>;
 pub type Slice<'a, T> = BufferBase<SliceRepr<'a, T>>;
 pub type SliceMut<'a, T> = BufferBase<SliceMutRepr<'a, T>>;
 pub type ArcBuffer<T> = BufferBase<ArcBufferRepr<T>>;
+pub type CowBuffer<'a, T> = BufferBase<CowBufferRepr<'a, T>>;
 
 impl<T: Scalar, S: DataOwned<Elem = T>> From<Vec<T>> for BufferBase<S> {
     fn from(vec: Vec<T>) -> Self {
@@ -1365,6 +1461,32 @@ impl<T: Scalar> From<Buffer<T>> for ArcBuffer<T> {
     fn from(buffer: Buffer<T>) -> Self {
         Self {
             data: buffer.data.into(),
+        }
+    }
+}
+
+impl<'a, T: Scalar> From<Slice<'a, T>> for CowBuffer<'a, T> {
+    fn from(slice: Slice<'a, T>) -> Self {
+        Self {
+            data: slice.data.into(),
+        }
+    }
+}
+
+impl<'a, T: Scalar> From<Buffer<T>> for CowBuffer<'a, T> {
+    fn from(buffer: Buffer<T>) -> Self {
+        Self {
+            data: buffer.data.into(),
+        }
+    }
+}
+
+impl<'a, T: Scalar> TryFrom<ScalarCowBuffer<'a>> for CowBuffer<'a, T> {
+    type Error = ScalarCowBuffer<'a>;
+    fn try_from(buffer: ScalarCowBuffer<'a>) -> Result<Self, Self::Error> {
+        match buffer.data.try_into() {
+            Ok(data) => Ok(Self { data }),
+            Err(data) => Err(ScalarCowBuffer { data }),
         }
     }
 }
