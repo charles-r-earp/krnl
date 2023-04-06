@@ -14,6 +14,8 @@ enum Cli {
         workspace: bool,
         #[arg(long = "check")]
         check: bool,
+        #[arg(short = 'v', long = "verbose")]
+        verbose: bool,
     },
     WasmTest {
         #[arg(long = "firefox")]
@@ -24,24 +26,33 @@ enum Cli {
         chrome: bool,
         #[arg(long = "node")]
         node: bool,
+        #[arg(short = 'v', long = "verbose")]
+        verbose: bool,
     },
     Validate {
         #[arg(long = "device")]
         device: bool,
+        #[arg(short = 'v', long = "verbose")]
+        verbose: bool,
     },
 }
 
 fn main() {
     let cli = Cli::parse();
     match cli {
-        Cli::Krnlc { workspace, check } => {
-            run_krnlc(workspace, check);
+        Cli::Krnlc {
+            workspace,
+            check,
+            verbose,
+        } => {
+            run_krnlc(workspace, check, verbose);
         }
         Cli::WasmTest {
             firefox,
             safari,
             chrome,
             node,
+            verbose,
         } => {
             use WasmRunner::*;
             let runners = [
@@ -53,15 +64,15 @@ fn main() {
             if runners.iter().any(|(_, requested)| *requested) {
                 for (runner, requested) in runners {
                     if requested {
-                        run_wasm_tests(Some(runner));
+                        run_wasm_tests(Some(runner), verbose);
                     }
                 }
             } else {
-                run_wasm_tests(None);
+                run_wasm_tests(None, verbose);
             }
         }
-        Cli::Validate { device } => {
-            run_validation(device);
+        Cli::Validate { device, verbose } => {
+            run_validation(device, verbose);
         }
     }
 }
@@ -78,7 +89,7 @@ impl<E: Debug> ExitStatusExpect for Result<ExitStatus, E> {
     }
 }
 
-fn run_krnlc(workspace: bool, check: bool) {
+fn run_krnlc(workspace: bool, check: bool, verbose: bool) {
     let manifest_dir = PathBuf::from(var("CARGO_MANIFEST_DIR").unwrap());
     let workspace_dir = manifest_dir.parent().unwrap();
     let krnlc_dir = workspace_dir.join("crates/krnlc");
@@ -90,19 +101,21 @@ fn run_krnlc(workspace: bool, check: bool) {
     if check {
         krnlc_args.push("--check");
     }
-    Command::new("cargo")
+    let mut command = Command::new("cargo");
+    command.args(["run", "--release"]);
+    if verbose {
+        command.arg("-v");
+    }
+    command
         .args([
-            "run",
-            "--release",
             "--",
             "--manifest-path",
             workspace_dir.join("Cargo.toml").to_str().unwrap(),
         ])
         .args(krnlc_args.as_slice())
         .current_dir(krnlc_dir.to_str().unwrap())
-        .env_remove("RUSTUP_TOOLCHAIN")
-        .status()
-        .expect2("krnlc failed!");
+        .env_remove("RUSTUP_TOOLCHAIN");
+    command.status().expect2("krnlc failed!");
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -146,7 +159,7 @@ impl WasmRunner {
     }
 }
 
-fn run_wasm_tests(runner: Option<WasmRunner>) {
+fn run_wasm_tests(runner: Option<WasmRunner>, verbose: bool) {
     let runner = if let Some(runner) = runner {
         if !runner.installed() {
             panic!("{} is not installed!", runner.app());
@@ -176,13 +189,16 @@ fn run_wasm_tests(runner: Option<WasmRunner>) {
             "wasm_integration_tests",
         ])
         .current_dir(krnl_dir.to_str().unwrap());
+    if verbose {
+        command.arg("-v");
+    }
     if runner != WasmRunner::Node {
         command.env("RUSTFLAGS", "--cfg run_in_browser");
     }
     command.status().expect2("test failed!");
 }
 
-fn run_validation(device: bool) {
+fn run_validation(device: bool, verbose: bool) {
     let start = Instant::now();
     Command::new("cargo")
         .args(["fmt", "--all", "--check"])
@@ -200,24 +216,31 @@ fn run_validation(device: bool) {
         .status()
         .expect2("target add failed!");
     for target in targets {
-        Command::new("cargo")
-            .args(["check", "--workspace", "--target", target])
-            .status()
-            .expect2("check failed!");
+        let mut command = Command::new("cargo");
+        command.args(["check", "--workspace", "--target", target]);
+        if verbose {
+            command.arg("-v");
+        }
+        command.status().expect2("check failed!");
     }
-    run_krnlc(true, true);
-    Command::new("cargo")
-        .args(["build", "--all-targets"])
-        .status()
-        .expect2("build failed");
+    run_krnlc(true, true, verbose);
+    let mut command = Command::new("cargo");
+    command.args(["build", "--all-targets"]);
+    if verbose {
+        command.arg("-v");
+    }
+    command.status().expect2("build failed");
     let mut command = Command::new("cargo");
     command.args(["test", "--workspace", "--exclude", "xtask"]);
     if !device {
         command.arg("--no-default-features");
     }
+    if verbose {
+        command.arg("-v");
+    }
     command.args(["--", "--format=terse"]);
     command.status().expect2("test failed!");
-    run_wasm_tests(None);
+    run_wasm_tests(None, verbose);
     let mut command = Command::new("cargo");
     command.args([
         "check",
@@ -230,6 +253,9 @@ fn run_validation(device: bool) {
     let cuda = device && has_cuda();
     if cuda {
         command.args(["--features", "cuda"]);
+    }
+    if verbose {
+        command.arg("-v");
     }
     command.status().expect2("check failed!");
     if device {
@@ -245,6 +271,9 @@ fn run_validation(device: bool) {
         if cuda {
             command.args(["--features", "cuda"]);
         }
+        if verbose {
+            command.arg("-v");
+        }
         command.status().expect2("check failed!");
     }
     Command::new("rustup")
@@ -259,19 +288,20 @@ fn run_validation(device: bool) {
         ])
         .status()
         .expect2("Failed to install miri!");
-    Command::new("cargo")
-        .args([
-            "+nightly",
-            "miri",
-            "test",
-            "--target",
-            "x86_64-unknown-linux-gnu",
-            "--no-default-features",
-            "--",
-            "--format=terse",
-        ])
-        .status()
-        .expect2("miri test failed!");
+    let mut command = Command::new("cargo");
+    command.args([
+        "+nightly",
+        "miri",
+        "test",
+        "--target",
+        "x86_64-unknown-linux-gnu",
+        "--no-default-features",
+    ]);
+    if verbose {
+        command.arg("-v");
+    }
+    command.args(["--", "--format=terse"]);
+    command.status().expect2("miri test failed!");
     println!("finished in {:?}", start.elapsed());
 }
 

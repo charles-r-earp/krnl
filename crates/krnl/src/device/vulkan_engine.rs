@@ -44,7 +44,7 @@ use vulkano::{
     VulkanObject,
 };
 
-#[cfg(any(target_os = "ios", target_os = "macos"))]
+/*#[cfg(any(target_os = "ios", target_os = "macos"))]
 struct MoltenLoader;
 
 #[cfg(any(target_os = "ios", target_os = "macos"))]
@@ -56,10 +56,10 @@ unsafe impl vulkano::library::Loader for MoltenLoader {
     ) -> ash::vk::PFN_vkVoidFunction {
         unsafe { ash_molten::load().get_instance_proc_addr(instance, name) }
     }
-}
+}*/
 
 fn vulkan_library() -> Result<Arc<VulkanLibrary>, LoadingError> {
-    #[cfg(target_os = "ios")]
+    /*#[cfg(target_os = "ios")]
     {
         VulkanLibrary::with_loader(MoltenLoader)
     }
@@ -70,7 +70,7 @@ fn vulkan_library() -> Result<Arc<VulkanLibrary>, LoadingError> {
             result => result,
         }
     }
-    #[cfg(not(any(target_os = "ios", target_os = "macos")))]
+    #[cfg(not(any(target_os = "ios", target_os = "macos")))]*/
     {
         VulkanLibrary::new()
     }
