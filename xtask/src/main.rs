@@ -201,20 +201,13 @@ fn run_validation(device: bool) {
         .expect2("target add failed!");
     for target in targets {
         Command::new("cargo")
-            .args([
-                "check",
-                "--workspace",
-                "--exclude",
-                "xtask",
-                "--target",
-                target,
-            ])
+            .args(["check", "--workspace", "--target", target])
             .status()
             .expect2("check failed!");
     }
     run_krnlc(true, true);
     Command::new("cargo")
-        .arg("build")
+        .args(["build", "--all-targets"])
         .status()
         .expect2("build failed");
     let mut command = Command::new("cargo");
