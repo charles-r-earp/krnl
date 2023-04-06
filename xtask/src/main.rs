@@ -234,10 +234,12 @@ fn run_lints(verbose: bool) {
     command.args(["--", "-D", "warnings"]);
     command.status().expect2("clippy failed!");
     let mut command = Command::new("cargo");
-    command.arg("clippy");
-    //if has_spirv_tools() {
-    command.args(["--no-default-features", "--features", "use-installed-tools"]);
-    //}
+    command.args([
+        "clippy",
+        "--no-default-features",
+        "--features",
+        "use-installed-tools",
+    ]);
     command
         .args([
             "--target-dir",
@@ -259,6 +261,7 @@ fn run_validation(device: bool, verbose: bool) {
         "x86_64-apple-darwin",
         "x86_64-apple-ios",
         "x86_64-pc-windows-msvc",
+        "wasm32-unknown-unknown",
     ];
     Command::new("rustup")
         .args(["target", "add"])
@@ -271,7 +274,12 @@ fn run_validation(device: bool, verbose: bool) {
         if verbose {
             command.arg("-v");
         }
-        command.status().expect2("check failed!");
+        if target.starts_with("wasm") {
+            command.args(["--no-default-features", "--exclude", "compute-benchmarks"]);
+        }
+        command
+            .status()
+            .expect2(&format!("checking {target} failed!"));
     }
     Command::new("rustup")
         .args(["toolchain", "install", "nightly"])

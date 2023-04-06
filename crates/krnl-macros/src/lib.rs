@@ -807,7 +807,7 @@ impl KernelMeta {
     }
     fn compute_def_args(&self) -> Punctuated<TokenStream2, Comma> {
         let mut id = 1;
-        let arrays = self.arrays.iter().map(|(scalar_type, _arrays)| {
+        let arrays = self.arrays.keys().map(|scalar_type| {
             let scalar_name = scalar_type.name();
             let ident = format_ident!("__krnl_group_array_{scalar_name}_{id}");
             let ty = format_ident!("{scalar_name}");
@@ -1210,7 +1210,7 @@ struct KernelDesc {
 impl KernelDesc {
     fn encode(&self) -> Result<String> {
         let bytes = bincode2::serialize(self).map_err(|e| Error::new(Span2::call_site(), e))?;
-        Ok(format!("__krnl_kernel_data_{}", hex::encode(&bytes)))
+        Ok(format!("__krnl_kernel_data_{}", hex::encode(bytes)))
     }
     fn push_const_fields(&self) -> TokenStream2 {
         let mut tokens = TokenStream2::new();

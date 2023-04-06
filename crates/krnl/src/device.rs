@@ -13,10 +13,13 @@ use std::{
     sync::Arc,
 };
 
-#[cfg(feature = "device")]
+#[cfg(all(not(target_arch = "wasm32"), feature = "device"))]
 mod vulkan_engine;
-#[cfg(feature = "device")]
+#[cfg(all(not(target_arch = "wasm32"), feature = "device"))]
 use vulkan_engine::Engine;
+
+#[cfg(all(target_arch = "wasm32", feature = "device"))]
+compile_error!("device feature not supported on wasm");
 
 mod error {
     use std::fmt::{self, Debug, Display};
