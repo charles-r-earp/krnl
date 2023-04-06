@@ -13,6 +13,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     env:
       RUST_BACKTRACE: 1
+      CARGO_INCREMENTAL: 0
     strategy:
       matrix:
         include:
@@ -25,4 +26,4 @@ jobs:
     steps:
     - uses: actions/checkout@v2
     - name: validate
-      run: cargo xtask validate
+      run: cargo xtask validate -v

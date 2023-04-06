@@ -223,6 +223,10 @@ fn run_validation(device: bool, verbose: bool) {
         }
         command.status().expect2("check failed!");
     }
+    Command::new("rustup")
+        .args(["toolchain", "install", "nightly"])
+        .status()
+        .expect2("Failed to install miri!");
     run_krnlc(true, true, verbose);
     let mut command = Command::new("cargo");
     command.args(["build", "--all-targets"]);
@@ -301,6 +305,8 @@ fn run_validation(device: bool, verbose: bool) {
         command.arg("-v");
     }
     command.args(["--", "--format=terse"]);
+    command.env_remove("RUST_TOOLCHAIN");
+    command.env_remove("CARGO");
     command.status().expect2("miri test failed!");
     println!("finished in {:?}", start.elapsed());
 }

@@ -167,7 +167,7 @@ macro_for!($S in [ScalarBufferRepr, ScalarArcBufferRepr] {
     unsafe impl Sync for $S {}
 });
 
-macro_for!($S in [ScalarSliceRepr,ScalarSliceMutRepr] {
+macro_for!($S in [ScalarSliceRepr,ScalarSliceMutRepr, ScalarCowBufferRepr] {
     impl Sealed for $S<'_> {}
     unsafe impl Send for $S<'_> {}
     unsafe impl Sync for $S<'_> {}
@@ -471,6 +471,53 @@ impl ScalarDataOwned for ScalarArcBufferRepr {
     }
 }
 
+pub enum ScalarCowBufferRepr<'a> {
+    Borrowed(ScalarSliceRepr<'a>),
+    Owned(ScalarBufferRepr),
+}
+
+impl<'a> ScalarData for ScalarCowBufferRepr<'a> {
+    fn as_scalar_slice(&self) -> ScalarSliceRepr {
+        match self {
+            Self::Borrowed(slice) => slice.clone(),
+            Self::Owned(buffer) => buffer.as_scalar_slice(),
+        }
+    }
+    fn try_into_scalar_buffer(self) -> Result<ScalarBufferRepr, Self>
+    where
+        Self: Sized,
+    {
+        match self {
+            Self::Borrowed(_) => Err(self),
+            Self::Owned(buffer) => Ok(buffer),
+        }
+    }
+    fn get_scalar_slice_mut(&mut self) -> Option<ScalarSliceMutRepr> {
+        match self {
+            Self::Borrowed(_) => None,
+            Self::Owned(buffer) => buffer.get_scalar_slice_mut(),
+        }
+    }
+}
+
+impl<'a> ScalarDataOwned for ScalarCowBufferRepr<'a> {
+    fn from_scalar_buffer(buffer: ScalarBufferRepr) -> Self
+    where
+        Self: Sized,
+    {
+        Self::Owned(buffer)
+    }
+    fn make_scalar_slice_mut(&mut self) -> Result<ScalarSliceMutRepr> {
+        match self {
+            Self::Borrowed(slice) => {
+                *self = Self::Owned(slice.to_scalar_buffer()?);
+                Ok(self.get_scalar_slice_mut().unwrap())
+            }
+            Self::Owned(buffer) => buffer.make_scalar_slice_mut(),
+        }
+    }
+}
+
 pub struct ScalarBufferBase<S: ScalarData> {
     data: S,
 }
@@ -479,6 +526,7 @@ pub type ScalarBuffer = ScalarBufferBase<ScalarBufferRepr>;
 pub type ScalarSlice<'a> = ScalarBufferBase<ScalarSliceRepr<'a>>;
 pub type ScalarSliceMut<'a> = ScalarBufferBase<ScalarSliceMutRepr<'a>>;
 pub type ScalarArcBuffer = ScalarBufferBase<ScalarArcBufferRepr>;
+pub type ScalarCowBuffer<'a> = ScalarBufferBase<ScalarCowBufferRepr<'a>>;
 
 impl<S: ScalarDataOwned> ScalarBufferBase<S> {
     pub unsafe fn uninit(device: Device, len: usize, scalar_type: ScalarType) -> Result<Self> {
@@ -773,7 +821,7 @@ pub trait DataOwned: Data {
     fn make_slice_mut(&mut self) -> Result<SliceMutRepr<Self::Elem>>;
 }
 
-pub struct BufferRepr<T: Scalar> {
+pub struct BufferRepr<T> {
     raw: RawBuffer,
     _m: PhantomData<T>,
 }
