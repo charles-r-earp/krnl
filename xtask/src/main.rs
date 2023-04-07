@@ -253,6 +253,9 @@ fn run_lints(verbose: bool) {
             "component",
             "add",
             "clippy",
+            "rust-src",
+            "rustc-dev",
+            "llvm-tools-preview",
             "--toolchain",
             "nightly-2023-01-21",
         ])
