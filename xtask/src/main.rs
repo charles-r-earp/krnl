@@ -260,6 +260,7 @@ fn run_lints(verbose: bool) {
         .expect2("failed to install clippy on nightly-2023-01-21!");
     let mut command = Command::new("cargo");
     command.args([
+        "+nightly-2023-01-21",
         "clippy",
         "--no-default-features",
         "--features",
