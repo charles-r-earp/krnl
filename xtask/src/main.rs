@@ -328,12 +328,6 @@ fn run_validation(device: bool, verbose: bool) {
         .expect2("Failed to install nightly!");
     run_krnlc(true, true, verbose);
     let mut command = Command::new("cargo");
-    command.args(["build", "--all-targets"]);
-    if verbose {
-        command.arg("-v");
-    }
-    command.status().expect2("build failed");
-    let mut command = Command::new("cargo");
     command.args(["test", "--workspace", "--exclude", "xtask"]);
     if !device {
         command.arg("--no-default-features");
