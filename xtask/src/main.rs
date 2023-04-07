@@ -330,7 +330,7 @@ fn run_validation(device: bool, verbose: bool) {
     let mut command = Command::new("cargo");
     command.args(["test", "--workspace", "--exclude", "xtask"]);
     if !device {
-        command.args(["--exclude", "--compute-benchmarks", "--no-default-features"]);
+        command.args(["--exclude", "compute-benchmarks", "--no-default-features"]);
     }
     if verbose {
         command.arg("-v");
