@@ -244,6 +244,10 @@ fn run_lints(verbose: bool) {
     }
     command.args(["--", "-D", "warnings"]);
     command.status().expect2("clippy failed!");
+    Command::new("rustup")
+        .args(["component", "add", "clippy", "--toolchain", "nightly"])
+        .status()
+        .expect2("failed to install clippy on nightly!");
     let mut command = Command::new("cargo");
     command.args([
         "clippy",

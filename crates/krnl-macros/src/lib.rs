@@ -1609,6 +1609,8 @@ pub fn __krnl_module(input: TokenStream) -> TokenStream {
                             };
                         });
                     }
+                } else {
+                    error.replace("recompile with krnlc".to_string());
                 }
             }
             Err(e) => {
