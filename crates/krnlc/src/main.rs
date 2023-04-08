@@ -13,17 +13,27 @@ use std::{
 use syn::{visit::Visit, Expr, Item, ItemMod, Lit, Visibility};
 
 #[derive(Parser, Debug)]
+#[command(
+    name = "krnlc",
+    version,
+    about = "Compiler for krnl.",
+    long_about = "Compiler for krnl.\n\nCollects `#[modules]`s and compiles them, creates \"krnl-cache.rs\"."
+)]
 struct Cli {
     #[command(flatten)]
     workspace: Workspace,
     #[command(flatten)]
     manifest: Manifest,
+    /// Directory for all generated artifacts
     #[arg(long = "target-dir")]
     target_dir: Option<PathBuf>,
+    /// Enable SPV_KHR_non_semantic_info for debug_printf
     #[arg(long = "non-semantic-info")]
     non_semantic_info: bool,
+    /// Check mode.
     #[arg(long = "check")]
     check: bool,
+    /// Use verbose output.
     #[arg(short = 'v', long = "verbose")]
     verbose: bool,
 }

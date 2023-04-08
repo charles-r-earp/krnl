@@ -18,7 +18,11 @@ fn debug_index_out_of_bounds(index: usize, len: usize) {
     }
 }
 
+/** Unsafe Index trait.
+Like [`Index`], performs checked indexing, but the caller must ensure that there is no aliasing of a mutable reference.
+**/
 pub trait UnsafeIndex<Idx> {
+    /// The returned type after indexing.
     type Output;
     /** # Safety
     The caller must ensure that the returned reference is not aliased by a mutable borrow, ie by a call to `.unsafe_index_mut()` with the same index.**/
@@ -56,16 +60,23 @@ mod sealed {
 }
 use sealed::Sealed;
 
+/// Base trait for [`BufferBase`] representation.
 #[allow(clippy::len_without_is_empty)]
 pub trait DataBase: Sealed {
+    /// The numerical type of the buffer.
     type Elem: Scalar;
     #[doc(hidden)]
     fn len(&self) -> usize;
 }
 
+/// Marker trait for immutable access.
+/// See [`Slice`].
 pub trait Data: DataBase + Index<usize, Output = Self::Elem> {}
+/// Marker trait for unsafe access.
+/// See [`UnsafeSlice`].
 pub trait UnsafeData: DataBase + UnsafeIndex<usize, Output = Self::Elem> {}
 
+/// [`Slice`] representation.
 #[derive(Clone, Copy)]
 pub struct SliceRepr<'a, T> {
     #[cfg(not(target_arch = "spirv"))]
@@ -110,6 +121,7 @@ impl<T: Scalar> Index<usize> for SliceRepr<'_, T> {
 
 impl<T: Scalar> Data for SliceRepr<'_, T> {}
 
+/// [`UnsafeSlice`] representation.
 #[derive(Clone, Copy)]
 pub struct UnsafeSliceRepr<'a, T> {
     #[cfg(not(target_arch = "spirv"))]
@@ -134,7 +146,6 @@ impl<T: Scalar> DataBase for UnsafeSliceRepr<'_, T> {
     }
 }
 
-#[doc(hidden)]
 impl<T: Scalar> UnsafeIndex<usize> for UnsafeSliceRepr<'_, T> {
     type Output = T;
     unsafe fn unsafe_index(&self, index: usize) -> &Self::Output {
@@ -202,21 +213,30 @@ impl<T: Scalar> UnsafeData for UnsafeSliceRepr<'_, T> {}
 unsafe impl<T: Send> Send for UnsafeSliceRepr<'_, T> {}
 unsafe impl<T: Sync> Sync for UnsafeSliceRepr<'_, T> {}
 
+/// A buffer.
+/// [`Slice`] implements [`Index`] and [`UnsafeSlice`] implements [`UnsafeIndex`].
 #[derive(Clone, Copy)]
 pub struct BufferBase<S> {
     data: S,
 }
 
+/// [`Slice`] implements [`Index`].
+/// See [`BufferBase`].
 pub type Slice<'a, T> = BufferBase<SliceRepr<'a, T>>;
+/// [`UnsafeSlice`] implements [`UnsafeIndex`].
+/// See [`BufferBase`].
 pub type UnsafeSlice<'a, T> = BufferBase<UnsafeSliceRepr<'a, T>>;
 
 impl<S: DataBase> BufferBase<S> {
+    /// The length of the buffer.
     pub fn len(&self) -> usize {
         self.data.len()
     }
+    /// Whether the buffer is empty.
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
+    /// The scalar type.
     pub fn scalar_type(&self) -> ScalarType {
         S::Elem::scalar_type()
     }
@@ -232,12 +252,12 @@ impl<S: Data> Index<usize> for BufferBase<S> {
 impl<S: UnsafeData> UnsafeIndex<usize> for BufferBase<S> {
     type Output = S::Elem;
     /** # Safety
-    The caller must ensure that the returned reference is not aliased by a mutable borrow, ie by a call to `.unsafe_index_mut()` with the same index.**/
+    The caller must ensure that the returned reference is not aliased by a mutable borrow, ie by a call to `.unsafe_index_mut()` with the same index. */
     unsafe fn unsafe_index(&self, index: usize) -> &Self::Output {
         unsafe { self.data.unsafe_index(index) }
     }
     /** # Safety
-    The caller must ensure that the returned reference is not aliased by another borrow, ie by a call to `.unsafe_index()` or `.unsafe_index_mut()` with the same index.**/
+    The caller must ensure that the returned reference is not aliased by another borrow, ie by a call to `.unsafe_index()` or `.unsafe_index_mut()` with the same index. */
     unsafe fn unsafe_index_mut(&self, index: usize) -> &mut Self::Output {
         unsafe { self.data.unsafe_index_mut(index) }
     }

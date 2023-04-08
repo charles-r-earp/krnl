@@ -647,9 +647,15 @@ pub mod __private {
                 #[cfg(feature = "device")]
                 DeviceInner::Device(device) => {
                     let desc = &self.desc;
+                    let name = &desc.name;
+                    let features = desc.features;
+                    let device_features = device.features();
+                    if !device_features.contains(&features) {
+                        bail!("Kernel {name} requires {features:?}, {device:?} has {:?}!");
+                    }
                     let spec_bytes = if !self.desc.spec_descs.is_empty() {
                         if self.spec_consts.is_empty() {
-                            bail!("Kernel `{}` must be specialized!", self.desc.name);
+                            bail!("Kernel `{name}` must be specialized!");
                         }
                         self.spec_consts
                             .iter()

@@ -1,6 +1,8 @@
 [package]
 name = "krnlc"
 version = "0.0.1-unstable"
+authors = ["Charles R Earp <charles-r-earp@gmail.com>"]
+description = "Compiler for krnl modules."
 edition = "2021"
 publish = false
 autoexamples = false

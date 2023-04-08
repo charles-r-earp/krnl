@@ -196,6 +196,8 @@ impl<'de> Deserialize<'de> for ScalarType {
     }
 }
 
+/// Enumeration of all scalars.
+#[allow(missing_docs)]
 #[cfg(not(target_arch = "spirv"))]
 #[non_exhaustive]
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -216,12 +218,47 @@ pub enum ScalarElem {
 
 #[cfg(not(target_arch = "spirv"))]
 impl ScalarElem {
-    pub fn zero(scalar_type: ScalarType) -> Self {
-        Self::U8(1).scalar_cast(scalar_type)
+    /// Zero.
+    pub const fn zero(scalar_type: ScalarType) -> Self {
+        use ScalarElem as E;
+        use ScalarType as S;
+        match scalar_type {
+            S::U8 => E::U8(0),
+            S::I8 => E::I8(0),
+            S::U16 => E::U16(0),
+            S::I16 => E::I16(0),
+            S::F16 => E::F16(f16::ZERO),
+            S::BF16 => E::BF16(bf16::ZERO),
+            S::U32 => E::U32(0),
+            S::I32 => E::I32(0),
+            S::F32 => E::F32(0.),
+            S::U64 => E::U64(0),
+            S::I64 => E::I64(0),
+            S::F64 => E::F64(0.),
+        }
     }
-    pub fn one(scalar_type: ScalarType) -> Self {
-        Self::U8(1).scalar_cast(scalar_type)
+    /// One.
+    pub const fn one(scalar_type: ScalarType) -> Self {
+        use ScalarElem as E;
+        use ScalarType as S;
+        match scalar_type {
+            S::U8 => E::U8(1),
+            S::I8 => E::I8(1),
+            S::U16 => E::U16(1),
+            S::I16 => E::I16(1),
+            S::F16 => E::F16(f16::ONE),
+            S::BF16 => E::BF16(bf16::ONE),
+            S::U32 => E::U32(1),
+            S::I32 => E::I32(1),
+            S::F32 => E::F32(1.),
+            S::U64 => E::U64(1),
+            S::I64 => E::I64(1),
+            S::F64 => E::F64(1.),
+        }
     }
+    /// Casts to `scalar_type`.
+    ///
+    /// See [`Scalar::cast`].
     pub fn scalar_cast(self, scalar_type: ScalarType) -> Self {
         use ScalarElem as E;
         use ScalarType as S;
@@ -241,6 +278,9 @@ impl ScalarElem {
             S::F64 => E::F64(x.cast()),
         }
     }
+    /// Casts to `T`.
+    ///
+    /// See [`Scalar::cast`].
     pub fn cast<T: Scalar>(self) -> T {
         use ScalarElem::*;
         match self {
@@ -258,6 +298,7 @@ impl ScalarElem {
             F64(x) => x.cast(),
         }
     }
+    /// The [`ScalarType`].
     pub fn scalar_type(&self) -> ScalarType {
         use ScalarElem::*;
         use ScalarType as T;
@@ -276,6 +317,7 @@ impl ScalarElem {
             F64(_) => T::F64,
         }
     }
+    /// The bits of the elem, ie u8, u16, u32, or u64.
     pub fn to_scalar_bits(&self) -> Self {
         use ScalarElem::*;
         match self {
@@ -293,6 +335,9 @@ impl ScalarElem {
             F64(x) => x.to_bits().into(),
         }
     }
+    /// The bytes as as slice.
+    ///
+    /// See [`bytemuck::bytes_of`].
     pub fn as_bytes(&self) -> &[u8] {
         use ScalarElem::*;
         macro_wrap!(match self {
@@ -375,7 +420,7 @@ pub trait Scalar:
 {
     /// The [`ScalarType`] of the scalar.
     fn scalar_type() -> ScalarType;
-    //fn scalar_elem(self) -> ScalarElem;
+    /// Casts `self as T`.
     fn cast<T: Scalar>(self) -> T;
 }
 
@@ -400,7 +445,9 @@ pub trait Scalar:
 {
     /// The [`ScalarType`] of the scalar.
     fn scalar_type() -> ScalarType;
+    /// Converts to [`ScalarElem`].
     fn scalar_elem(self) -> ScalarElem;
+    /// Casts `self as T`.
     fn cast<T: Scalar>(self) -> T;
 }
 

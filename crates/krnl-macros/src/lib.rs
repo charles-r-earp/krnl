@@ -1,3 +1,9 @@
+/*!
+# **krnl-macros**
+Macros for [**krnl**](https://github.com/charles-r-earp/krnl)
+
+*/
+
 use derive_syn_parse::Parse;
 use fxhash::FxHashMap;
 use proc_macro::TokenStream;
