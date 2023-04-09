@@ -230,7 +230,7 @@ impl<D: Copy> Kernel<D> {
     pub fn subgroup_id(&self) -> u32 {
         self.subgroup_id
     }
-    /// The number of threads per subgroup 
+    /// The number of threads per subgroup
     pub fn subgroup_threads(&self) -> u32 {
         self.subgroup_threads
     }

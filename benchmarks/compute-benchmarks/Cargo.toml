@@ -1,9 +1,9 @@
 [package]
 name = "compute-benchmarks"
 version = "0.1.0"
-edition = "2021"
-authors = ["Charles R Earp <charles.r.earp@gmail.com>"]
-license = "MIT/Apache-2.0"
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
 publish = false
 autobins = false 
 autoexamples = false

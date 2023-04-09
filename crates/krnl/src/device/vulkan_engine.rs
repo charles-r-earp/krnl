@@ -1,9 +1,10 @@
 use super::{
+    error::{DeviceIndexOutOfRange, DeviceUnavailable},
     DeviceEngine, DeviceEngineBuffer, DeviceEngineKernel, DeviceInfo, DeviceLost, DeviceOptions,
-    Features, KernelDesc, KernelKey, error::{DeviceUnavailable, DeviceIndexOutOfRange},
+    Features, KernelDesc, KernelKey,
 };
 
-use anyhow::{Result, Error};
+use anyhow::{Error, Result};
 use ash::vk::Handle;
 use atomicbox::AtomicOptionBox;
 use dashmap::DashMap;

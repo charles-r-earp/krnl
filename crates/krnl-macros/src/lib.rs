@@ -80,19 +80,20 @@ pub fn module(attr: TokenStream, item: TokenStream) -> TokenStream {
             let args = syn::parse_macro_input!(tokens as ModuleKrnlArgs);
             for arg in args.args.iter() {
                 if let Some(krnl_crate) = arg.krnl_crate.as_ref() {
-                    if krnl_crate.leading_colon.is_some() {
-                        krnl = quote! { 
+                    krnl = if krnl_crate.leading_colon.is_some()
+                        || krnl_crate
+                            .to_token_stream()
+                            .to_string()
+                            .starts_with("crate")
+                    {
+                        quote! {
                             #krnl_crate
-                        };
-                    } else if krnl_crate.to_token_stream().to_string().starts_with("crate") {
-                        krnl = quote! { 
-                            #krnl_crate
-                        };
+                        }
                     } else {
-                        krnl = quote! { 
+                        quote! {
                             ::#krnl_crate
-                        };
-                    }
+                        }
+                    };
                 } else if let Some(ident) = &arg.ident {
                     if ident == "no_build" {
                         build = false;
@@ -1547,7 +1548,7 @@ fn kernel_impl(attr_tokens: TokenStream2, item_tokens: TokenStream2) -> Result<T
                 ///
                 /// **errors**
                 /// - The kernel wasn't compiled (with `#[krnl(no_build)]` applied to `#[module]`).
-                /// - The kernel could not be deserialized. For stable releases, this is a bug, as `#[module]` should produce a compile error. 
+                /// - The kernel could not be deserialized. For stable releases, this is a bug, as `#[module]` should produce a compile error.
                 pub fn builder() -> Result<KernelBuilder> {
                     let name = module_path!();
                     static BUILDER: Lazy<Result<KernelBuilderBase, String>> = Lazy::new(|| {
@@ -1593,7 +1594,7 @@ fn kernel_impl(attr_tokens: TokenStream2, item_tokens: TokenStream2) -> Result<T
                     }
                     /// Groups to dispatch.
                     ///
-                    /// For item kernels, is inferred based on item arguments. 
+                    /// For item kernels, is inferred based on item arguments.
                     pub fn with_groups(mut self, groups: #kernel_dim) -> Self {
                         self.inner = self.inner.groups(&groups.to_array());
                         self
@@ -1603,13 +1604,13 @@ fn kernel_impl(attr_tokens: TokenStream2, item_tokens: TokenStream2) -> Result<T
                     /// - Waits for immutable access to slice arguments.
                     /// - Waits for mutable access to mutable slice arguments.
                     /// - Blocks until the kernel is queued.
-                    ///   
-                    /// A device has 1 or more compute queues. One kernel can be queued while another is 
+                    ///
+                    /// A device has 1 or more compute queues. One kernel can be queued while another is
                     /// executing on that queue.
-                    /// 
+                    ///
                     /// **errors**
                     /// - DeviceLost: The device was lost.
-                    /// - The kernel could not be queued. 
+                    /// - The kernel could not be queued.
                     pub #unsafe_token fn dispatch(&self, #dispatch_args) -> Result<()> {
                         unsafe { self.inner.dispatch(&[#dispatch_slice_args], &[#dispatch_push_args]) }
                     }

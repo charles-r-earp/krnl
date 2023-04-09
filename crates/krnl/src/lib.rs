@@ -2,7 +2,7 @@
 # **krnl**
 Safe, portable, high performance compute (GPGPU) kernels.
 
-Developed for [**autograph**](https://github.com/charles-r-earp/autograph). 
+Developed for [**autograph**](https://github.com/charles-r-earp/autograph).
 - Similar functionality to CUDA and OpenCL.
 - Supports GPU's and other Vulkan 1.2 capable devices.
 - MacOS / iOS supported via [MoltenVK](https://github.com/KhronosGroup/MoltenVK).
@@ -11,10 +11,10 @@ Developed for [**autograph**](https://github.com/charles-r-earp/autograph).
 - Buffers on the host can be accessed natively as Vecs and slices.
 
 # **krnlc**
-Kernel compiler for **krnl**. 
+Kernel compiler for **krnl**.
 - Built on [RustGPU](https://github.com/EmbarkStudios/rust-gpu)'s spirv-builder.
-- Supports dependencies defined in Cargo.toml. 
-- Uses [spirv-tools](https://github.com/EmbarkStudios/spirv-tools-rs) to validate and optimize. 
+- Supports dependencies defined in Cargo.toml.
+- Uses [spirv-tools](https://github.com/EmbarkStudios/spirv-tools-rs) to validate and optimize.
 - Compiles to "krnl-cache.rs", so the crate will build on stable Rust.
 
 # Installing
@@ -34,13 +34,13 @@ For device functionality (kernels), install Vulkan for your platform.
 - Clone [**krnl**](https://github.com/charles-r-earp/krnl)
     - Check that `cargo test --test integration_tests -- --exact none` shows your devices.
     - Alternatively run all the tests with `cargo test`.
-      
+
 # Getting Started
 - See [device](device) for creating devices.
 - See [buffer](buffer) for creating buffers.
 - Read the [Kernel Programming Guide](_kernel_programming_guide).
 
-# Example    
+# Example
 ```
  use krnl::{
     anyhow::Result,
@@ -84,10 +84,10 @@ fn saxpy(x: Slice<f32>, alpha: f32, mut y: SliceMut<f32>) -> Result<()> {
             kernels::saxpy_impl(x, alpha, y);
         }
         return Ok(());
-    } 
+    }
     kernels::saxpy::builder()?
         .build(y.device())?
-        .dispatch(x, alpha, y) 
+        .dispatch(x, alpha, y)
 }
 
 fn main() -> Result<()> {

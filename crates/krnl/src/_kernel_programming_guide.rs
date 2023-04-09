@@ -84,7 +84,7 @@ pub fn fill_ones(device: Device, len: usize) -> Result<Buffer<u32>> {
     Ok(y)
 }
 ```
-Each kernel is called with a hidden kernel: [`Kernel`](krnl_core::kernel::Kernel) argument. 
+Each kernel is called with a hidden kernel: [`Kernel`](krnl_core::kernel::Kernel) argument.
 
 *But wait! This is Rust, we can use iterators!*
 
@@ -125,13 +125,13 @@ pub fn fill_ones(device: Device, len: usize) -> Result<Buffer<u32>> {
     Ok(y)
 }
 ```
-Item kernels are called with a hidden kernel: [`ItemKernel`](krnl_core::kernel::ItemKernel) argument. 
+Item kernels are called with a hidden kernel: [`ItemKernel`](krnl_core::kernel::ItemKernel) argument.
 
-# Documentation 
+# Documentation
 The generated code from the kernel macro is fully documented. You can view it with `cargo doc --open`.
-Also use `--document-private-items` if the item is private. 
+Also use `--document-private-items` if the item is private.
 
-# Modules 
+# Modules
 The module macro supports additional arguments within `krnl(..)`:
 ```no_run
 # use krnl::macros::module;
@@ -144,10 +144,10 @@ pub mod foo {
 }
 ```
 
-Modules mut be within a module hierarchy, not within fn's or impl blocks. 
- 
-# Macros 
-Kernels can be generated via macro_rules! and procedural macros. For example, [dry](https://docs.rs/dry/latest/dry/) and [paste](https://docs.rs/paste/latest/paste/) 
+Modules mut be within a module hierarchy, not within fn's or impl blocks.
+
+# Macros
+Kernels can be generated via macro_rules! and procedural macros. For example, [dry](https://docs.rs/dry/latest/dry/) and [paste](https://docs.rs/paste/latest/paste/)
 can be very useful:
 ```
 # use krnl::macros::module;
@@ -173,23 +173,23 @@ macro_for!($T in [i32, u32, f32] {
 
 
 
-# Groups 
-Kernels are dispatched in groups of threads (CUDA thread blocks). The threads provided to `#[kernel(threads(..))]` 
+# Groups
+Kernels are dispatched in groups of threads (CUDA thread blocks). The threads provided to `#[kernel(threads(..))]`
 sets the number of threads per group. This can be 1, 2, or 3 dimensional, corresponding to [`u32`], [`UVec2`](krnl_core::glam::UVec2),
 and [`UVec3`](krnl_core::glam::UVec3). These are x, y, and z dimensions, where z is the outer dimension, and x
-is the fastest changing dimension. Thus 1 dimensional kernels have y and z equal to 1.  
+is the fastest changing dimension. Thus 1 dimensional kernels have y and z equal to 1.
 
-For simple kernels, threads can be arbitrary, typically 128, 256, or 512. This can be tuned for optimal performance. 
-Note that the device may impose limits on the maximum thread dimensions. This is at least (1024, 1024, 64). 
+For simple kernels, threads can be arbitrary, typically 128, 256, or 512. This can be tuned for optimal performance.
+Note that the device may impose limits on the maximum thread dimensions. This is at least (1024, 1024, 64).
 
 Threads can be [specialized](#specialization).
 
 Item kernels can infer the global_threads by the sizes of the item arguments. This is functionally equivalent
-to `iter().zip()`. 
- 
+to `iter().zip()`.
+
 Note that `global_threads = groups * threads`. When provided to `.with_global_threads()` prior to dispatch, global_threads
-are rounded up to the next multiple of threads. Because of this, it is typical to check that the global_index is 
-in bounds as implemented above. 
+are rounded up to the next multiple of threads. Because of this, it is typical to check that the global_index is
+in bounds as implemented above.
 
 Kernels can declare group shared memory:
 ```no_run
@@ -199,14 +199,14 @@ Kernels can declare group shared memory:
 # mod kernels {
 # use krnl::krnl_core;
 # use krnl_core::macros::kernel;
-#[kernel(threads(64))] 
+#[kernel(threads(64))]
 fn group_sum(
     #[global] x: Slice<f32>,
     #[group] x_group: UnsafeSlice<f32, 64>,
     #[global] y: UnsafeSlice<f32>,
 ) {
     use krnl_core::{buffer::UnsafeIndex, spirv_std::arch::workgroup_barrier};
-        
+
     let global_id = kernel.global_id() as usize;
     let group_id = kernel.group_id() as usize;
     let thread_id = kernel.thread_id() as usize;
@@ -214,35 +214,35 @@ fn group_sum(
         x_group.unsafe_index_mut(thread_id) = x[global_id];
         // Barriers are used to synchronize access to group memory.
         // This call must be reached by all threads in the group!
-        workgroup_barrier();            
+        workgroup_barrier();
     }
     if thread_id == 0 {
         for i in 0 .. kernel.threads() as usize {
             unsafe {
                 y.unsafe_index_mut(group_index) += x_group.unsafe_index(i);
             }
-        }   
+        }
     }
-}  
+}
 }
 ```
 Group memory is zeroed.
- 
-# Subgroups 
+
+# Subgroups
 Thread groups are composed of subgroups of threads (CUDA warps). Typical values are:
-- 32: NVIDIA, Intel  
+- 32: NVIDIA, Intel
 - 64: AMD
 
 Note that it must be at least 1 and typically is not greater than 128.
 
 # Features
 Kernels implicitly declare [`Features`](device::Features) based on types and or operations used.
-If the [device](device::Device) does not support these features, `.build()` will return an 
+If the [device](device::Device) does not support these features, `.build()` will return an
 error.
 
 See [`DeviceInfo::features`](device::DeviceInfo::features).
 
-# Specialization 
+# Specialization
 SpecConstants are constants that are set when the kernel is compiled. Threads and the length
 of group buffers can be specialized:
 ```no_run
@@ -252,7 +252,7 @@ of group buffers can be specialized:
 # mod kernels {
 # use krnl::krnl_core;
 # use krnl_core::macros::kernel;
-#[kernel(threads(N))] 
+#[kernel(threads(N))]
 pub fn group_sum<const N: u32>(
     #[global] x: Slice<f32>,
     #[group] x_group: UnsafeSlice<f32, { 2 * N as usize }>,
@@ -261,29 +261,29 @@ pub fn group_sum<const N: u32>(
     /* N is available here, but isn't const. */
 }
 # }
-# fn foo(device: Device) -> Result<()> {    
+# fn foo(device: Device) -> Result<()> {
 # use kernels::group_sum;
 let kernel = group_sum::builder()?.specialize(128)?.build(device)?;
 # todo!()
 # }
 ```
 
-# Panics 
-Panics will abort the thread, but this will not be caught from the host. You can use [debug_printf](#debug_printf) to ensure a 
-certain code path is not reached. 
+# Panics
+Panics will abort the thread, but this will not be caught from the host. You can use [debug_printf](#debug_printf) to ensure a
+certain code path is not reached.
 
 # debug_printf
 The [debug_printf](krnl_core::spirv_std::macros::debug_printfln) and [debug_printfln](krnl_core::spirv_std::macros::debug_printfln)
 macros can be used to write to stdout. This requires the SPV_KHR_non_semantic_info extension. Use the `--non-semantic-info`
-option to [**krnlc**](#compiling) to enable this extension. You can use `#[cfg(target_feature = "ext:SPV_KHR_non_semantic_info")]` for 
-conditional compilation. 
+option to [**krnlc**](#compiling) to enable this extension. You can use `#[cfg(target_feature = "ext:SPV_KHR_non_semantic_info")]` for
+conditional compilation.
 
-Non semantic info is not enabled by default because it will significantly increase binary size. 
+Non semantic info is not enabled by default because it will significantly increase binary size.
 
 [`Slice`](krnl_core::buffer::Slice) and [`UnsafeSlice`](krnl_core::buffer::UnsafeSlice) will write out the panic message in
-addition to aborting the thread if an index is out of bounds. 
+addition to aborting the thread if an index is out of bounds.
 
-See <https://github.com/KhronosGroup/Vulkan-ValidationLayers/blob/main/docs/debug_printf.md> for usage. 
+See <https://github.com/KhronosGroup/Vulkan-ValidationLayers/blob/main/docs/debug_printf.md> for usage.
 
 # Compiling
 Kernels are compiled with **krnlc**.
@@ -303,12 +303,12 @@ Otherwise:
 ```toml
 [package.metadata.krnlc]
 # features to enable when locating modules
-features = ["zoom", "zap"] 
+features = ["zoom", "zap"]
 
 [package.metadata.krnlc.dependencies]
 # keys are inherited from resolved values for the host target
 foo = { version = "0.1.0", features = ["foo"] }
-bar = { default-features = false } 
+bar = { default-features = false }
 ```
 
 Compile with `krnlc` or `krnlc -p my-crate`:

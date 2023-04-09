@@ -263,7 +263,6 @@ impl<S: UnsafeData> UnsafeIndex<usize> for BufferBase<S> {
     }
 }
 
-
 impl<'a, T: Scalar> Slice<'a, T> {
     // For kernel macro.
     #[doc(hidden)]

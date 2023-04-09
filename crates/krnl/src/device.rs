@@ -1,4 +1,4 @@
-/*! 
+/*!
 
 A [`Device`](crate::device::Device) is used to create [buffers](crate::buffer) and [kernels](crate::_kernel_programming_guide).
 [`Device::host()`](crate::device::Device::host) method creates the host, which is merely the lack of a device.
@@ -11,14 +11,14 @@ Creating a device and printing out useful info:
 let device = Device::builder()
     .index(1)
     .build()?;
-dbg!(device.info()); 
+dbg!(device.info());
 # }
 ```
 
-# Queues 
-Devices can support multiple compute queues and a dedicated transfer queue. 
+# Queues
+Devices can support multiple compute queues and a dedicated transfer queue.
 
-Dispatching a kernel: 
+Dispatching a kernel:
 - Waits for immutable access to slice arguments.
 - Waits for mutable access to mutable slice arguments.
 - Blocks until the kernel is queued.
@@ -54,17 +54,20 @@ pub mod error {
     use std::fmt::{self, Debug, Display};
 
     /** Device is unavailable.
-    
+
     - The "device" feature is not enabled.
-    - Failed to load the Vulkan library.  
-    */ 
+    - Failed to load the Vulkan library.
+    */
     #[derive(Clone, Copy, Debug, thiserror::Error)]
     #[error("DeviceUnavailable")]
     pub struct DeviceUnavailable;
 
     #[cfg(feature = "device")]
     #[derive(Clone, Copy, Debug, thiserror::Error)]
-    #[cfg_attr(feature = "device", error("Device index {index} is out of range 0..{devices}!"))]
+    #[cfg_attr(
+        feature = "device",
+        error("Device index {index} is out of range 0..{devices}!")
+    )]
     #[cfg_attr(not(feature = "device"), error("unreachable!"))]
     pub struct DeviceIndexOutOfRange {
         #[cfg(feature = "device")]
@@ -205,7 +208,7 @@ trait DeviceEngineKernel: Sized {
 
 /** A device.
 
-Devices can be cloned, which is equivalent to [`Arc::clone()`]. 
+Devices can be cloned, which is equivalent to [`Arc::clone()`].
 
 Devices (other than the host) are unique:
 ```no_run
@@ -257,7 +260,7 @@ impl Device {
         &self.inner
     }
     /** Device info.
-    
+
     The host returns None. */
     pub fn info(&self) -> Option<&Arc<DeviceInfo>> {
         match self.inner() {
@@ -267,14 +270,14 @@ impl Device {
         }
     }
     /** Wait for previous work to finish.
-    
+
     If host, this does nothing.
-    
-    Operations (like kernel dispatches) executed after this method is called 
-    will not block, and will not be waited on. 
-    
-    This is primarily for benchmarking, manual synchronization is unnecessary. 
-    
+
+    Operations (like kernel dispatches) executed after this method is called
+    will not block, and will not be waited on.
+
+    This is primarily for benchmarking, manual synchronization is unnecessary.
+
     **errors**
     Returns an error if the device was lost while waiting. */
     pub fn wait(&self) -> Result<(), DeviceLost> {
@@ -417,7 +420,7 @@ impl DeviceBuffer {
 
 Features supported by a device. See [`DeviceInfo::features`].
 
-Kernels can not be compiled unless the device supports all features used. 
+Kernels can not be compiled unless the device supports all features used.
 
 This is a subset of [vulkano::device::Features](https://docs.rs/vulkano/latest/vulkano/device/struct.Features.html).
 

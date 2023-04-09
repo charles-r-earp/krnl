@@ -269,6 +269,9 @@ fn run_lints(verbose: bool) {
         "--features",
         "use-installed-tools",
     ]);
+    if verbose {
+        command.arg("-v");
+    }
     command
         .args([
             "--target-dir",

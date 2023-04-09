@@ -1,7 +1,9 @@
 [package]
 name = "xtask"
 version = "0.1.0"
-edition = "2021"
+authors.workspace = true
+license.workspace = true
+edition.workspace = true
 publish = false
 autoexamples = false
 autotests = false

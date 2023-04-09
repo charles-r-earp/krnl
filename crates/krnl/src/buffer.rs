@@ -5,7 +5,7 @@ store data inline, essentially as a [`Vec`] or [slice](https://doc.rust-lang.org
 
 [`BufferBase`](crate::buffer::BufferBase) is a generic buffer. [`ScalarBufferBase`](crate::buffer::ScalarBufferBase) is a dynamically typed buffer.
 
-# Example 
+# Example
 ```
 use krnl::{anyhow::Result, device::Device, buffer::{Buffer, Slice, SliceMut}};
 fn saxpy(x: Slice<f32>, alpha: f32, mut y: SliceMut<f32>) -> Result<()> {
@@ -14,7 +14,7 @@ fn saxpy(x: Slice<f32>, alpha: f32, mut y: SliceMut<f32>) -> Result<()> {
             *y += alpha * x;
         }
         return Ok(());
-    } 
+    }
     todo!()
 }
 
@@ -35,7 +35,6 @@ fn main() -> Result<()> {
 }
 ```
 */
-
 
 use crate::{
     device::{Device, DeviceInner},
@@ -601,7 +600,7 @@ pub struct ScalarBufferBase<S: ScalarData> {
     data: S,
 }
 
-/** ScalarBuffer 
+/** ScalarBuffer
 
 See [`ScalarBufferBase`]. */
 pub type ScalarBuffer = ScalarBufferBase<ScalarBufferRepr>;
@@ -613,7 +612,7 @@ pub type ScalarSlice<'a> = ScalarBufferBase<ScalarSliceRepr<'a>>;
 
 See [`ScalarBufferBase`]. */
 pub type ScalarSliceMut<'a> = ScalarBufferBase<ScalarSliceMutRepr<'a>>;
-/** ScalarArcBuffer 
+/** ScalarArcBuffer
 
 Like [`Arc`], a clonable shared scalar buffer.
 
@@ -627,16 +626,16 @@ See [`BufferBase`]. */
 pub type ScalarCowBuffer<'a> = ScalarBufferBase<ScalarCowBufferRepr<'a>>;
 
 impl<S: ScalarDataOwned> ScalarBufferBase<S> {
-    /** Allocate a scalar buffer.
-    
-    # Safety
-    The buffer will not be initialized.
-    
-    **errors**
-    - DeviceLost
-    - OutOfDeviceMemory
-
-    See [`ScalarBufferBase::zeros()`] for a safe alternative.*/
+    /// Allocate a scalar buffer.
+    ///
+    /// # Safety
+    /// The buffer will not be initialized.
+    ///
+    /// **errors**
+    /// - DeviceLost
+    /// - OutOfDeviceMemory
+    ///
+    /// See [`ScalarBufferBase::zeros()`] for a safe alternative.*/
     pub unsafe fn uninit(device: Device, len: usize, scalar_type: ScalarType) -> Result<Self> {
         macro_wrap!(paste! {
             match scalar_type {
@@ -648,12 +647,12 @@ impl<S: ScalarDataOwned> ScalarBufferBase<S> {
         })
     }
     /** Create a scalar buffer filled with `elem'.
-    
+
     **errors**
     - DeviceLost
     - OutOfDeviceMemory
     - Could not dispatch the kernel.
-        - This may require [`Features`](crate::device::Features) for the type.  
+        - This may require [`Features`](crate::device::Features) for the type.
      */
     pub fn from_elem(device: Device, len: usize, elem: ScalarElem) -> Result<Self> {
         macro_wrap!(paste! {
@@ -666,13 +665,13 @@ impl<S: ScalarDataOwned> ScalarBufferBase<S> {
         })
     }
     /** Create a scalar buffer filled with 0's.
-    
+
     See [`from_elem`](ScalarBufferBase::from_elem). */
     pub fn zeros(device: Device, len: usize, scalar_type: ScalarType) -> Result<Self> {
         Self::from_elem(device, len, ScalarElem::zero(scalar_type))
     }
     /** Create a scalar buffer filled with 1's.
-    
+
     See [`from_elem`](ScalarBufferBase::from_elem). */
     pub fn ones(device: Device, len: usize, scalar_type: ScalarType) -> Result<Self> {
         Self::from_elem(device, len, ScalarElem::one(scalar_type))
@@ -710,9 +709,9 @@ impl<S: ScalarData> ScalarBufferBase<S> {
         ScalarSliceMut { data }
     }
     /** Move into an owned scalar buffer.
-    
+
     Avoids copying if possible.
-    
+
     See [`.to_owned()`]. */
     pub fn into_owned(self) -> Result<ScalarBuffer> {
         match self.data.try_into_scalar_buffer() {
@@ -721,7 +720,7 @@ impl<S: ScalarData> ScalarBufferBase<S> {
         }
     }
     /* Copies to an owned scalar buffer.
-    
+
     **errors**
     - DeviceLost
     - OutOfDeviceMemory
@@ -730,9 +729,9 @@ impl<S: ScalarData> ScalarBufferBase<S> {
         self.cast(self.scalar_type())
     }
     /** Moves into a scalar arc buffer.
-    
+
     Avoids copying if possible.
-    
+
     See [`.to_shared()`] */
     pub fn into_shared(self) -> Result<ScalarArcBuffer> {
         let data = match self.data.try_into_scalar_arc_buffer() {
@@ -742,18 +741,18 @@ impl<S: ScalarData> ScalarBufferBase<S> {
         Ok(ScalarArcBuffer { data })
     }
     /** Copies or clones to a scalar arc buffer.
-    
+
     ScalarArcBuffer can be cheaply cloned.
-    
+
     See [`.to_owned`]. */
     pub fn to_shared(&self) -> Result<ScalarArcBuffer> {
         let data = self.data.to_scalar_arc_buffer()?;
         Ok(ScalarArcBuffer { data })
     }
     /** Moves the buffer to the device.
-    
+
     Avoids copying if possible.
-    
+
     See [`.to_device()`]. */
     pub fn into_device(self, device: Device) -> Result<ScalarBuffer> {
         if device == self.device() {
@@ -763,9 +762,9 @@ impl<S: ScalarData> ScalarBufferBase<S> {
         }
     }
     /** Moves the buffer to the device as a scalar arc buffer
-    
-    ScalarArcBuffer can be cheeply cloned. 
-    
+
+    ScalarArcBuffer can be cheeply cloned.
+
     See [`.into_device()`]. */
     pub fn into_device_shared(self, device: Device) -> Result<ScalarArcBuffer> {
         if device == self.device() {
@@ -944,7 +943,7 @@ macro_for!($S in [SliceRepr, SliceMutRepr, CowBufferRepr] {
     unsafe impl<T: Scalar> Sync for $S<'_, T> {}
 });
 
-/// Marker trait for buffers. 
+/// Marker trait for buffers.
 pub trait Data: ScalarData {
     /// The type of the buffer.
     type Elem: Scalar;
@@ -984,7 +983,7 @@ pub trait Data: ScalarData {
     }
 }
 
-/// Marker trait for mutable buffers. 
+/// Marker trait for mutable buffers.
 pub trait DataMut: Data + ScalarDataMut {
     #[doc(hidden)]
     fn as_slice_mut(&mut self) -> SliceMutRepr<Self::Elem>;
@@ -1277,7 +1276,11 @@ impl<'a, T: Scalar> SliceMutRepr<'a, T> {
     }
     fn copy_from_slice(&mut self, src: &SliceRepr<T>) -> Result<()> {
         if self.len() != src.len() {
-            bail!("source slice length ({}) does not match destination slice length ({})", src.len(), self.len());
+            bail!(
+                "source slice length ({}) does not match destination slice length ({})",
+                src.len(),
+                self.len()
+            );
         }
         match (&mut self.raw.inner, &src.raw.inner) {
             (RawSliceInner::Host(dst), RawSliceInner::Host(src)) => {
@@ -1676,22 +1679,22 @@ impl<'a, T: Scalar> TryFrom<ScalarCowBuffer<'a>> for CowBuffer<'a, T> {
 }
 
 impl<T: Scalar, S: DataOwned<Elem = T>> BufferBase<S> {
-    /** Allocate a buffer.
-    
-    # Safety
-    The buffer will not be initialized.
-
-    See [`zeros()`](Buffer::zeros) for a safe alternative.*/
+    /// Allocate a buffer.
+    ///
+    /// # Safety
+    /// The buffer will not be initialized.
+    ///
+    /// See [`zeros()`](Buffer::zeros) for a safe alternative.*/
     pub unsafe fn uninit(device: Device, len: usize) -> Result<Self> {
         let data = S::from_buffer(unsafe { BufferRepr::uninit(device, len)? });
         Ok(Self { data })
     }
     /** Create a buffer filled with `elem'
-    
+
     **errors**
     - DeviceLost
     - OutOfDeviceMemory
-    
+
     See [`.fill()`].
     */
     pub fn from_elem(device: Device, len: usize, elem: T) -> Result<Self> {
@@ -1702,13 +1705,13 @@ impl<T: Scalar, S: DataOwned<Elem = T>> BufferBase<S> {
         })
     }
     /** Create a buffer filled with 0's.
-    
+
     See [`from_elem`](BufferBase::from_elem). */
     pub fn zeros(device: Device, len: usize) -> Result<Self> {
         Self::from_elem(device, len, T::zero())
     }
     /** Create a buffer filled with 1's.
-    
+
     See [`from_elem`](BufferBase::from_elem). */
     pub fn ones(device: Device, len: usize) -> Result<Self> {
         Self::from_elem(device, len, T::one())
@@ -1767,13 +1770,13 @@ impl<T: Scalar, S: Data<Elem = T>> BufferBase<S> {
         SliceMut { data }
     }
     /** Borrow as a host slice.
-    
+
     Returns [`None`] if not on the host. */
     pub fn as_host_slice(&self) -> Option<&[T]> {
         self.data.as_host_slice()
     }
-     /** Borrow as a mutable host slice.
-    
+    /** Borrow as a mutable host slice.
+
     Returns [`None`] if not on the host. */
     pub fn as_host_slice_mut(&mut self) -> Option<&mut [T]>
     where
@@ -1795,7 +1798,7 @@ impl<T: Scalar, S: Data<Elem = T>> BufferBase<S> {
         ScalarSliceMut { data }
     }
     /** Moves into a buffer.
-    
+
     See [`.to_owned()`]. */
     pub fn into_owned(self) -> Result<Buffer<T>> {
         match self.data.try_into_buffer() {
@@ -1804,7 +1807,7 @@ impl<T: Scalar, S: Data<Elem = T>> BufferBase<S> {
         }
     }
     /* Copies to a buffer.
-    
+
     **errors**
     - DeviceLost
     - OutOfDeviceMemory
@@ -1813,7 +1816,7 @@ impl<T: Scalar, S: Data<Elem = T>> BufferBase<S> {
         self.cast()
     }
     /** Moves into an arc buffer.
-    
+
     See [`.to_shared()`] */
     pub fn into_shared(self) -> Result<ArcBuffer<T>> {
         let data = match self.data.try_into_arc_buffer() {
@@ -1823,14 +1826,14 @@ impl<T: Scalar, S: Data<Elem = T>> BufferBase<S> {
         Ok(ArcBuffer { data })
     }
     /** Copies or clones to an arc buffer.
-    
+
     See [`.to_owned`]. */
     pub fn to_shared(&self) -> Result<ArcBuffer<T>> {
         let data = self.data.to_arc_buffer()?;
         Ok(ArcBuffer { data })
     }
     /** Moves into the device.
-    
+
     See [`.into_device()`]. */
     pub fn into_device(self, device: Device) -> Result<Buffer<T>> {
         if device == self.device() {
@@ -1840,7 +1843,7 @@ impl<T: Scalar, S: Data<Elem = T>> BufferBase<S> {
         }
     }
     /** Moves into the device as an arc buffer.
-    
+
     See [`.into_device()`]. */
     pub fn into_device_shared(self, device: Device) -> Result<ArcBuffer<T>> {
         if device == self.device() {
@@ -1850,7 +1853,7 @@ impl<T: Scalar, S: Data<Elem = T>> BufferBase<S> {
         }
     }
     /* Copies to the device.
-    
+
     **errors**
     - DeviceLost
     - OutOfDeviceMemory
@@ -1860,7 +1863,7 @@ impl<T: Scalar, S: Data<Elem = T>> BufferBase<S> {
         Ok(Buffer { data })
     }
     /** Moves into a [`Vec`].
-    
+
     See [`.into_device()`] */
     pub fn into_vec(self) -> Result<Vec<T>> {
         match self.data.try_into_buffer() {
@@ -1869,14 +1872,14 @@ impl<T: Scalar, S: Data<Elem = T>> BufferBase<S> {
         }
     }
     /** Copies to a [`Vec`].
-    
+
     See [`.to_device()`]. */
     pub fn to_vec(&self) -> Result<Vec<T>> {
         self.data.as_slice().to_vec()
     }
     /** Fills with `elem`.
-    
-    **errors** 
+
+    **errors**
     - DeviceLost
     - The kernel could not be dispatched.
     - Could not dispatch the kernel.
@@ -1941,8 +1944,8 @@ impl<T: Scalar, S: Data<Elem = T>> BufferBase<S> {
         }
     }
     /** Casts to `Y`.
-    
-    **errors** 
+
+    **errors**
     - DeviceLost
     - The kernel could not be dispatched.
     - Could not dispatch the kernel.
@@ -1953,7 +1956,7 @@ impl<T: Scalar, S: Data<Elem = T>> BufferBase<S> {
         Ok(output)
     }
     /** Casts into `Y`.
-    
+
     See [`.cast()`]. */
     pub fn cast_into<Y: Scalar>(self) -> Result<Buffer<Y>> {
         if T::scalar_type() == Y::scalar_type() {
@@ -1964,7 +1967,7 @@ impl<T: Scalar, S: Data<Elem = T>> BufferBase<S> {
         }
     }
     /** Casts to `Y` as an arc buffer.
-    
+
     See [`.cast()`]. */
     pub fn cast_shared<Y: Scalar>(&self) -> Result<ArcBuffer<Y>> {
         if T::scalar_type() == Y::scalar_type() {
@@ -1975,14 +1978,14 @@ impl<T: Scalar, S: Data<Elem = T>> BufferBase<S> {
         }
     }
     /** Reinterpret as a slice with type `Y`.
-    
+
     See [`bytemuck::cast_slice`]. */
     pub fn bitcast<Y: Scalar>(&self) -> Result<Slice<Y>, bytemuck::PodCastError> {
         let data = self.data.as_slice().bitcast()?;
         Ok(Slice { data })
     }
-     /** Reinterpret as a mutable slice with type `Y`.
-    
+    /** Reinterpret as a mutable slice with type `Y`.
+
     See [`bytemuck::cast_slice_mut`]. */
     pub fn bitcast_mut<Y: Scalar>(&mut self) -> Result<SliceMut<Y>, bytemuck::PodCastError>
     where
@@ -1992,8 +1995,8 @@ impl<T: Scalar, S: Data<Elem = T>> BufferBase<S> {
         Ok(SliceMut { data })
     }
     /** Copies from src.
-    
-    **errors** 
+
+    **errors**
     - `src` is not the same length.
     - DeviceLost
     - The kernel could not be dispatched.
@@ -2005,18 +2008,18 @@ impl<T: Scalar, S: Data<Elem = T>> BufferBase<S> {
         self.data.as_slice_mut().copy_from_slice(&src.data)
     }
     /** A subslice with `range`.
-    
+
     Returns None if range is out of bounds.
-    
+
     See [`<[_]>::get()`](https://doc.rust-lang.org/std/primitive.slice.html#method.get). */
     pub fn slice(&self, range: impl RangeBounds<usize>) -> Option<Slice<T>> {
         let data = self.data.as_slice().slice(range)?;
         Some(Slice { data })
     }
     /** A mutable subslice with `range`.
-    
+
     Returns None if range is out of bounds.
-    
+
     See [`<[_]>::get_mut()`](https://doc.rust-lang.org/std/primitive.slice.html#method.get_mut). */
     pub fn slice_mut(&mut self, range: impl RangeBounds<usize>) -> Option<SliceMut<T>>
     where
