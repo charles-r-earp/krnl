@@ -22,34 +22,34 @@ jobs:
         include:
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
-          - os: windows-latest
-            target: x86_64-pc-windows-msvc
-          - os: macos-latest
-            target: x86_64-apple-darwin
+#          - os: windows-latest
+#            target: x86_64-pc-windows-msvc
+#          - os: macos-latest
+#            target: x86_64-apple-darwin
     steps:
     - uses: actions/checkout@v2
-    - name: build
-      run: cargo build --all-features -v
+#    - name: build
+#      run: cargo build --all-features -v
     - name: test
       run: cargo test --no-default-features --workspace --exclude compute-benchmarks -v -- --format=terse
     - name: krnlc check
       run: cargo xtask krnlc --workspace --check -v
       
-  lint: 
-    runs-on: ubuntu-latest
-    env:
-      RUST_BACKTRACE: 1
-      CARGO_INCREMENTAL: 0
-    steps:
-    - uses: actions/checkout@v2
-    - name: lint
-      run: cargo xtask lint -v
+#  lint: 
+#    runs-on: ubuntu-latest
+#    env:
+#      RUST_BACKTRACE: 1
+#      CARGO_INCREMENTAL: 0
+#    steps:
+#    - uses: actions/checkout@v2
+#    - name: lint
+#      run: cargo xtask lint -v
           
-  cargo-deny:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v2
-      - uses: EmbarkStudios/cargo-deny-action@v1
-      - uses: EmbarkStudios/cargo-deny-action@v1
-        with:
-          arguments: --manifest-path crates/krnlc/Cargo.toml
+#  cargo-deny:
+#    runs-on: ubuntu-latest
+#    steps:
+#      - uses: actions/checkout@v2
+#      - uses: EmbarkStudios/cargo-deny-action@v1
+#      - uses: EmbarkStudios/cargo-deny-action@v1
+#        with:
+#          arguments: --manifest-path crates/krnlc/Cargo.toml

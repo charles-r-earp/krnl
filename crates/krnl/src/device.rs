@@ -51,6 +51,7 @@ compile_error!("device feature not supported on wasm");
 
 /// Errors.
 pub mod error {
+    #[cfg(feature = "device")]
     use super::DeviceId;
     use std::fmt::{self, Debug, Display};
 
