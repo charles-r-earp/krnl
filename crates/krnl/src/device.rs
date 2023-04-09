@@ -51,6 +51,7 @@ compile_error!("device feature not supported on wasm");
 
 /// Errors.
 pub mod error {
+    use super::DeviceId;
     use std::fmt::{self, Debug, Display};
 
     /** Device is unavailable.
@@ -77,31 +78,26 @@ pub mod error {
     }
 
     /// The Device was lost.
-    #[derive(Clone, Copy, thiserror::Error)]
-    pub struct DeviceLost {
+    #[derive(Clone, Copy, Debug, thiserror::Error)]
+    pub struct DeviceLost(
         #[cfg(feature = "device")]
-        pub(super) index: usize,
-        #[cfg(feature = "device")]
-        pub(super) handle: u64,
-    }
-
-    impl Debug for DeviceLost {
-        fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-            #[cfg(feature = "device")]
-            {
-                f.debug_tuple("DeviceLost")
-                    .field(&self.index)
-                    .field(&(self.handle as *const ()))
-                    .finish()
-            }
-            #[cfg(not(feature = "device"))]
-            {
-                write!(f, "DeviceLost")
-            }
-        }
-    }
+        pub(super) DeviceId,
+    );
 
     impl Display for DeviceLost {
+        fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+            Debug::fmt(self, f)
+        }
+    }
+    
+    /// No more memory on the device.
+    #[derive(Clone, Copy, Debug, thiserror::Error)]
+    pub struct OutOfDeviceMemory(
+        #[cfg(feature = "device")]
+        pub(super) DeviceId,
+    );
+    
+    impl Display for OutOfDeviceMemory {
         fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
             Debug::fmt(self, f)
         }
@@ -162,7 +158,7 @@ trait DeviceEngine {
     type DeviceBuffer: DeviceEngineBuffer<Engine = Self>;
     type Kernel: DeviceEngineKernel<Engine = Self, DeviceBuffer = Self::DeviceBuffer>;
     fn new(options: DeviceOptions) -> Result<Arc<Self>>;
-    fn handle(&self) -> u64;
+    fn id(&self) -> DeviceId;
     fn info(&self) -> &Arc<DeviceInfo>;
     fn wait(&self) -> Result<(), DeviceLost>;
     //fn performance_metrics(&self) -> PerformanceMetrics;
@@ -365,14 +361,23 @@ impl PartialEq for RawDevice {
 impl Eq for RawDevice {}
 
 #[cfg(feature = "device")]
+#[derive(Clone, Copy, Eq, PartialEq)]
+struct DeviceId {
+    index: usize,
+    handle: usize,
+}
+ 
+#[cfg(feature = "device")]
+impl Debug for DeviceId {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "Device({}@{:x})", self.index, self.handle)
+    }
+}
+
+#[cfg(feature = "device")]
 impl Debug for RawDevice {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let index = self.info().index;
-        let handle = self.engine.handle() as *const ();
-        f.debug_tuple("Device")
-            .field(&index)
-            .field(&handle)
-            .finish()
+        self.engine.id().fmt(f)
     }
 }
 

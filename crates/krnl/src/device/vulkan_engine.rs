@@ -1,7 +1,7 @@
 use super::{
-    error::{DeviceIndexOutOfRange, DeviceUnavailable},
+    error::{DeviceIndexOutOfRange, DeviceUnavailable, OutOfDeviceMemory},
     DeviceEngine, DeviceEngineBuffer, DeviceEngineKernel, DeviceInfo, DeviceLost, DeviceOptions,
-    Features, KernelDesc, KernelKey,
+    Features, KernelDesc, KernelKey, DeviceId,
 };
 
 use anyhow::{Error, Result};
@@ -94,10 +94,7 @@ impl Engine {
     fn wait_for_future(&self, future: &WorkerFuture) -> Result<(), DeviceLost> {
         while !future.ready() {
             if self.exited.load(Ordering::SeqCst) {
-                return Err(DeviceLost {
-                    index: self.info.index,
-                    handle: self.handle(),
-                });
+                return Err(DeviceLost(self.id()));
             }
             std::thread::yield_now();
         }
@@ -252,8 +249,13 @@ impl DeviceEngine for Engine {
             _instance: instance,
         }))
     }
-    fn handle(&self) -> u64 {
-        self.device.handle().as_raw()
+    fn id(&self) -> DeviceId {
+        let index = self.info.index;
+        let handle = self.device.handle().as_raw().try_into().unwrap();
+        DeviceId {
+            index,
+            handle,
+        }
     }
     fn info(&self) -> &Arc<DeviceInfo> {
         &self.info
@@ -267,10 +269,7 @@ impl DeviceEngine for Engine {
             .collect();
         loop {
             if self.exited.load(Ordering::SeqCst) {
-                return Err(DeviceLost {
-                    index: self.info.index,
-                    handle: self.handle(),
-                });
+                return Err(DeviceLost(self.id()));
             }
             if self
                 .workers
@@ -726,6 +725,7 @@ impl DeviceEngineBuffer for DeviceBuffer {
         &self.engine
     }
     unsafe fn uninit(engine: Arc<Engine>, len: usize) -> Result<Self> {
+        use vulkano::{VulkanError, memory::allocator::AllocationCreationError};
         let inner = if len > 0 {
             let len = aligned_ceil(len, Self::ALIGN);
             let usage = BufferUsage {
@@ -734,13 +734,20 @@ impl DeviceEngineBuffer for DeviceBuffer {
                 transfer_src: true,
                 ..Default::default()
             };
-            let inner = DeviceLocalBuffer::array(
+            match DeviceLocalBuffer::array(
                 &engine.memory_allocator,
                 len as _,
                 usage,
                 engine.compute_families.iter().copied(),
-            )?;
-            Some(inner)
+            ) {
+                Ok(inner) => Some(inner),
+                Err(e @ AllocationCreationError::VulkanError(VulkanError::OutOfDeviceMemory)) => {
+                    return Err(Error::new(OutOfDeviceMemory(engine.id())).context(e))
+                }
+                Err(e) => {
+                    return Err(e.into());
+                }
+            }
         } else {
             None
         };
@@ -762,10 +769,6 @@ impl DeviceEngineBuffer for DeviceBuffer {
             } else {
                 let (_transfer, workers) = engine.transfer_workers();
                 let mut offset = self.offset;
-                let device_lost = DeviceLost {
-                    index: engine.info.index,
-                    handle: engine.handle(),
-                };
                 let mut prev_future = Some(std::mem::take(&mut *future_guard));
                 for (data, worker) in data
                     .chunks(Self::HOST_BUFFER_SIZE)
@@ -780,7 +783,7 @@ impl DeviceEngineBuffer for DeviceBuffer {
                         dst,
                         submit: submit.clone(),
                     };
-                    let future = worker.send(op).map_err(|_| device_lost)?;
+                    let future = worker.send(op).map_err(|_| DeviceLost(engine.id()))?;
                     if let Some(prev_future) = prev_future.take() {
                         engine.wait_for_future(&prev_future)?;
                     }
@@ -796,10 +799,6 @@ impl DeviceEngineBuffer for DeviceBuffer {
     fn download(&self, data: &mut [u8]) -> Result<()> {
         if let Some(buffer) = self.inner.as_ref() {
             let engine = &self.engine;
-            let device_lost = DeviceLost {
-                index: engine.info.index,
-                handle: engine.handle(),
-            };
             let prev_future = self.future.read();
             let buffer_inner = buffer.inner();
             if self.host_visible() {
@@ -843,18 +842,18 @@ impl DeviceEngineBuffer for DeviceBuffer {
                     src,
                     submit: submit.clone(),
                 };
-                worker.send(op).map_err(|_| device_lost)?;
+                worker.send(op).map_err(|_| DeviceLost(engine.id()))?;
                 if let Some(future) = prev_future.take() {
                     engine.wait_for_future(&future)?;
                 }
                 submit.store(true, Ordering::SeqCst);
                 let host_copy = host_copy.replace(HostCopy { data, worker });
                 if let Some(host_copy) = host_copy {
-                    host_copy.finish().map_err(|_| device_lost)?;
+                    host_copy.finish().map_err(|_| DeviceLost(engine.id()))?;
                 }
             }
             if let Some(host_copy) = host_copy {
-                host_copy.finish().map_err(|_| device_lost)?;
+                host_copy.finish().map_err(|_| DeviceLost(engine.id()))?;
             }
         }
         Ok(())
@@ -866,16 +865,8 @@ impl DeviceEngineBuffer for DeviceBuffer {
         let output = dst;
         let buffer1 = self.inner.as_ref().unwrap();
         let engine1 = &self.engine;
-        let device_lost1 = DeviceLost {
-            index: engine1.info.index,
-            handle: engine1.handle(),
-        };
         let buffer2 = output.inner.as_ref().unwrap();
         let engine2 = &output.engine;
-        let device_lost2 = DeviceLost {
-            index: engine2.info.index,
-            handle: engine2.handle(),
-        };
         let prev_future = self.future.read();
         let buffer_inner1 = buffer1.inner();
         let buffer_inner2 = buffer2.inner();
@@ -957,7 +948,7 @@ impl DeviceEngineBuffer for DeviceBuffer {
                 src,
                 submit: submit.clone(),
             };
-            download_worker.send(op).map_err(|_| device_lost2)?;
+            download_worker.send(op).map_err(|_| DeviceLost(engine1.id()))?;
             if let Some(future) = prev_future.take() {
                 engine1.wait_for_future(&future)?;
             }
@@ -967,7 +958,7 @@ impl DeviceEngineBuffer for DeviceBuffer {
                 dst,
                 submit: submit.clone(),
             };
-            let future = upload_worker.send(op).map_err(|_| device_lost2)?;
+            let future = upload_worker.send(op).map_err(|_| DeviceLost(engine2.id()))?;
             let host_copy = host_copy.replace(HostCopy {
                 size: chunk_size,
                 download_worker,
@@ -976,11 +967,11 @@ impl DeviceEngineBuffer for DeviceBuffer {
                 future,
             });
             if let Some(host_copy) = host_copy {
-                host_copy.finish().map_err(|_| device_lost1)?;
+                host_copy.finish().map_err(|_| DeviceLost(engine1.id()))?;
             }
         }
         if let Some(host_copy) = host_copy {
-            let future = host_copy.finish().map_err(|_| device_lost1)?;
+            let future = host_copy.finish().map_err(|_| DeviceLost(engine1.id()))?;
             let mut future_guard = output.future.write();
             engine2.wait_for_future(&future_guard)?;
             *future_guard = future;
@@ -1188,10 +1179,6 @@ impl DeviceEngineKernel for Kernel {
             .map(|x| x.inner.as_ref().unwrap().into_buffer_slice())
             .collect();
         let submit = Arc::new(AtomicBool::default());
-        let device_lost = DeviceLost {
-            index: engine.info.index,
-            handle: engine.handle(),
-        };
         let op = Op::Compute {
             compute_pipeline: self.compute_pipeline.clone(),
             buffers,
@@ -1222,12 +1209,12 @@ impl DeviceEngineKernel for Kernel {
                 }
             }
         };
-        let future = worker.send(op).map_err(|_| device_lost)?;
+        let future = worker.send(op).map_err(|_| DeviceLost(engine.id()))?;
         std::mem::drop(compute);
         for guard in future_guards.iter() {
             while !guard.ready() {
                 if engine.exited.load(Ordering::SeqCst) {
-                    return Err(device_lost.into());
+                    return Err(DeviceLost(engine.id()).into());
                 }
             }
         }
