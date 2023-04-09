@@ -1,7 +1,7 @@
 use super::{
     error::{DeviceIndexOutOfRange, DeviceUnavailable, OutOfDeviceMemory},
-    DeviceEngine, DeviceEngineBuffer, DeviceEngineKernel, DeviceInfo, DeviceLost, DeviceOptions,
-    Features, KernelDesc, KernelKey, DeviceId,
+    DeviceEngine, DeviceEngineBuffer, DeviceEngineKernel, DeviceId, DeviceInfo, DeviceLost,
+    DeviceOptions, Features, KernelDesc, KernelKey,
 };
 
 use anyhow::{Error, Result};
@@ -252,10 +252,7 @@ impl DeviceEngine for Engine {
     fn id(&self) -> DeviceId {
         let index = self.info.index;
         let handle = self.device.handle().as_raw().try_into().unwrap();
-        DeviceId {
-            index,
-            handle,
-        }
+        DeviceId { index, handle }
     }
     fn info(&self) -> &Arc<DeviceInfo> {
         &self.info
@@ -725,7 +722,7 @@ impl DeviceEngineBuffer for DeviceBuffer {
         &self.engine
     }
     unsafe fn uninit(engine: Arc<Engine>, len: usize) -> Result<Self> {
-        use vulkano::{VulkanError, memory::allocator::AllocationCreationError};
+        use vulkano::{memory::allocator::AllocationCreationError, VulkanError};
         let inner = if len > 0 {
             let len = aligned_ceil(len, Self::ALIGN);
             let usage = BufferUsage {
@@ -948,7 +945,9 @@ impl DeviceEngineBuffer for DeviceBuffer {
                 src,
                 submit: submit.clone(),
             };
-            download_worker.send(op).map_err(|_| DeviceLost(engine1.id()))?;
+            download_worker
+                .send(op)
+                .map_err(|_| DeviceLost(engine1.id()))?;
             if let Some(future) = prev_future.take() {
                 engine1.wait_for_future(&future)?;
             }
@@ -958,7 +957,9 @@ impl DeviceEngineBuffer for DeviceBuffer {
                 dst,
                 submit: submit.clone(),
             };
-            let future = upload_worker.send(op).map_err(|_| DeviceLost(engine2.id()))?;
+            let future = upload_worker
+                .send(op)
+                .map_err(|_| DeviceLost(engine2.id()))?;
             let host_copy = host_copy.replace(HostCopy {
                 size: chunk_size,
                 download_worker,

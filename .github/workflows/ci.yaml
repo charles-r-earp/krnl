@@ -28,6 +28,8 @@ jobs:
             target: x86_64-apple-darwin
     steps:
     - uses: actions/checkout@v2
+    - name: build
+      run: cargo build --all-features -v
     - name: test
       run: cargo test --no-default-features --workspace --exclude compute-benchmarks -v -- --format=terse
     - name: krnlc check
@@ -35,6 +37,9 @@ jobs:
       
   lint: 
     runs-on: ubuntu-latest
+    env:
+      RUST_BACKTRACE: 1
+      CARGO_INCREMENTAL: 0
     steps:
     - uses: actions/checkout@v2
     - name: lint
@@ -45,3 +50,6 @@ jobs:
     steps:
       - uses: actions/checkout@v2
       - uses: EmbarkStudios/cargo-deny-action@v1
+      - uses: EmbarkStudios/cargo-deny-action@v1
+        with:
+          arguments: --manifest-path crates/krnlc/Cargo.toml

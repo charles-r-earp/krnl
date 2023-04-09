@@ -79,24 +79,18 @@ pub mod error {
 
     /// The Device was lost.
     #[derive(Clone, Copy, Debug, thiserror::Error)]
-    pub struct DeviceLost(
-        #[cfg(feature = "device")]
-        pub(super) DeviceId,
-    );
+    pub struct DeviceLost(#[cfg(feature = "device")] pub(super) DeviceId);
 
     impl Display for DeviceLost {
         fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
             Debug::fmt(self, f)
         }
     }
-    
+
     /// No more memory on the device.
     #[derive(Clone, Copy, Debug, thiserror::Error)]
-    pub struct OutOfDeviceMemory(
-        #[cfg(feature = "device")]
-        pub(super) DeviceId,
-    );
-    
+    pub struct OutOfDeviceMemory(#[cfg(feature = "device")] pub(super) DeviceId);
+
     impl Display for OutOfDeviceMemory {
         fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
             Debug::fmt(self, f)
@@ -366,7 +360,7 @@ struct DeviceId {
     index: usize,
     handle: usize,
 }
- 
+
 #[cfg(feature = "device")]
 impl Debug for DeviceId {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
