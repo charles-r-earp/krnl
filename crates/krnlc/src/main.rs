@@ -393,7 +393,7 @@ fn cache(
     #[doc(hidden)]
     macro_rules! __krnl_cache {{
         ($m:ident) => {{
-            __krnl::macros::__krnl_module!($m, x{cache});
+            __krnl_module!($m, x{cache});
         }};
     }}"#
     );
@@ -593,13 +593,17 @@ extern crate krnl_core;
                 Default::default(),
             );
         let mut kernels = kernels.into_iter();
-        while let Some((module_name_with_hash, (kernel_name, kernel_desc))) =
+        while let Some((module_name_with_hash, (kernel_name_with_hash, kernel_desc))) =
             kernels.next().transpose()?
         {
-            modules
+            let name = kernel_desc.name.clone();
+            let prev = modules
                 .entry(module_name_with_hash)
                 .or_default()
-                .insert(kernel_name, kernel_desc);
+                .insert(kernel_name_with_hash, kernel_desc);
+            if let Some(prev) = prev {
+                bail!("Hash collsion `{name}` with `{}`! Try renaming a kernel.", prev.name);
+            }
         }
         modules
     };
@@ -973,9 +977,10 @@ fn kernel_post_process(
             .to_vec();
         spirv
     };
+    let kernel_name_with_hash = format!("{}_{}", kernel_name.rsplit("::").next().unwrap(), kernel_desc.hash);
     Ok((
         module_name_with_hash.to_string(),
-        (kernel_name.to_string(), kernel_desc),
+        (kernel_name_with_hash, kernel_desc),
     ))
 }
 

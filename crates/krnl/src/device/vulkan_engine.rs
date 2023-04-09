@@ -1,9 +1,9 @@
 use super::{
     DeviceEngine, DeviceEngineBuffer, DeviceEngineKernel, DeviceInfo, DeviceLost, DeviceOptions,
-    Features, KernelDesc, KernelKey,
+    Features, KernelDesc, KernelKey, error::{DeviceUnavailable, DeviceIndexOutOfRange},
 };
 
-use anyhow::Result;
+use anyhow::{Result, Error};
 use ash::vk::Handle;
 use atomicbox::AtomicOptionBox;
 use dashmap::DashMap;
@@ -122,14 +122,14 @@ impl DeviceEngine for Engine {
             index,
             optimal_features,
         } = options;
-        let library = vulkan_library()?;
+        let library = vulkan_library().map_err(|e| Error::new(DeviceUnavailable).context(e))?;
         let instance = Instance::new(library, InstanceCreateInfo::application_from_cargo_toml())?;
         let mut physical_devices = instance.enumerate_physical_devices()?;
         let devices = physical_devices.len();
         let physical_device = if let Some(physical_device) = physical_devices.nth(index) {
             physical_device
         } else {
-            return Err(super::DeviceIndexOutOfRange { index, devices }.into());
+            return Err(DeviceIndexOutOfRange { index, devices }.into());
         };
         let name = physical_device.properties().device_name.clone();
         let optimal_device_extensions = vulkano::device::DeviceExtensions {

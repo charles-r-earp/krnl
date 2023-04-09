@@ -13,7 +13,7 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::{hash::Hash, str::FromStr};
 use syn::{
     parse::{Parse, ParseStream},
-    parse_macro_input, parse_quote,
+    parse_macro_input,
     punctuated::Punctuated,
     token::{
         And, Brace, Bracket, Colon, Comma, Const, Eq as SynEq, Fn, Gt, Lt, Mod, Mut, Paren, Pound,
@@ -66,7 +66,7 @@ pub fn module(attr: TokenStream, item: TokenStream) -> TokenStream {
     }
     let mut item = parse_macro_input!(item as ModuleItem);
     let mut build = true;
-    let mut krnl = parse_quote! { ::krnl };
+    let mut krnl = quote! { ::krnl };
     let new_attr = Vec::with_capacity(item.attr.len());
     for attr in std::mem::replace(&mut item.attr, new_attr) {
         if attr.path.segments.len() == 1
@@ -80,7 +80,19 @@ pub fn module(attr: TokenStream, item: TokenStream) -> TokenStream {
             let args = syn::parse_macro_input!(tokens as ModuleKrnlArgs);
             for arg in args.args.iter() {
                 if let Some(krnl_crate) = arg.krnl_crate.as_ref() {
-                    krnl = krnl_crate.clone();
+                    if krnl_crate.leading_colon.is_some() {
+                        krnl = quote! { 
+                            #krnl_crate
+                        };
+                    } else if krnl_crate.to_token_stream().to_string().starts_with("crate") {
+                        krnl = quote! { 
+                            #krnl_crate
+                        };
+                    } else {
+                        krnl = quote! { 
+                            ::#krnl_crate
+                        };
+                    }
                 } else if let Some(ident) = &arg.ident {
                     if ident == "no_build" {
                         build = false;
@@ -98,10 +110,18 @@ pub fn module(attr: TokenStream, item: TokenStream) -> TokenStream {
             item.attr.push(attr);
         }
     }
-    item.tokens.extend(quote! {
-        #[cfg(not(target_arch = "spirv"))]
-        use #krnl as __krnl;
-    });
+    {
+        let tokens = item.tokens;
+        item.tokens = quote! {
+            #[cfg(not(target_arch = "spirv"))]
+            macro_rules! __krnl_module_arg {
+                (use crate as $i:ident) => {
+                    use #krnl as $i;
+                };
+            }
+            #tokens
+        };
+    }
     if build {
         let source = item.tokens.to_string();
         let hash = fxhash::hash64(&source);
@@ -113,6 +133,8 @@ pub fn module(attr: TokenStream, item: TokenStream) -> TokenStream {
                 #[allow(non_upper_case_globals)]
                 const __krnl_module_source: &'static str = #source;
             }
+            #[cfg(not(krnlc))]
+            use #krnl::macros::__krnl_module;
             #[cfg(not(krnlc))]
             include!(concat!(env!("CARGO_MANIFEST_DIR"), "/krnl-cache.rs"));
             #[cfg(not(krnlc))]
@@ -131,14 +153,13 @@ pub fn module(attr: TokenStream, item: TokenStream) -> TokenStream {
         item.tokens = quote! {
             #[doc(hidden)]
             macro_rules! __krnl_kernel {
-                ($k:ident) => {
+                ($k:path) => {
                     &[]
                 };
             }
             #tokens
         }
     }
-
     item.into_token_stream().into()
 }
 
@@ -1449,12 +1470,17 @@ fn kernel_impl(attr_tokens: TokenStream2, item_tokens: TokenStream2) -> Result<T
         let dispatch_slice_args = kernel_meta.dispatch_slice_args();
         let dispatch_push_args = kernel_meta.dispatch_push_args();
         let hash = kernel_desc.hash;
+        let kernel_name_with_hash = format_ident!("{ident}_{hash}");
         let safe = unsafe_token.is_none();
         let host_array_length_checks = kernel_meta.host_array_length_checks();
         let kernel_builder_specialize_fn = if !kernel_desc.spec_descs.is_empty() {
             let spec_def_args = kernel_meta.spec_def_args();
             let spec_args = kernel_meta.spec_args();
             quote! {
+                /// Specializes the kernel.
+                ///
+                /// **errors**
+                /// Thread dimensions can not be 0.
                 pub fn specialize(mut self, #spec_def_args) -> Result<Self> {
                     let inner = self.inner.specialize(&[#(#spec_args.into()),*])?;
                     Ok(Self {
@@ -1496,8 +1522,8 @@ fn kernel_impl(attr_tokens: TokenStream2, item_tokens: TokenStream2) -> Result<T
             pub mod #ident {
                 #input_docs
                 #expansion
-
-                use super::__krnl::{
+                __krnl_module_arg!(use crate as __krnl);
+                use __krnl::{
                     anyhow::{self, Result},
                     krnl_core::{half::{f16, bf16}, glam::{UVec2, UVec3}},
                     buffer::{Slice, SliceMut},
@@ -1507,14 +1533,28 @@ fn kernel_impl(attr_tokens: TokenStream2, item_tokens: TokenStream2) -> Result<T
 
                 #host_array_length_checks
 
+                /// Builder for creating a [`Kernel`].
+                ///
+                /// See [`builder()`](builder).
                 pub struct KernelBuilder {
                     #[doc(hidden)]
                     inner: KernelBuilderBase,
                 }
 
+                /// Creates a builder.
+                ///
+                /// The builder is lazily created on first call.
+                ///
+                /// **errors**
+                /// - The kernel wasn't compiled (with `#[krnl(no_build)]` applied to `#[module]`).
+                /// - The kernel could not be deserialized. For stable releases, this is a bug, as `#[module]` should produce a compile error. 
                 pub fn builder() -> Result<KernelBuilder> {
+                    let name = module_path!();
                     static BUILDER: Lazy<Result<KernelBuilderBase, String>> = Lazy::new(|| {
-                        let bytes = __krnl_kernel!(#ident);
+                        let bytes = __krnl_kernel!(#kernel_name_with_hash);
+                        if bytes.is_empty() {
+                            return Err("Not compiled!".to_string());
+                        }
                         let inner = KernelBuilderBase::from_bytes(bytes)
                             .map_err(|e| e.to_string())?;
                         assert_eq!(inner.hash(), #hash);
@@ -1525,7 +1565,7 @@ fn kernel_impl(attr_tokens: TokenStream2, item_tokens: TokenStream2) -> Result<T
                         Ok(inner) => {
                             Ok(KernelBuilder { inner: inner.clone() })
                         }
-                        Err(e) => Err(anyhow::Error::msg(e)),
+                        Err(e) => Err(anyhow::Error::msg(e).context(format!("Kernel `{}`.", name))),
                     }
                 }
 
@@ -1537,20 +1577,39 @@ fn kernel_impl(attr_tokens: TokenStream2, item_tokens: TokenStream2) -> Result<T
                     }
                 }
 
+                /// Kernel.
                 pub struct Kernel {
                     #[doc(hidden)]
                     inner: KernelBase,
                 }
 
                 impl Kernel {
+                    /// Global threads to dispatch.
+                    ///
+                    /// Implicitly declares groups by rounding up to the next multiple of threads.
                     pub fn with_global_threads(mut self, global_threads: #kernel_dim) -> Self {
                         self.inner = self.inner.global_threads(&global_threads.to_array());
                         self
                     }
+                    /// Groups to dispatch.
+                    ///
+                    /// For item kernels, is inferred based on item arguments. 
                     pub fn with_groups(mut self, groups: #kernel_dim) -> Self {
                         self.inner = self.inner.groups(&groups.to_array());
                         self
                     }
+                    /// Dispatches the kernel.
+                    ///
+                    /// - Waits for immutable access to slice arguments.
+                    /// - Waits for mutable access to mutable slice arguments.
+                    /// - Blocks until the kernel is queued.
+                    ///   
+                    /// A device has 1 or more compute queues. One kernel can be queued while another is 
+                    /// executing on that queue.
+                    /// 
+                    /// **errors**
+                    /// - DeviceLost: The device was lost.
+                    /// - The kernel could not be queued. 
                     pub #unsafe_token fn dispatch(&self, #dispatch_args) -> Result<()> {
                         unsafe { self.inner.dispatch(&[#dispatch_slice_args], &[#dispatch_push_args]) }
                     }
@@ -1601,8 +1660,8 @@ pub fn __krnl_module(input: TokenStream) -> TokenStream {
                 macro_arms.reserve(kernel_count);
                 let mut bytes = Vec::new();
                 if let Some((_, kernels)) = modules.iter().find(|(m, _)| input.module == m) {
-                    for (kernel, kernel_desc) in kernels {
-                        let ident = format_ident!("{kernel}");
+                    for (kernel_name_with_hash, kernel_desc) in kernels {
+                        let kernel_name_with_hash = format_ident!("{kernel_name_with_hash}");
                         bytes.clear();
                         bincode2::serialize_into(&mut bytes, kernel_desc).unwrap();
                         let bytes = bytes.iter().map(|x| {
@@ -1610,7 +1669,7 @@ pub fn __krnl_module(input: TokenStream) -> TokenStream {
                             TokenTree::Literal(Literal::u8_unsuffixed(*x))
                         });
                         macro_arms.push(quote! {
-                            (#ident) => {
+                            (#kernel_name_with_hash) => {
                                 &[#(#bytes),*]
                             };
                         });
@@ -1637,7 +1696,7 @@ pub fn __krnl_module(input: TokenStream) -> TokenStream {
         #[doc(hidden)]
         macro_rules! __krnl_kernel {
             #(#macro_arms)*
-            ($i:ident) => { &[] };
+            ($k:ident) => { &[] };
         }
         #error
     };

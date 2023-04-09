@@ -1,3 +1,31 @@
+/*! 
+
+A [`Device`](crate::device::Device) is used to create [buffers](crate::buffer) and [kernels](crate::_kernel_programming_guide).
+[`Device::host()`](crate::device::Device::host) method creates the host, which is merely the lack of a device.
+
+Note: Kernels can not be created for the host.
+
+Creating a device and printing out useful info:
+```no_build
+# fn main() -> Result<()> {
+let device = Device::builder()
+    .index(1)
+    .build()?;
+dbg!(device.info()); 
+# }
+```
+
+# Queues 
+Devices can support multiple compute queues and a dedicated transfer queue. 
+
+Dispatching a kernel: 
+- Waits for immutable access to slice arguments.
+- Waits for mutable access to mutable slice arguments.
+- Blocks until the kernel is queued.
+
+One kernel can be queued while another is executing on that queue.
+*/
+
 use crate::{
     buffer::{ScalarSlice, ScalarSliceMut, Slice, SliceMut},
     scalar::{Scalar, ScalarElem, ScalarType},
@@ -21,29 +49,31 @@ use vulkan_engine::Engine;
 #[cfg(all(target_arch = "wasm32", feature = "device"))]
 compile_error!("device feature not supported on wasm");
 
-mod error {
+/// Errors.
+pub mod error {
     use std::fmt::{self, Debug, Display};
 
+    /** Device is unavailable.
+    
+    - The "device" feature is not enabled.
+    - Failed to load the Vulkan library.  
+    */ 
     #[derive(Clone, Copy, Debug, thiserror::Error)]
     #[error("DeviceUnavailable")]
-    pub(super) struct DeviceUnavailable;
+    pub struct DeviceUnavailable;
 
     #[cfg(feature = "device")]
     #[derive(Clone, Copy, Debug, thiserror::Error)]
-    pub(super) struct DeviceIndexOutOfRange {
-        #[allow(unused)]
+    #[cfg_attr(feature = "device", error("Device index {index} is out of range 0..{devices}!"))]
+    #[cfg_attr(not(feature = "device"), error("unreachable!"))]
+    pub struct DeviceIndexOutOfRange {
+        #[cfg(feature = "device")]
         pub(super) index: usize,
-        #[allow(unused)]
+        #[cfg(feature = "device")]
         pub(super) devices: usize,
     }
 
-    #[cfg(feature = "device")]
-    impl Display for DeviceIndexOutOfRange {
-        fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-            Debug::fmt(self, f)
-        }
-    }
-
+    /// The Device was lost.
     #[derive(Clone, Copy, thiserror::Error)]
     pub struct DeviceLost {
         #[cfg(feature = "device")]
@@ -76,15 +106,18 @@ mod error {
 }
 use error::*;
 
+/// Builders.
 pub mod builder {
     use super::*;
 
+    /// Builder for creating a [`Device`].
     pub struct DeviceBuilder {
         #[cfg(feature = "device")]
         pub(super) options: DeviceOptions,
     }
 
     impl DeviceBuilder {
+        /// Index of the device, defaults to 0.
         pub fn index(self, index: usize) -> Self {
             #[cfg(feature = "device")]
             {
@@ -98,6 +131,12 @@ pub mod builder {
                 self
             }
         }
+        /** Creates a device.
+        **errors**
+        - [`DeviceUnavailable`](super::error::DeviceUnavailable)
+        - [`DeviceIndexOutofRange`](super::error::DeviceIndexOutOfRange)
+        - The device could not be created.
+        */
         pub fn build(self) -> Result<Device> {
             #[cfg(feature = "device")]
             {
@@ -164,17 +203,34 @@ trait DeviceEngineKernel: Sized {
     fn desc(&self) -> &Arc<KernelDesc>;
 }
 
+/** A device.
+
+Devices can be cloned, which is equivalent to [`Arc::clone()`]. 
+
+Devices (other than the host) are unique:
+```no_run
+# use krnl::{anyhow::Result, device::Device};
+# fn main() -> Result<()> {
+let a = Device::builder().build()?;
+let b = Device::builder().build()?;
+assert_ne!(a, b);
+# Ok(())
+# }
+```
+*/
 #[derive(Clone, Eq, PartialEq)]
 pub struct Device {
     inner: DeviceInner,
 }
 
 impl Device {
+    /// The host.
     pub const fn host() -> Self {
         Self {
             inner: DeviceInner::Host,
         }
     }
+    /// A builder for creating a device.
     pub fn builder() -> DeviceBuilder {
         DeviceBuilder {
             #[cfg(feature = "device")]
@@ -189,15 +245,20 @@ impl Device {
             },
         }
     }
+    /// Is the host.
     pub fn is_host(&self) -> bool {
         self.inner.is_host()
     }
+    /// Is a device.
     pub fn is_device(&self) -> bool {
         self.inner.is_device()
     }
     pub(crate) fn inner(&self) -> &DeviceInner {
         &self.inner
     }
+    /** Device info.
+    
+    The host returns None. */
     pub fn info(&self) -> Option<&Arc<DeviceInfo>> {
         match self.inner() {
             DeviceInner::Host => None,
@@ -205,6 +266,17 @@ impl Device {
             DeviceInner::Device(raw) => Some(raw.info()),
         }
     }
+    /** Wait for previous work to finish.
+    
+    If host, this does nothing.
+    
+    Operations (like kernel dispatches) executed after this method is called 
+    will not block, and will not be waited on. 
+    
+    This is primarily for benchmarking, manual synchronization is unnecessary. 
+    
+    **errors**
+    Returns an error if the device was lost while waiting. */
     pub fn wait(&self) -> Result<(), DeviceLost> {
         match self.inner() {
             DeviceInner::Host => Ok(()),
@@ -214,6 +286,10 @@ impl Device {
     }
 }
 
+/** Prints `Device(index, handle)` where handle is a u64 that uniquely
+identifies the device.
+
+See [`.info()`](Device::info) for printing device info. */
 impl Debug for Device {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.inner.fmt(f)
@@ -337,6 +413,28 @@ impl DeviceBuffer {
     }
 }
 
+/** Features
+
+Features supported by a device. See [`DeviceInfo::features`].
+
+Kernels can not be compiled unless the device supports all features used. 
+
+This is a subset of [vulkano::device::Features](https://docs.rs/vulkano/latest/vulkano/device/struct.Features.html).
+
+Use features to specialize or provide a more helpful error message:
+```
+# use krnl::device::Features;
+# fn main() {
+# let features = Features::empty();
+if features.shader_int8() {
+    /* u8 impl */
+} else {
+    /* fallback */
+}
+# }
+```
+
+*/
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
 pub struct Features {
     shader_int8: bool,
@@ -347,6 +445,7 @@ pub struct Features {
 }
 
 impl Features {
+    /// No features.
     pub const fn empty() -> Self {
         Self {
             shader_int8: false,
@@ -356,41 +455,52 @@ impl Features {
             shader_float64: false,
         }
     }
+    /// 8 bit scalars.
     pub const fn shader_int8(&self) -> bool {
         self.shader_int8
     }
+    /// Adds `shader_int8`.
     pub const fn with_shader_int8(mut self, shader_int8: bool) -> Self {
         self.shader_int8 = shader_int8;
         self
     }
+    /// 16 bit scalars.
     pub const fn shader_int16(&self) -> bool {
         self.shader_int16
     }
+    /// Adds `shader_int16`.
     pub const fn with_shader_int16(mut self, shader_int16: bool) -> Self {
         self.shader_int16 = shader_int16;
         self
     }
+    /// 64 bit scalars.
     pub const fn shader_int64(&self) -> bool {
         self.shader_int64
     }
+    /// Adds `shader_int64`.
     pub const fn with_shader_int64(mut self, shader_int64: bool) -> Self {
         self.shader_int64 = shader_int64;
         self
     }
+    /// f16 intrinsics.
     pub const fn shader_float16(&self) -> bool {
         self.shader_float16
     }
+    /// Adds `shader_float16`.
     pub const fn with_shader_float16(mut self, shader_float16: bool) -> Self {
         self.shader_float16 = shader_float16;
         self
     }
+    /// f64.
     pub const fn shader_float64(&self) -> bool {
         self.shader_float64
     }
+    /// Adds `shader_float64`.
     pub const fn with_shader_float64(mut self, shader_float64: bool) -> Self {
         self.shader_float64 = shader_float64;
         self
     }
+    /// Contains all features of `other`.
     pub const fn contains(&self, other: &Features) -> bool {
         (self.shader_int8 || !other.shader_int8)
             && (self.shader_int16 || !other.shader_int16)
@@ -398,6 +508,7 @@ impl Features {
             && (self.shader_float16 || !other.shader_float16)
             && (self.shader_float64 || !other.shader_float64)
     }
+    /// All features of `self` and `other`.
     pub const fn union(mut self, other: &Features) -> Self {
         self.shader_int8 |= other.shader_int8;
         self.shader_int16 |= other.shader_int16;
@@ -408,6 +519,7 @@ impl Features {
     }
 }
 
+/// Device info.
 #[derive(Debug)]
 #[allow(dead_code)]
 pub struct DeviceInfo {
@@ -419,6 +531,7 @@ pub struct DeviceInfo {
 }
 
 impl DeviceInfo {
+    /// Device features.
     pub fn features(&self) -> Features {
         self.features
     }
@@ -599,7 +712,7 @@ pub mod __private {
 
     impl KernelBuilder {
         pub fn from_bytes(bytes: &'static [u8]) -> Result<Self> {
-            let desc: Arc<KernelDesc> = Arc::new(bincode2::deserialize(bytes).unwrap());
+            let desc: Arc<KernelDesc> = Arc::new(bincode2::deserialize(bytes)?);
             let mut threads = [1, 1, 1];
             threads[..desc.threads.len()].copy_from_slice(&desc.threads);
             Ok(Self {
@@ -649,9 +762,9 @@ pub mod __private {
                     let desc = &self.desc;
                     let name = &desc.name;
                     let features = desc.features;
-                    let device_features = device.features();
+                    let device_features = device.info().features();
                     if !device_features.contains(&features) {
-                        bail!("Kernel {name} requires {features:?}, {device:?} has {:?}!");
+                        bail!("Kernel {name} requires {features:?}, {device:?} has {device_features:?}!");
                     }
                     let spec_bytes = if !self.desc.spec_descs.is_empty() {
                         if self.spec_consts.is_empty() {

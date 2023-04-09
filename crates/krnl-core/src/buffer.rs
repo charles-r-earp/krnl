@@ -263,7 +263,10 @@ impl<S: UnsafeData> UnsafeIndex<usize> for BufferBase<S> {
     }
 }
 
+
 impl<'a, T: Scalar> Slice<'a, T> {
+    // For kernel macro.
+    #[doc(hidden)]
     #[cfg(target_arch = "spirv")]
     pub unsafe fn from_raw_parts(inner: &'a [T; 1], offset: usize, len: usize) -> Self {
         let data = SliceRepr { inner, offset, len };
@@ -272,6 +275,8 @@ impl<'a, T: Scalar> Slice<'a, T> {
 }
 
 impl<'a, T: Scalar> UnsafeSlice<'a, T> {
+    // For kernel macro.
+    #[doc(hidden)]
     #[cfg(target_arch = "spirv")]
     pub unsafe fn from_unsafe_raw_parts(inner: &'a mut [T; 1], offset: usize, len: usize) -> Self {
         let data = UnsafeSliceRepr {

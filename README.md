@@ -9,9 +9,9 @@
 [DocsBadge]: https://docs.rs/krnl/badge.svg
 
 # **krnl**
-Safe, portable compute.
+Safe, portable, high performance compute (GPGPU) kernels.
 
-**krnl** is a high performance / GPGPU library developed for [**autograph**](https://github.com/charles-r-earp/autograph). 
+Developed for [**autograph**](https://github.com/charles-r-earp/autograph). 
 - Similar functionality to CUDA and OpenCL.
 - Supports GPU's and other Vulkan 1.2 capable devices.
 - MacOS / iOS supported via [MoltenVK](https://github.com/KhronosGroup/MoltenVK).
