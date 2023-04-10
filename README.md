@@ -86,11 +86,13 @@ fn main() -> Result<()> {
 ```
 
 # Performance 
-
+*NVIDIA GeForce GTX 1060 with Max-Q Design*
+## Copying from Host to Device
 ![Upload](benches/compute-benches/plots/nv_gtx1060/upload.svg)
+## Copying from Device to Host
 ![Download](benches/compute-benches/plots/nv_gtx1060/download.svg)
+## Compute
 ![Saxpy](benches/compute-benches/plots/nv_gtx1060/saxpy.svg)
-
 
 # Recent Changes 
 See [Releases.md](https://github.com/charles-r-earp/krnl/blob/main/Releases.md)

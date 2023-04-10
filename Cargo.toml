@@ -3,15 +3,18 @@ members = ["crates/krnl", "crates/krnl-core", "crates/krnl-macros", "benches/*",
 default-members = ["crates/krnl"]
 
 [workspace.package]
-version = "0.0.1-unstable"
+version = "0.0.1-alpha"
 authors = ["Charles R Earp <charles.r.earp@gmail.com>"]
 edition = "2021"
-homepage = "https://github.com/charles-r-earp/krnl"
-keywords = ["kernel", "compute", "vulkan", "gpu"]
+rust-version = "1.68.2"
 description = "Safe, portable, high performance compute (GPGPU) kernels."
-license = "MIT OR Apache-2.0"
+documentation = "https://docs.rs/krnl"
 readme = "README.md"
+homepage = "https://github.com/charles-r-earp/krnl"
 repository = "https://github.com/charles-r-earp/krnl"
+license = "MIT OR Apache-2.0"
+keywords = ["kernel", "compute", "vulkan", "gpu"]
+categories = ["hardware-support", "science", "mathematics"]
 
 [workspace.dependencies]
 serde = { version = "1.0.143", default-features = false, features = ["derive"] }
