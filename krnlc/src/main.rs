@@ -405,6 +405,9 @@ fn cache(
                 bail!("{cache_path:?} check failed!");
             }
         }
+        if cache.len() != prev.len() {
+            bail!("{cache_path:?} check failed!");
+        }
     } else {
         std::fs::write(cache_path, cache.as_bytes())?;
     }

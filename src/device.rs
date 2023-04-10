@@ -6,7 +6,7 @@ A [`Device`](crate::device::Device) is used to create [buffers](crate::buffer) a
 Note: Kernels can not be created for the host.
 
 Creating a device and printing out useful info:
-```no_build
+```no_run
 # fn main() -> Result<()> {
 let device = Device::builder()
     .index(1)
@@ -64,6 +64,7 @@ pub mod error {
     #[error("DeviceUnavailable")]
     pub struct DeviceUnavailable;
 
+    /// The device index is greater than or equal to the number of devices.
     #[cfg(feature = "device")]
     #[derive(Clone, Copy, Debug, thiserror::Error)]
     #[cfg_attr(
@@ -125,12 +126,13 @@ pub mod builder {
                 self
             }
         }
-        /** Creates a device.
-        **errors**
-        - [`DeviceUnavailable`](super::error::DeviceUnavailable)
-        - [`DeviceIndexOutofRange`](super::error::DeviceIndexOutOfRange)
-        - The device could not be created.
-        */
+        /// Creates a device.
+        ///
+        /// **errors**
+        ///
+        /// - [`DeviceUnavailable`](super::error::DeviceUnavailable)
+        /// - [`DeviceIndexOutofRange`](super::error::DeviceIndexOutOfRange)
+        /// - The device could not be created.
         pub fn build(self) -> Result<Device> {
             #[cfg(feature = "device")]
             {

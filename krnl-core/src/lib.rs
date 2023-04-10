@@ -1,7 +1,7 @@
 /*!
 
 # **krnl-core**
-Shared core library for [**krnl**](https://github.com/charles-r-earp/krnl).
+Shared core library for [**krnl**](https://docs.rs/krnl).
 
 */
 

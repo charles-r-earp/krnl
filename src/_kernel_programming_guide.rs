@@ -86,9 +86,8 @@ pub fn fill_ones(device: Device, len: usize) -> Result<Buffer<u32>> {
 ```
 Each kernel is called with a hidden kernel: [`Kernel`](krnl_core::kernel::Kernel) argument.
 
-*But wait! This is Rust, we can use iterators!*
 
-Item kernels are a safe, zero cost abstraction for iterator patterns:
+*But wait! This is Rust, we can use iterators!* Item kernels are a safe, zero cost abstraction for iterator patterns:
 ```
 use krnl::macros::module;
 
@@ -224,12 +223,12 @@ fn group_sum(
         }
     }
 }
-}
+# }
 ```
 Group memory is zeroed.
 
 # Subgroups
-Thread groups are composed of subgroups of threads (CUDA warps). Typical values are:
+Thread groups are composed of subgroups of threads (CUDA warps). Typical [`.subgroup_threads()`](krnl_core::kernel::Kernel::subgroup_threads) are:
 - 32: NVIDIA, Intel
 - 64: AMD
 
@@ -288,20 +287,21 @@ See <https://github.com/KhronosGroup/Vulkan-ValidationLayers/blob/main/docs/debu
 # Compiling
 Kernels are compiled with **krnlc**.
 
-**krnlc** requires a specific nightly toolchain (it will be installed automatically).
+**krnlc** requires a [specific nightly toolchain](https://github.com/EmbarkStudios/rust-gpu/tree/main/crates/spirv-builder) (it will be installed automatically).
 With spirv-tools installed :
 ```text
-    cargo install krnlc --git https://github.com/charles-r-earp/krnl
-        --no-default-features --features use-installed-tools
+cargo install krnlc --no-default-features --features use-installed-tools
 ```
 Otherwise:
 ```text
-    cargo install krnlc --git https://github.com/charles-r-earp/krnl
+cargo install krnlc
 ```
 
 **krnlc** can read metadata from Cargo.toml:
 ```toml
 [package.metadata.krnlc]
+# enable default features when locating modules
+default-features = false
 # features to enable when locating modules
 features = ["zoom", "zap"]
 
@@ -309,12 +309,13 @@ features = ["zoom", "zap"]
 # keys are inherited from resolved values for the host target
 foo = { version = "0.1.0", features = ["foo"] }
 bar = { default-features = false }
+baz = {}
 ```
 
 Compile with `krnlc` or `krnlc -p my-crate`:
-1. Runs the equivalent of `cargo expand` to locate all modules.
+1. Runs the equivalent of [`cargo expand`](https://github.com/dtolnay/cargo-expand) to locate all modules.
 2. Generates a device crate under \<target-dir\>/krnlc/crates/\<my-crate\>.
-3. Compiles the device crate with [spirv-builder](https://docs.rs/crate/spirv-builder/latest).
+3. Compiles the device crate with [spirv-builder](https://docs.rs/crate/spirv-builder).
 4. Processes the output, validates and optimizes with spirv-tools.
 5. Writes out to "krnl-cache.rs".
 

@@ -1,6 +1,6 @@
 /*!
 # **krnl-macros**
-Macros for [**krnl**](https://github.com/charles-r-earp/krnl)
+Macros for [**krnl**](https://docs.rs/krnl).
 
 */
 

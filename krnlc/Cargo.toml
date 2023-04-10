@@ -3,7 +3,7 @@
 
 [package]
 name = "krnlc"
-version = "0.0.1-alpha"
+version = "0.0.1"
 authors = ["Charles R Earp <charles-r-earp@gmail.com>"]
 edition = "2021"
 description = "Compiler for krnl modules."

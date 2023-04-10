@@ -2,7 +2,7 @@
 # **krnl**
 Safe, portable, high performance compute (GPGPU) kernels.
 
-Developed for [**autograph**](https://github.com/charles-r-earp/autograph).
+Developed for [**autograph**](https://docs.rs/autograph).
 - Similar functionality to CUDA and OpenCL.
 - Supports GPU's and other Vulkan 1.2 capable devices.
 - MacOS / iOS supported via [MoltenVK](https://github.com/KhronosGroup/MoltenVK).
@@ -31,9 +31,9 @@ For device functionality (kernels), install Vulkan for your platform.
 ## Test
 - Check that `vulkaninfo --summary` shows your devices.
     - Instance version should be >= 1.2.
-- Clone [**krnl**](https://github.com/charles-r-earp/krnl)
+- Alternatively, clone [**krnl**](https://github.com/charles-r-earp/krnl/releases/tag/v0.0.1).
     - Check that `cargo test --test integration_tests -- --exact none` shows your devices.
-    - Alternatively run all the tests with `cargo test`.
+    - You can run all the tests with `cargo test`.
 
 # Getting Started
 - See [device](device) for creating devices.
@@ -108,7 +108,7 @@ fn main() -> Result<()> {
 ```
 */
 
-#![forbid(unsafe_op_in_unsafe_fn)]
+#![forbid(unsafe_op_in_unsafe_fn, missing_docs)]
 
 pub extern crate anyhow;
 pub extern crate krnl_core;
