@@ -23,66 +23,67 @@ Kernel compiler for **krnl**.
 - Compiles to "krnl-cache.rs", so the crate will build on stable Rust.
 
 # Example
+```rust
+use krnl::{
+    anyhow::Result,
+    buffer::{Buffer, Slice, SliceMut},
+    device::Device,
+    macros::module,
+};
 
-    use krnl::{
-        anyhow::Result,
-        buffer::{Buffer, Slice, SliceMut},
-        device::Device,
-        macros::module,
-    };
-    
-    #[module]
-    mod kernels {
-        #[cfg(not(target_arch = "spirv"))]
-        use krnl::krnl_core;
-        use krnl_core::macros::kernel;
-    
-        pub fn saxpy_impl(x: f32, alpha: f32, y: &mut f32) {
-            *y += alpha * x;
-        }
-    
-        // Item kernels for iterator patterns.
-        #[kernel(threads(256))]
-        pub fn saxpy(#[item] x: f32, alpha: f32, #[item] y: &mut f32) {
-            saxpy_impl(x, alpha, y);
-        }
-    
-        // General purpose kernels like CUDA / OpenCL.
-        #[kernel(threads(256))]
-        pub fn saxpy_global(#[global] x: Slice<f32>, alpha: f32, #[global] y: UnsafeSlice<f32>) {
-            use krnl_core::buffer::UnsafeIndex;
-            let mut index = kernel.global_index() as usize;
-            while index < x.len().min(y.len()) {
-                saxpy_impl(x[index], alpha, unsafe { y.unsafe_index_mut(index) });
-                index += kernel.global_threads() as usize;
-            }
+#[module]
+mod kernels {
+    #[cfg(not(target_arch = "spirv"))]
+    use krnl::krnl_core;
+    use krnl_core::macros::kernel;
+
+    pub fn saxpy_impl(x: f32, alpha: f32, y: &mut f32) {
+        *y += alpha * x;
+    }
+
+    // Item kernels for iterator patterns.
+    #[kernel(threads(256))]
+    pub fn saxpy(#[item] x: f32, alpha: f32, #[item] y: &mut f32) {
+        saxpy_impl(x, alpha, y);
+    }
+
+    // General purpose kernels like CUDA / OpenCL.
+    #[kernel(threads(256))]
+    pub fn saxpy_global(#[global] x: Slice<f32>, alpha: f32, #[global] y: UnsafeSlice<f32>) {
+        use krnl_core::buffer::UnsafeIndex;
+        let mut index = kernel.global_index() as usize;
+        while index < x.len().min(y.len()) {
+            saxpy_impl(x[index], alpha, unsafe { y.unsafe_index_mut(index) });
+            index += kernel.global_threads() as usize;
         }
     }
-    
-    fn saxpy(x: Slice<f32>, alpha: f32, mut y: SliceMut<f32>) -> Result<()> {
-        if let Some((x, y)) = x.as_host_slice().zip(y.as_host_slice_mut()) {
-            for (x, y) in x.iter().copied().zip(y) {
-                kernels::saxpy_impl(x, alpha, y);
-            }
-            return Ok(());
-        } 
-        kernels::saxpy::builder()?
-            .build(y.device())?
-            .dispatch(x, alpha, y) 
-    }
-    
-    fn main() -> Result<()> {
-        let x = vec![1f32];
-        let alpha = 2f32;
-        let y = vec![0f32];
-        let device = Device::builder().build().ok().unwrap_or(Device::host());
-        let x = Buffer::from(x).into_device(device.clone())?;
-        let mut y = Buffer::from(y).into_device(device.clone())?;
-        saxpy(x.as_slice(), alpha, y.as_slice_mut())?;
-        let y = y.into_vec()?;
-        println!("{y:?}");
-        Ok(())
-    }
+}
+
+fn saxpy(x: Slice<f32>, alpha: f32, mut y: SliceMut<f32>) -> Result<()> {
+    if let Some((x, y)) = x.as_host_slice().zip(y.as_host_slice_mut()) {
+        for (x, y) in x.iter().copied().zip(y) {
+            kernels::saxpy_impl(x, alpha, y);
+        }
+        return Ok(());
+    } 
+    kernels::saxpy::builder()?
+        .build(y.device())?
+        .dispatch(x, alpha, y) 
+}
+
+fn main() -> Result<()> {
+    let x = vec![1f32];
+    let alpha = 2f32;
+    let y = vec![0f32];
+    let device = Device::builder().build().ok().unwrap_or(Device::host());
+    let x = Buffer::from(x).into_device(device.clone())?;
+    let mut y = Buffer::from(y).into_device(device.clone())?;
+    saxpy(x.as_slice(), alpha, y.as_slice_mut())?;
+    let y = y.into_vec()?;
+    println!("{y:?}");
+    Ok(())
+}
+```
 
 # Performance 
 
