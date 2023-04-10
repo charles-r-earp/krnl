@@ -34,24 +34,25 @@
 .poloto5.poloto_fill{fill:lime;}
 .poloto6.poloto_fill{fill:orange;}
 .poloto7.poloto_fill{fill:chocolate;}
+ .poloto_background{fill:white;}
 	</style>
 	<circle r="1e5" class="poloto_background"/>
 	<g id="poloto_plot0" class="poloto_plot poloto_imgs poloto_histo poloto0 poloto_fill">
 		<rect x="150.00" y="330.00" width="322.9606875952752" height="20"/>
 		<rect x="150.00" y="270.00" width="500" height="20"/>
-		<rect x="150.00" y="210.00" width="144.6958818789024" height="20"/>
+		<rect x="150.00" y="210.00" width="62.20927601142478" height="20"/>
 		<rect x="150.00" y="150.00" width="440.5181151670613" height="20"/>
 	</g>
 	<g id="poloto_plot1" class="poloto_plot poloto_imgs poloto_histo poloto1 poloto_fill">
 		<rect x="150.00" y="330.00" width="99.4412939514805" height="20"/>
 		<rect x="150.00" y="270.00" width="485.21791074801456" height="20"/>
-		<rect x="150.00" y="210.00" width="138.91140787130178" height="20"/>
+		<rect x="150.00" y="210.00" width="59.75571559259626" height="20"/>
 		<rect x="150.00" y="150.00" width="357.64599066415536" height="20"/>
 	</g>
 	<g id="poloto_plot2" class="poloto_plot poloto_imgs poloto_histo poloto2 poloto_fill">
 		<rect x="150.00" y="330.00" width="9.88211346601355" height="20"/>
 		<rect x="150.00" y="270.00" width="428.4880461310331" height="20"/>
-		<rect x="150.00" y="210.00" width="394.7138604894549" height="20"/>
+		<rect x="150.00" y="210.00" width="269.3807340414982" height="20"/>
 		<rect x="150.00" y="150.00" width="309.95339455111787" height="20"/>
 	</g>
 	<g class="poloto_legend poloto_imgs poloto_bars poloto0 poloto_fill"><rect x="680" y="76.25" width="50" height="7.5" rx="5" ry="5"/></g>

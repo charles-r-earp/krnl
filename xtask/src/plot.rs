@@ -1,5 +1,6 @@
 use std::{env::var, path::{Path, PathBuf}};
 use serde_json::Value;
+use hypermelon::elem::Elem;
 
 pub fn plot() {
     let manifest_dir = PathBuf::from(var("CARGO_MANIFEST_DIR").unwrap());
@@ -37,11 +38,13 @@ pub fn plot() {
         } else {
             "GB/s"
         };
+        let theme = poloto::render::Theme::light()
+            .append(".poloto_background{fill:white;}");
         let plot = poloto::frame_build()
             .data(data)
             .map_yticks(|_| yticks)
             .build_and_label((op, label, ""))
-            .append_to(poloto::header().light_theme())
+            .append_to(poloto::header().append(theme))
             .render_string()
             .unwrap();
         std::fs::write(plot_dir.join(op.to_lowercase()).with_extension("svg"), plot.as_bytes()).unwrap();

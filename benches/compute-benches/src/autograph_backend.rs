@@ -106,7 +106,7 @@ pub struct Download {
 
 impl Download {
     pub fn run(&self) -> Result<()> {
-        let y_host = self.x_device.as_slice().read().block()?;
+        let y_host = self.x_device.as_slice().read().block()?.to_vec();
         #[cfg(debug_assertions)]
         {
             assert_eq!(y_host.as_slice(), self.x_host.as_slice());
