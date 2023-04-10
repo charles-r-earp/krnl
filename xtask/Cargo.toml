@@ -11,4 +11,6 @@ autobenches = false
 
 [dependencies]
 clap.workspace = true
+poloto = "18.0.6"
+serde_json = "1.0.95"
 

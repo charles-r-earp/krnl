@@ -1,5 +1,5 @@
 [package]
-name = "compute-benchmarks"
+name = "compute-benches"
 version = "0.1.0"
 edition.workspace = true
 authors.workspace = true
@@ -13,7 +13,7 @@ autobenches = false
 [dependencies]
 approx = "0.5.1"
 anyhow.workspace = true
-criterion = { version = "0.4.0", default-features = false }
+criterion = { version = "0.4.0", default-features = false, features = ["plotters"] }
 cust = { version = "0.3.2", optional = true }
 futures = { version = "0.1", optional = true }
 krnl = { path = "../../crates/krnl", default-features = false, features = ["device"] }

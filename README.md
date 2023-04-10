@@ -84,6 +84,12 @@ Kernel compiler for **krnl**.
         Ok(())
     }
 
+# Performance 
+
+![Upload](benches/compute-benches/plots/nv_gtx1060/upload.svg)
+![Download](./benches/compute-benches/plots/nv_gtx1060/download.svg)
+![Saxpy](https://github.com/charles-r-earp/krnl/blob/main/benches/compute-benches/plots/nv_gtx1060/saxpy.svg)
+
 
 # Recent Changes 
 See [Releases.md](https://github.com/charles-r-earp/krnl/blob/main/Releases.md)

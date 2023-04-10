@@ -7,6 +7,8 @@ use std::{
     time::Instant,
 };
 
+mod plot;
+
 #[derive(Parser, Debug)]
 enum Cli {
     Krnlc {
@@ -39,6 +41,7 @@ enum Cli {
         #[arg(short = 'v', long = "verbose")]
         verbose: bool,
     },
+    Plot,
 }
 
 fn main() {
@@ -81,6 +84,7 @@ fn main() {
         Cli::Validate { device, verbose } => {
             run_validation(device, verbose);
         }
+        Cli::Plot => plot::plot(),
     }
 }
 

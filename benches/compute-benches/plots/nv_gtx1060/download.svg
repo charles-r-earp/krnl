@@ -1,0 +1,96 @@
+<svg class="poloto" width="800" height="500" viewBox="0 0 800 500" xmlns="http://www.w3.org/2000/svg">
+	<style>
+ .poloto{
+  stroke-linecap:round;
+  stroke-linejoin:round;
+  font-family:Roboto,sans-serif;
+  font-size:16px;
+}
+.poloto_background{fill:#262626;}
+.poloto_scatter{stroke-width:7}
+.poloto_line{stroke-width:2}
+.poloto_text{fill: white;}
+.poloto_name{font-size:24px;dominant-baseline:start;text-anchor:middle;}
+.poloto_where{dominant-baseline:middle;text-anchor:start}
+.poloto_text.poloto_legend{font-size:20px;dominant-baseline:middle;text-anchor:start;}
+.poloto_text.poloto_ticks.poloto_y{dominant-baseline:middle;text-anchor:end}
+.poloto_text.poloto_ticks.poloto_x{dominant-baseline:start;text-anchor:middle}
+.poloto_imgs.poloto_ticks{stroke: white;stroke-width:3;fill:none;stroke-dasharray:none}
+.poloto_grid{stroke:gray;stroke-width:0.5}
+
+.poloto0.poloto_stroke{stroke:blue;}
+.poloto1.poloto_stroke{stroke:red;}
+.poloto2.poloto_stroke{stroke:green;}
+.poloto3.poloto_stroke{stroke:gold;}
+.poloto4.poloto_stroke{stroke:aqua;}
+.poloto5.poloto_stroke{stroke:lime;}
+.poloto6.poloto_stroke{stroke:orange;}
+.poloto7.poloto_stroke{stroke:chocolate;}
+.poloto0.poloto_fill{fill:blue;}
+.poloto1.poloto_fill{fill:red;}
+.poloto2.poloto_fill{fill:green;}
+.poloto3.poloto_fill{fill:gold;}
+.poloto4.poloto_fill{fill:aqua;}
+.poloto5.poloto_fill{fill:lime;}
+.poloto6.poloto_fill{fill:orange;}
+.poloto7.poloto_fill{fill:chocolate;}
+	</style>
+	<circle r="1e5" class="poloto_background"/>
+	<g id="poloto_plot0" class="poloto_plot poloto_imgs poloto_histo poloto0 poloto_fill">
+		<rect x="150.00" y="330.00" width="322.9606875952752" height="20"/>
+		<rect x="150.00" y="270.00" width="500" height="20"/>
+		<rect x="150.00" y="210.00" width="144.6958818789024" height="20"/>
+		<rect x="150.00" y="150.00" width="440.5181151670613" height="20"/>
+	</g>
+	<g id="poloto_plot1" class="poloto_plot poloto_imgs poloto_histo poloto1 poloto_fill">
+		<rect x="150.00" y="330.00" width="99.4412939514805" height="20"/>
+		<rect x="150.00" y="270.00" width="485.21791074801456" height="20"/>
+		<rect x="150.00" y="210.00" width="138.91140787130178" height="20"/>
+		<rect x="150.00" y="150.00" width="357.64599066415536" height="20"/>
+	</g>
+	<g id="poloto_plot2" class="poloto_plot poloto_imgs poloto_histo poloto2 poloto_fill">
+		<rect x="150.00" y="330.00" width="9.88211346601355" height="20"/>
+		<rect x="150.00" y="270.00" width="428.4880461310331" height="20"/>
+		<rect x="150.00" y="210.00" width="394.7138604894549" height="20"/>
+		<rect x="150.00" y="150.00" width="309.95339455111787" height="20"/>
+	</g>
+	<g class="poloto_legend poloto_imgs poloto_bars poloto0 poloto_fill"><rect x="680" y="76.25" width="50" height="7.5" rx="5" ry="5"/></g>
+	<g class="poloto_legend poloto_imgs poloto_bars poloto1 poloto_fill"><rect x="680" y="126.25" width="50" height="7.5" rx="5" ry="5"/></g>
+	<g class="poloto_legend poloto_imgs poloto_bars poloto2 poloto_fill"><rect x="680" y="176.25" width="50" height="7.5" rx="5" ry="5"/></g>
+	<text class="poloto_legend poloto_text poloto_bars poloto0" x="675" y="100"> 64M</text>
+	<text class="poloto_legend poloto_text poloto_bars poloto1" x="675" y="150"> 10M</text>
+	<text class="poloto_legend poloto_text poloto_bars poloto2" x="675" y="200"> 1M</text>
+	<text class="poloto_text poloto_name poloto_title" x="400.00" y="37.50">DOWNLOAD</text>
+	<text class="poloto_text poloto_name poloto_x" x="400.00" y="481.25">GB/s</text>
+	<text class="poloto_text poloto_name poloto_y" x="37.50" y="250.00" transform="rotate(-90,37.50,250.00)"></text>
+	<text class="poloto_text poloto_ticks poloto_y">
+		<tspan x="135.00" y="340.00">ocl</tspan>
+		<tspan x="135.00" y="280.00">cuda</tspan>
+		<tspan x="135.00" y="220.00">autograph</tspan>
+		<tspan x="135.00" y="160.00">krnl</tspan>
+	</text>
+	<g class="poloto_imgs poloto_ticks poloto_y">
+		<line x1="150.00" x2="144.00" y1="340.00" y2="340.00"/>
+		<line x1="150.00" x2="144.00" y1="280.00" y2="280.00"/>
+		<line x1="150.00" x2="144.00" y1="220.00" y2="220.00"/>
+		<line x1="150.00" x2="144.00" y1="160.00" y2="160.00"/>
+	</g>
+	<text class="poloto_text poloto_ticks poloto_x">
+		<tspan x="150.00" y="430.00">0</tspan>
+		<tspan x="249.79" y="430.00">2</tspan>
+		<tspan x="349.59" y="430.00">4</tspan>
+		<tspan x="449.38" y="430.00">6</tspan>
+		<tspan x="549.17" y="430.00">8</tspan>
+		<tspan x="648.96" y="430.00">10</tspan>
+	</text>
+	<g class="poloto_imgs poloto_ticks poloto_x">
+		<line x1="150.00" x2="150.00" y1="400.00" y2="405.00"/>
+		<line x1="249.79" x2="249.79" y1="400.00" y2="405.00"/>
+		<line x1="349.59" x2="349.59" y1="400.00" y2="405.00"/>
+		<line x1="449.38" x2="449.38" y1="400.00" y2="405.00"/>
+		<line x1="549.17" x2="549.17" y1="400.00" y2="405.00"/>
+		<line x1="648.96" x2="648.96" y1="400.00" y2="405.00"/>
+	</g>
+	<path class="poloto_imgs poloto_ticks poloto_x" style="stroke-dasharray:12.474110368652342;stroke-dashoffset:-0;" d=" M 150.00 400.00 L 650.00 400.00"/>
+	<path class="poloto_imgs poloto_ticks poloto_y" d=" M 150.00 400.00 L 150.00 100.00"/>
+</svg>

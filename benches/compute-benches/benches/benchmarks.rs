@@ -1,11 +1,11 @@
 #[cfg(feature = "autograph")]
-use compute_benchmarks::autograph_backend::AutographBackend;
+use compute_benches::autograph_backend::AutographBackend;
 #[cfg(feature = "cuda")]
-use compute_benchmarks::cuda_backend::CudaBackend;
-use compute_benchmarks::krnl_backend::KrnlBackend;
+use compute_benches::cuda_backend::CudaBackend;
+use compute_benches::krnl_backend::KrnlBackend;
 #[cfg(feature = "ocl")]
-use compute_benchmarks::ocl_backend::OclBackend;
-use criterion::{criterion_group, criterion_main, Criterion};
+use compute_benches::ocl_backend::OclBackend;
+use criterion::{criterion_group, criterion_main, Criterion, PlottingBackend};
 use rand::{distributions::OpenClosed01, thread_rng, Rng};
 use std::{
     str::FromStr,
@@ -55,26 +55,26 @@ pub fn criterion_benchmark(c: &mut Criterion) {
     } else {
         (0, 0)
     };
-
-    let n_max = if cfg!(debug_assertions) {
-        1000
-    } else {
-        256_000_000
-    };
+    #[cfg(debug_assertions)]
+    let lens = [("a_1K", 1000)];
+    #[cfg(not(debug_assertions))]
     let lens = [
-        ("1", 1),
-        ("1M", 1_000_000.min(n_max)),
-        ("64M", 64_000_000.min(n_max)),
-        ("256M", 256_000_000.min(n_max)),
+        ("a_1M", 1_000_000),
+        ("b_10M", 10_000_000),
+        ("c_64M", 64_000_000),
     ];
+    let n_max = lens.iter().last().unwrap().1;
     let x: Vec<f32> = thread_rng().sample_iter(OpenClosed01).take(n_max).collect();
     let alpha = 0.5;
     let y: Vec<f32> = thread_rng().sample_iter(OpenClosed01).take(n_max).collect();
-
+    *c = std::mem::take(c)
+        .plotting_backend(PlottingBackend::Plotters)
+        .with_plots();
+    let mut g = c.benchmark_group("compute");
     {
         let krnl = KrnlBackend::new(device_index).unwrap();
         for (s, n) in lens {
-            c.bench_function(&format!("alloc_{s}_krnl"), |b| {
+            g.bench_function(&format!("alloc_{s}_krnl"), |b| {
                 let krnl = krnl.clone();
                 b.iter_custom(move |i| {
                     let mut duration = Duration::default();
@@ -89,7 +89,7 @@ pub fn criterion_benchmark(c: &mut Criterion) {
         }
         for (s, n) in lens {
             let mut upload = krnl.upload(&x[..n]).unwrap();
-            c.bench_function(&format!("upload_{s}_krnl"), move |b| {
+            g.bench_function(&format!("upload_{s}_krnl"), move |b| {
                 b.iter_custom(|i| {
                     let mut duration = Duration::default();
                     for _ in 0..i {
@@ -103,7 +103,7 @@ pub fn criterion_benchmark(c: &mut Criterion) {
         }
         for (s, n) in lens {
             let mut download = krnl.download(&x[..n]).unwrap();
-            c.bench_function(&format!("download_{s}_krnl"), move |b| {
+            g.bench_function(&format!("download_{s}_krnl"), move |b| {
                 b.iter_custom(|i| {
                     let mut duration = Duration::default();
                     for _ in 0..i {
@@ -117,7 +117,7 @@ pub fn criterion_benchmark(c: &mut Criterion) {
         }
         for (s, n) in lens {
             let mut saxpy = krnl.saxpy(&x[..n], alpha, &y[..n]).unwrap();
-            c.bench_function(&format!("saxpy_{s}_krnl"), move |b| {
+            g.bench_function(&format!("saxpy_{s}_krnl"), move |b| {
                 b.iter_custom(|i| {
                     let mut duration = Duration::default();
                     for _ in 0..i {
@@ -133,12 +133,11 @@ pub fn criterion_benchmark(c: &mut Criterion) {
     #[cfg(feature = "autograph")]
     {
         let autograph = AutographBackend::new(device_index).unwrap();
-        let n_max = 64_000_000;
         for (s, n) in lens {
             if n > n_max {
                 break;
             }
-            c.bench_function(&format!("alloc_{s}_autograph"), |b| {
+            g.bench_function(&format!("alloc_{s}_autograph"), |b| {
                 let autograph = autograph.clone();
                 b.iter_custom(move |i| {
                     let mut duration = Duration::default();
@@ -156,7 +155,7 @@ pub fn criterion_benchmark(c: &mut Criterion) {
                 break;
             }
             let upload = autograph.upload(&x[..n]).unwrap();
-            c.bench_function(&format!("upload_{s}_autograph"), |b| {
+            g.bench_function(&format!("upload_{s}_autograph"), |b| {
                 b.iter_custom(|i| {
                     let mut duration = Duration::default();
                     for _ in 0..i {
@@ -169,11 +168,8 @@ pub fn criterion_benchmark(c: &mut Criterion) {
             });
         }
         for (s, n) in lens {
-            if n > n_max {
-                break;
-            }
             let download = autograph.download(&x[..n]).unwrap();
-            c.bench_function(&format!("download_{s}_autograph"), move |b| {
+            g.bench_function(&format!("download_{s}_autograph"), move |b| {
                 b.iter_custom(|i| {
                     let mut duration = Duration::default();
                     for _ in 0..i {
@@ -186,11 +182,8 @@ pub fn criterion_benchmark(c: &mut Criterion) {
             });
         }
         for (s, n) in lens {
-            if n > n_max {
-                break;
-            }
             let mut saxpy = autograph.saxpy(&x[..n], alpha, &y[..n]).unwrap();
-            c.bench_function(&format!("saxpy_{s}_autograph"), move |b| {
+            g.bench_function(&format!("saxpy_{s}_autograph"), move |b| {
                 b.iter_custom(|i| {
                     let mut duration = Duration::default();
                     for _ in 0..i {
@@ -207,7 +200,7 @@ pub fn criterion_benchmark(c: &mut Criterion) {
     {
         let cuda = CudaBackend::new(cuda_device_index).unwrap();
         for (s, n) in lens {
-            c.bench_function(&format!("alloc_{s}_cuda"), |b| {
+            g.bench_function(&format!("alloc_{s}_cuda"), |b| {
                 let cuda = cuda.clone();
                 b.iter_custom(move |i| {
                     let mut duration = Duration::default();
@@ -222,7 +215,7 @@ pub fn criterion_benchmark(c: &mut Criterion) {
         }
         for (s, n) in lens {
             let mut upload = cuda.upload(&x[..n]).unwrap();
-            c.bench_function(&format!("upload_{s}_cuda"), move |b| {
+            g.bench_function(&format!("upload_{s}_cuda"), move |b| {
                 b.iter_custom(|i| {
                     let mut duration = Duration::default();
                     for _ in 0..i {
@@ -236,7 +229,7 @@ pub fn criterion_benchmark(c: &mut Criterion) {
         }
         for (s, n) in lens {
             let mut download = cuda.download(&x[..n]).unwrap();
-            c.bench_function(&format!("download_{s}_cuda"), move |b| {
+            g.bench_function(&format!("download_{s}_cuda"), move |b| {
                 b.iter_custom(|i| {
                     let mut duration = Duration::default();
                     for _ in 0..i {
@@ -250,7 +243,7 @@ pub fn criterion_benchmark(c: &mut Criterion) {
         }
         for (s, n) in lens {
             let mut saxpy = cuda.saxpy(&x[..n], alpha, &y[..n]).unwrap();
-            c.bench_function(&format!("saxpy_{s}_cuda"), move |b| {
+            g.bench_function(&format!("saxpy_{s}_cuda"), move |b| {
                 b.iter_custom(|i| {
                     let mut duration = Duration::default();
                     for _ in 0..i {
@@ -267,7 +260,7 @@ pub fn criterion_benchmark(c: &mut Criterion) {
     {
         let ocl = OclBackend::new(ocl_platform_index, ocl_device_index).unwrap();
         for (s, n) in lens {
-            c.bench_function(&format!("alloc_{s}_ocl"), |b| {
+            g.bench_function(&format!("alloc_{s}_ocl"), |b| {
                 let ocl = ocl.clone();
                 b.iter_custom(move |i| {
                     let mut duration = Duration::default();
@@ -281,7 +274,7 @@ pub fn criterion_benchmark(c: &mut Criterion) {
             });
         }
         for (s, n) in lens {
-            c.bench_function(&format!("upload_{s}_ocl"), |b| {
+            g.bench_function(&format!("upload_{s}_ocl"), |b| {
                 let mut upload = ocl.upload(&x[..n]).unwrap();
                 b.iter_custom(move |i| {
                     let mut duration = Duration::default();
@@ -296,7 +289,7 @@ pub fn criterion_benchmark(c: &mut Criterion) {
         }
         for (s, n) in lens {
             let mut download = ocl.download(&x[..n]).unwrap();
-            c.bench_function(&format!("download_{s}_ocl"), move |b| {
+            g.bench_function(&format!("download_{s}_ocl"), move |b| {
                 b.iter_custom(|i| {
                     let mut duration = Duration::default();
                     for _ in 0..i {
@@ -309,11 +302,8 @@ pub fn criterion_benchmark(c: &mut Criterion) {
             });
         }
         for (s, n) in lens {
-            if n > 64_000_000 {
-                break;
-            }
             let mut saxpy = ocl.saxpy(&x[..n], alpha, &y[..n]).unwrap();
-            c.bench_function(&format!("saxpy_{s}_ocl"), move |b| {
+            g.bench_function(&format!("saxpy_{s}_ocl"), move |b| {
                 b.iter_custom(|i| {
                     let mut duration = Duration::default();
                     for _ in 0..i {

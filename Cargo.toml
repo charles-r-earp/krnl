@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/krnl", "crates/krnl-core", "crates/krnl-macros", "benchmarks/*", "tests/*", "xtask"]
+members = ["crates/krnl", "crates/krnl-core", "crates/krnl-macros", "benches/*", "tests/*", "xtask"]
 default-members = ["crates/krnl"]
 
 [workspace.package]
