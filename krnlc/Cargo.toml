@@ -1,18 +1,20 @@
+
+[workspace]
+
 [package]
 name = "krnlc"
-version = "0.0.1-unstable"
+version = "0.0.1-alpha"
 authors = ["Charles R Earp <charles-r-earp@gmail.com>"]
-description = "Compiler for krnl modules."
-license = "MIT OR Apache-2.0"
 edition = "2021"
-
-
+description = "Compiler for krnl modules."
+documentation = "https://docs.rs/krnl"
+readme = "README.md"
+homepage = "https://github.com/charles-r-earp/krnl"
+license = "MIT OR Apache-2.0"
 publish = false
 autoexamples = false
 autotests = false
 autobenches = false
-
-[workspace]
 
 [dependencies]
 clap = { version = "4.0.22", features = ["derive"] }

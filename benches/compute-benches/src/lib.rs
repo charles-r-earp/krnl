@@ -4,6 +4,7 @@
 pub mod autograph_backend;
 #[cfg(feature = "cuda")]
 pub mod cuda_backend;
+#[cfg(feature = "device")]
 pub mod krnl_backend;
 #[cfg(feature = "ocl")]
 pub mod ocl_backend;

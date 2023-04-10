@@ -2,7 +2,7 @@ use std::{env::var, path::{Path, PathBuf}};
 use serde_json::Value;
 use hypermelon::elem::Elem;
 
-pub fn plot() {
+pub fn generate() {
     let manifest_dir = PathBuf::from(var("CARGO_MANIFEST_DIR").unwrap());
     let workspace_dir = manifest_dir.parent().unwrap();
     let plot_dir = workspace_dir.join("benches/compute-benches/plots/nv_gtx1060");

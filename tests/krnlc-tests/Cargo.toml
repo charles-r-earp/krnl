@@ -7,7 +7,7 @@ license.workspace = true
 publish = false
 
 [dependencies]
-krnl = { path = "../../crates/krnl", default-features = false }
+krnl = { path = "../../../krnl", default-features = false }
 paste.workspace = true
 dry.workspace = true
 

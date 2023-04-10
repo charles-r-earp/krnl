@@ -88,11 +88,13 @@ fn main() -> Result<()> {
 # Performance 
 *NVIDIA GeForce GTX 1060 with Max-Q Design*
 ## Copying from Host to Device
-![Upload](benches/compute-benches/plots/nv_gtx1060/upload.svg)
+![Upload](benches/compute-benches/charts/nv_gtx1060/upload.svg)
 ## Copying from Device to Host
-![Download](benches/compute-benches/plots/nv_gtx1060/download.svg)
+![Download](benches/compute-benches/charts/nv_gtx1060/download.svg)
 ## Compute
-![Saxpy](benches/compute-benches/plots/nv_gtx1060/saxpy.svg)
+![Saxpy](benches/compute-benches/charts/nv_gtx1060/saxpy.svg)
+
+
 
 # Recent Changes 
 See [Releases.md](https://github.com/charles-r-earp/krnl/blob/main/Releases.md)
@@ -103,4 +105,4 @@ Dual-licensed to be compatible with the Rust project.
 Licensed under the Apache License, Version 2.0 http://www.apache.org/licenses/LICENSE-2.0 or the MIT license http://opensource.org/licenses/MIT, at your option. This file may not be copied, modified, or distributed except according to those terms.
 
 # Contribution
-Unless you explicitly state otherwise, any contribution intentionally submitted for inclusion in the work by you, as defined in the Apache-2.0 license, shall be dual licensed as above, without any additional terms or conditions.
+Unless you explicitly state otherwise, any contribution intentionally submitted for inclusion in the work by you, as defined in the Apache-2.0 license, shall be dual licensed as above, without any additional terms or conditions
