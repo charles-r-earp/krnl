@@ -6,16 +6,16 @@
   font-family:Roboto,sans-serif;
   font-size:16px;
 }
-.poloto_background{fill:#262626;}
+.poloto_background{fill:AliceBlue;}
 .poloto_scatter{stroke-width:7}
 .poloto_line{stroke-width:2}
-.poloto_text{fill: white;}
+.poloto_text{fill: black;}
 .poloto_name{font-size:24px;dominant-baseline:start;text-anchor:middle;}
 .poloto_where{dominant-baseline:middle;text-anchor:start}
 .poloto_text.poloto_legend{font-size:20px;dominant-baseline:middle;text-anchor:start;}
 .poloto_text.poloto_ticks.poloto_y{dominant-baseline:middle;text-anchor:end}
 .poloto_text.poloto_ticks.poloto_x{dominant-baseline:start;text-anchor:middle}
-.poloto_imgs.poloto_ticks{stroke: white;stroke-width:3;fill:none;stroke-dasharray:none}
+.poloto_imgs.poloto_ticks{stroke: black;stroke-width:3;fill:none;stroke-dasharray:none}
 .poloto_grid{stroke:gray;stroke-width:0.5}
 
 .poloto0.poloto_stroke{stroke:blue;}
@@ -60,7 +60,7 @@
 	<text class="poloto_legend poloto_text poloto_bars poloto0" x="675" y="100"> 64M</text>
 	<text class="poloto_legend poloto_text poloto_bars poloto1" x="675" y="150"> 10M</text>
 	<text class="poloto_legend poloto_text poloto_bars poloto2" x="675" y="200"> 1M</text>
-	<text class="poloto_text poloto_name poloto_title" x="400.00" y="37.50">UPLOAD</text>
+	<text class="poloto_text poloto_name poloto_title" x="400.00" y="37.50">Upload</text>
 	<text class="poloto_text poloto_name poloto_x" x="400.00" y="481.25">GB/s</text>
 	<text class="poloto_text poloto_name poloto_y" x="37.50" y="250.00" transform="rotate(-90,37.50,250.00)"></text>
 	<text class="poloto_text poloto_ticks poloto_y">

@@ -7,7 +7,7 @@ pub fn plot() {
     let plot_dir = workspace_dir.join("benches/compute-benches/plots/nv_gtx1060");
     std::fs::create_dir_all(&plot_dir).unwrap();
     let compute_dir = workspace_dir.join("target/criterion/compute");
-    for op in ["upload", "download", "saxpy"] {
+    for op in ["Upload", "Download", "Saxpy"] {
         let scale = if op == "saxpy" {
             2
         } else {
@@ -17,7 +17,7 @@ pub fn plot() {
         for (s, n) in [("a_1M", 1_000_000), ("b_10M", 10_000_000), ("c_64M", 64_000_000)] {
             let mut data = Vec::new();
             for lib in ["ocl", "cuda", "autograph", "krnl"] {
-                let name = format!("{op}_{s}_{lib}");
+                let name = format!("{op}_{s}_{lib}", op = &op.to_lowercase());
                 let mean = read_mean_estimate(&compute_dir.join(&name).join("base/estimates.json"));
                 let metric = (scale * n) as f64 / mean;
                 data.push((metric, lib));
@@ -32,7 +32,7 @@ pub fn plot() {
         let b = poloto::build::bar::gen_bar("10M", data_b, [0f64]).0;
         let c = poloto::build::bar::gen_bar("64M", data_c, [0f64]).0;
         let data = poloto::plots!(c, b, a);
-        let label = if op == "saxpy" {
+        let label = if op == "Saxpy" {
             "GFlops"
         } else {
             "GB/s"
@@ -40,11 +40,11 @@ pub fn plot() {
         let plot = poloto::frame_build()
             .data(data)
             .map_yticks(|_| yticks)
-            .build_and_label((&op.to_uppercase(), label, ""))
-            .append_to(poloto::header().dark_theme())
+            .build_and_label((op, label, ""))
+            .append_to(poloto::header().light_theme())
             .render_string()
             .unwrap();
-        std::fs::write(plot_dir.join(op).with_extension("svg"), plot.as_bytes()).unwrap();
+        std::fs::write(plot_dir.join(op.to_lowercase()).with_extension("svg"), plot.as_bytes()).unwrap();
     }
 }
 
