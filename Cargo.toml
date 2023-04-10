@@ -15,6 +15,9 @@ license = "MIT OR Apache-2.0"
 publish = false
 
 [workspace.dependencies]
+krnl-macros = { path = "krnl-macros", version = "=0.0.1-alpha" }
+krnl-core = { path = "krnl-core", version = "=0.0.1-alpha" }
+krnl = { path = "." }
 serde = { version = "1.0.143", default-features = false, features = ["derive"] }
 dry = "0.1.1"
 paste = "1.0.7"
@@ -53,8 +56,8 @@ autobenches = false
 
 
 [dependencies]
-krnl-macros = { path = "krnl-macros" }
-krnl-core = { path = "krnl-core" }
+krnl-macros.workspace = true
+krnl-core.workspace = true
 serde = { workspace = true, default-features = false, features = ["derive", "rc"] }
 anyhow.workspace = true
 half = { workspace = true, features = ["std"] }

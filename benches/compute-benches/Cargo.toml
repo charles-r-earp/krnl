@@ -16,7 +16,7 @@ anyhow.workspace = true
 criterion = { version = "0.4.0", default-features = false, features = ["plotters"] }
 cust = { version = "0.3.2", optional = true }
 futures = { version = "0.1", optional = true }
-krnl = { path = "../../../krnl", default-features = false }
+krnl = { workspace = true, default-features = false }
 ocl = { version = "0.19.4", optional = true }
 qutex = { version = "=0.2.3", optional = true }
 rand = "0.8.5"

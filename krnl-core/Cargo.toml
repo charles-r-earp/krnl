@@ -15,7 +15,7 @@ autotests = false
 autobenches = false
 
 [dependencies]
-krnl-macros = { path = "../krnl-macros" }
+krnl-macros.workspace = true
 spirv-std = "=0.6.0"
 paste.workspace = true
 dry.workspace = true
