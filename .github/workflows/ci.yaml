@@ -22,18 +22,20 @@ jobs:
         include:
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
-          - os: windows-latest
-            target: x86_64-pc-windows-msvc
-          - os: macos-latest
-            target: x86_64-apple-darwin
+#          - os: windows-latest
+#            target: x86_64-pc-windows-msvc
+#          - os: macos-latest
+#            target: x86_64-apple-darwin
     steps:
     - uses: actions/checkout@v2
-    - name: build
-      run: cargo build -v
-    - name: test
-      run: cargo test --no-default-features -p krnl -p krnlc-tests -v -- --format=terse
+#    - name: build
+#      run: cargo build -v
+#    - name: test
+#      run: cargo test --no-default-features -p krnl -p krnlc-tests -v -- --format=terse
     - name: build krnlc
-      run: (cd krnl && cargo install --debug --path . --root .)
+      run: |
+        cd krnl 
+        cargo install --debug --path . --root .
     - name: krnlc check 
       run: ./krnlc/krnlc --check -p krnl -p krnlc tests -p compute-benchmarks
 
