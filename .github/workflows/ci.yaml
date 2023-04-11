@@ -16,6 +16,17 @@ jobs:
     env:
       RUST_BACKTRACE: 1
       CARGO_INCREMENTAL: 0
+      
+       # spirv tools install copied from https://github.com/EmbarkStudios/rust-gpu/blob/main/.github/workflows/ci.yaml
+      spirv_tools_version: "20221024"
+      # NOTE(eddyb) do not forget to update both the above date and below links!
+      # FIXME(eddyb) automate this somewhat by taking advantage of the bucket APIs,
+      # and look for the first build with the date in `spirv_tools_version`.
+      spirv_tools_linux_url: "https://storage.googleapis.com/spirv-tools/artifacts/prod/graphics_shader_compiler/spirv-tools/linux-clang-release/continuous/1863/20221024-094528/install.tgz"
+      spirv_tools_macos_url: "https://storage.googleapis.com/spirv-tools/artifacts/prod/graphics_shader_compiler/spirv-tools/macos-clang-release/continuous/1875/20221024-094531/install.tgz"
+      spirv_tools_windows_url: "https://storage.googleapis.com/spirv-tools/artifacts/prod/graphics_shader_compiler/spirv-tools/windows-msvc-2017-release/continuous/1851/20221024-094908/install.zip"
+      RUSTUP_UNPACK_RAM: "26214400"
+      RUSTUP_IO_THREADS: "1"
     strategy:
       fail-fast: false
       matrix:
@@ -25,13 +36,42 @@ jobs:
 #          - os: windows-latest
 #            target: x86_64-pc-windows-msvc
 #          - os: macos-latest
-#            target: x86_64-apple-darwin
+#            target: x86_64-apple-darwin 
+     # spirv tools install copied from https://github.com/EmbarkStudios/rust-gpu/blob/main/.github/workflows/ci.yaml
+    steps:
+      - uses: actions/checkout@v2
+      - if: ${{ runner.os == 'Linux' }}
+        name: Linux - Install native dependencies and spirv-tools
+        run: |
+          sudo apt install libwayland-cursor0 libxkbcommon-dev libwayland-dev
+          mkdir "${HOME}/spirv-tools"
+          curl -fL "$spirv_tools_linux_url" | tar -xz -C "${HOME}/spirv-tools"
+          echo "${HOME}/spirv-tools/install/bin" >> $GITHUB_PATH
+      - if: ${{ runner.os == 'macOS' }}
+        name: Mac - Install spirv-tools
+        # FIXME(eddyb) deduplicate with Linux (and maybe even Windows?).
+        run: |
+          mkdir "${HOME}/spirv-tools"
+          curl -fL "$spirv_tools_macos_url" | tar -xz -C "${HOME}/spirv-tools"
+          echo "${HOME}/spirv-tools/install/bin" >> $GITHUB_PATH
+      - if: ${{ runner.os == 'Windows' }}
+        name: Windows - Install spirv-tools
+        shell: bash
+        run: |
+          tmparch=$(mktemp)
+          mkdir "${HOME}/spirv-tools"
+          curl -fL -o "$tmparch" "$spirv_tools_windows_url"
+          unzip "$tmparch" -d "${HOME}/spirv-tools"
+      - if: ${{ runner.os == 'Windows' }}
+        # Runs separately to add spir-v tools to Powershell's Path.
+        run: echo "$HOME/spirv-tools/install/bin" >> $env:GITHUB_PATH
+    
     steps:
     - uses: actions/checkout@v2
-#    - name: build
-#      run: cargo build -v
-#    - name: test
-#      run: cargo test --no-default-features -p krnl -p krnlc-tests -v -- --format=terse
+    - name: build
+      run: cargo build -v
+    - name: test
+      run: cargo test --no-default-features -p krnl -p krnlc-tests -v -- --format=terse
     - uses: actions-rs/toolchain@v1
       with:
         toolchain: nightly
@@ -39,8 +79,11 @@ jobs:
       with:
         toolchain: nightly-2023-01-21
         components: rust-src, rustc-dev, llvm-tools-preview
+    - name: build krnlc
+      run: cargo +nightly-2023-01-21 build --manifest-path krnlc/Cargo.toml --no-default-features --features use-installed-tools -v
     - name: krnlc check 
-      run: cargo +nightly-2023-01-21 run --manifest-path krnlc/Cargo.toml -v -- --check -p krnl -p krnlc-tests -p compute-benchmarks -v
+      run: cargo +nightly-2023-01-21 run --manifest-path krnlc/Cargo.toml --no-default-features --features use-installed-tools -- --check -p krnl -p krnlc-tests -p compute-benchmarks -v
+
 
 #  lint: 
 #    runs-on: ubuntu-latest
@@ -51,12 +94,4 @@ jobs:
 #    - uses: actions/checkout@v2
 #    - name: lint
 #      run: cargo xtask lint -v
-
-# cargo-deny:
-#    runs-on: ubuntu-latest
-#    steps:
-#      - uses: actions/checkout@v2
-#      - uses: EmbarkStudios/cargo-deny-action@v1
-#      - uses: EmbarkStudios/cargo-deny-action@v1
-#        with:
-#          arguments: --manifest-path crates/krnlc/Cargo.toml
+#  cargo-deny:##    runs-on: ubuntu-latest##    steps:##      - uses: actions/checkout@v2##      - uses: EmbarkStudios/cargo-deny-action@v1##      - uses: EmbarkStudios/cargo-deny-action@v1##        with:##          arguments: --manifest-path crates/krnlc/Cargo.toml
