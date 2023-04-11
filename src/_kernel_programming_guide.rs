@@ -289,7 +289,7 @@ Kernels are compiled with **krnlc**.
 
 **krnlc** requires a [specific nightly toolchain](https://github.com/EmbarkStudios/rust-gpu/tree/main/crates/spirv-builder). Install
 with rustup: 
-```
+```text
 rustup component add --toolchain nightly-2023-01-21 rust-src rustc-dev llvm-tools-preview
 ```
 
