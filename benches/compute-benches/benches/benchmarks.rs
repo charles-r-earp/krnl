@@ -151,10 +151,7 @@ pub fn criterion_benchmark(c: &mut Criterion) {
             });
         }
         for (s, n) in lens {
-            if n > n_max {
-                break;
-            }
-            let upload = autograph.upload(&x[..n]).unwrap();
+            let mut upload = autograph.upload(&x[..n]).unwrap();
             g.bench_function(&format!("upload_{s}_autograph"), |b| {
                 b.iter_custom(|i| {
                     let mut duration = Duration::default();

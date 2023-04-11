@@ -83,12 +83,12 @@ pub struct Upload {
 }
 
 impl Upload {
-    pub fn run(&self) -> Result<()> {
+    pub fn run(&mut self) -> Result<()> {
         self.y_device.write(&self.x_host)?;
         self.device.sync().block()?;
         #[cfg(debug_assertions)]
         {
-            let y_host = self.y_device.read().block()?;
+            let y_host = self.y_device.as_slice().read().block()?;
             assert_eq!(self.x_host.as_slice(), y_host.as_slice());
         }
         Ok(())
