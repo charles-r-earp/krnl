@@ -33,7 +33,7 @@ jobs:
     - name: test
       run: cargo test --no-default-features -p krnl -p krnlc-tests -v -- --format=terse
     - name: build krnlc
-      run: (cd && cargo install --debug --path . --root .)
+      run: (cd krnl && cargo install --debug --path . --root .)
     - name: krnlc check 
       run: ./krnlc/krnlc --check -p krnl -p krnlc tests -p compute-benchmarks
 

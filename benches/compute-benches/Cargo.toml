@@ -20,7 +20,8 @@ krnl = { workspace = true, default-features = false }
 ocl = { version = "0.19.4", optional = true }
 qutex = { version = "=0.2.3", optional = true }
 rand = "0.8.5"
-autograph = { git = "https://github.com/charles-r-earp/autograph", optional = true }
+#autograph = { git = "https://github.com/charles-r-earp/autograph", branch = "krnl-bench-ext", optional = true }
+autograph = { path = "../../../autograph", optional = true }
 blocker = { version = "0.1.2", features = ["thread_yield"], optional = true }
 
 [features]

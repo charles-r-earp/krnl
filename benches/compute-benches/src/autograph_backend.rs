@@ -28,9 +28,11 @@ impl AutographBackend {
         })
     }
     pub fn upload(&self, x: &[f32]) -> Result<Upload> {
+        let y_device = Buffer::zeros(self.device.clone(), x.len())?;
         Ok(Upload {
             device: self.device.clone(),
             x_host: x.to_vec(),
+            y_device,
         })
     }
     pub fn download(&self, x: &[f32]) -> Result<Download> {
@@ -77,22 +79,17 @@ pub struct Alloc {
 pub struct Upload {
     device: Device,
     x_host: Vec<f32>,
+    y_device: Buffer<f32>,
 }
 
 impl Upload {
     pub fn run(&self) -> Result<()> {
-        let y_device = Slice::from(self.x_host.as_slice())
-            .into_device(self.device.clone())
-            .block()?;
+        self.y_device.write(&self.x_host)?;
         self.device.sync().block()?;
         #[cfg(debug_assertions)]
         {
-            let y_host = y_device.read().block()?;
+            let y_host = self.y_device.read().block()?;
             assert_eq!(self.x_host.as_slice(), y_host.as_slice());
-        }
-        #[cfg(not(debug_assertions))]
-        {
-            let _ = y_device;
         }
         Ok(())
     }
