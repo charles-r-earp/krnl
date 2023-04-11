@@ -1,5 +1,21 @@
 use std::{env::var, fs, path::PathBuf, process::Command};
 
+macro_rules! toolchain_check {
+    ($msg:literal) => {
+        #[rustversion::stable]
+        compile_error!($msg);
+    
+        #[rustversion::before(2023-01-14)]
+        compile_error!($msg);
+
+        #[rustversion::since(2023-01-28)]
+        compile_error!($msg);
+    };
+}
+
+toolchain_check!("krnlc requires nightly-2023-01-21, install with rustup:
+rustup component add --toolchain nightly-2023-01-21 rust-src rustc-dev llvm-tools-preview");
+
 fn main() {
     let output = Command::new(var("RUSTC").unwrap())
         .args(["--print", "sysroot"])

@@ -287,14 +287,19 @@ See <https://github.com/KhronosGroup/Vulkan-ValidationLayers/blob/main/docs/debu
 # Compiling
 Kernels are compiled with **krnlc**.
 
-**krnlc** requires a [specific nightly toolchain](https://github.com/EmbarkStudios/rust-gpu/tree/main/crates/spirv-builder) (it will be installed automatically).
-With spirv-tools installed :
+**krnlc** requires a [specific nightly toolchain](https://github.com/EmbarkStudios/rust-gpu/tree/main/crates/spirv-builder). Install
+with rustup: 
+```
+rustup component add --toolchain nightly-2023-01-21 rust-src rustc-dev llvm-tools-preview
+```
+
+With spirv-tools installed:
 ```text
-cargo install krnlc --no-default-features --features use-installed-tools
+cargo +nightly-2023-01-21 install krnlc --no-default-features --features use-installed-tools
 ```
 Otherwise:
 ```text
-cargo install krnlc
+cargo +nightly-2023-01-21 install krnlc
 ```
 
 **krnlc** can read metadata from Cargo.toml:

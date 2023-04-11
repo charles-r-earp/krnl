@@ -3,8 +3,8 @@ name: Continuous Integration
 
 on:
   push:
-    branches: 
-      - main 
+  branches: 
+    - main 
   pull_request:
 
 env:
@@ -22,18 +22,20 @@ jobs:
         include:
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
-#          - os: windows-latest
-#            target: x86_64-pc-windows-msvc
-#          - os: macos-latest
-#            target: x86_64-apple-darwin
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+          - os: macos-latest
+            target: x86_64-apple-darwin
     steps:
     - uses: actions/checkout@v2
-    # - name: build
-    #   run: cargo build --all-features -v
+    - name: build
+      run: cargo build -v
     - name: test
-      run: cargo test --no-default-features --workspace --exclude compute-benchmarks -v -- --format=terse
-    - name: krnlc check
-      run: cargo xtask krnlc --workspace --check -v
+      run: cargo test --no-default-features -p krnl -p krnlc-tests -v -- --format=terse
+    - name: build krnlc
+      run: (cd && cargo install --debug --path . --root .)
+    - name: krnlc check 
+      run: ./krnlc/krnlc --check -p krnl -p krnlc tests -p compute-benchmarks
 
 #  lint: 
 #    runs-on: ubuntu-latest
@@ -45,7 +47,7 @@ jobs:
 #    - name: lint
 #      run: cargo xtask lint -v
 
-#  cargo-deny:
+# cargo-deny:
 #    runs-on: ubuntu-latest
 #    steps:
 #      - uses: actions/checkout@v2

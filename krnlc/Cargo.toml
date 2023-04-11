@@ -1,20 +1,22 @@
-
 [workspace]
 
 [package]
 name = "krnlc"
-version = "0.0.1"
+version = "0.0.2-alpha"
 authors = ["Charles R Earp <charles-r-earp@gmail.com>"]
 edition = "2021"
-description = "Compiler for krnl modules."
+description = "Kernel compiler for krnl."
 documentation = "https://docs.rs/krnl"
 readme = "../README.md"
 homepage = "https://github.com/charles-r-earp/krnl"
 license = "MIT OR Apache-2.0"
-publish = true
+publish = false
 autoexamples = false
 autotests = false
 autobenches = false
+
+[build-dependencies]
+rustversion = "1.0.12"
 
 [dependencies]
 clap = { version = "4.0.22", features = ["derive"] }
@@ -34,6 +36,7 @@ rayon = "1.7.0"
 flate2 = "1.0.25"
 hex = "0.4.3"
 fxhash = "0.2.1"
+
 
 [features]
 default = ["use-compiled-tools"]
