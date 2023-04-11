@@ -34,11 +34,13 @@ jobs:
 #      run: cargo test --no-default-features -p krnl -p krnlc-tests -v -- --format=terse
     - uses: actions-rs/toolchain@v1
       with:
+        toolchain: nightly
+    - uses: actions-rs/toolchain@v1
+      with:
         toolchain: nightly-2023-01-21
-        override: true
         components: rust-src, rustc-dev, llvm-tools-preview
     - name: krnlc check 
-      run: cargo run --manifest-path krnlc/Cargo.toml -v -- --check -p krnl -p krnlc-tests -p compute-benchmarks -v
+      run: cargo +nightly-2023-01-21 run --manifest-path krnlc/Cargo.toml -v -- --check -p krnl -p krnlc-tests -p compute-benchmarks -v
 
 #  lint: 
 #    runs-on: ubuntu-latest
