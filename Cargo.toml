@@ -80,7 +80,7 @@ fxhash = { workspace = true, optional = true }
 #ash-molten = { version = "0.13.1", features = ["external"], optional = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-vulkano = { git = "https://github.com/vulkano-rs/vulkano", branch = "0.32.X", optional = true, default-features = false }
+vulkano = { version = "0.32.3", optional = true, default-features = false }
 ash = { version = "0.37.1", optional = true }
 atomicbox = { version = "0.4.0", optional = true }
 

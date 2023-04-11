@@ -7,11 +7,13 @@ Note: Kernels can not be created for the host.
 
 Creating a device and printing out useful info:
 ```no_run
+# use krnl::{anyhow::Result, device::Device};
 # fn main() -> Result<()> {
 let device = Device::builder()
     .index(1)
     .build()?;
 dbg!(device.info());
+Ok(())
 # }
 ```
 
