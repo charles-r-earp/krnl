@@ -33,11 +33,9 @@ jobs:
 #    - name: test
 #      run: cargo test --no-default-features -p krnl -p krnlc-tests -v -- --format=terse
     - name: build krnlc
-      run: |
-        cd krnl 
-        cargo install --debug --path . --root .
+      run: cargo install --debug --path krnlc --root bin
     - name: krnlc check 
-      run: ./krnlc/krnlc --check -p krnl -p krnlc tests -p compute-benchmarks
+      run: ./bin/krnlc --check -p krnl -p krnlc tests -p compute-benchmarks
 
 #  lint: 
 #    runs-on: ubuntu-latest
