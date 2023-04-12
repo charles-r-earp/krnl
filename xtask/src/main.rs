@@ -5,7 +5,7 @@ mod charts;
 #[derive(Parser, Debug)]
 enum Cli {
     /// Generate charts.
-    Charts
+    Charts,
 }
 
 fn main() {

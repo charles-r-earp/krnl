@@ -35,8 +35,12 @@ fn main() {
         panic!("{}", String::from_utf8(output.stderr).unwrap());
     }
     let sysroot = String::from_utf8(output.stdout).unwrap();
-    println!("cargo:rustc-env=KRNLC_SYSROOT={sysroot}");
-    let toolchain_lib = PathBuf::from(sysroot.trim()).join("lib");
+    let sysroot = sysroot.trim();
+    eprintln!("sysroot = {sysroot}");
+    for entry in fs::read_dir(&sysroot).unwrap().map(Result::unwrap) {
+        eprintln!("{entry:?}");
+    }
+    let toolchain_lib = PathBuf::from(sysroot).join("lib");
     println!(
         "cargo:rustc-env=KRNLC_TOOLCHAIN_LIB={}",
         toolchain_lib.display()

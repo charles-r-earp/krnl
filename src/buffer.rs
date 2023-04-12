@@ -409,9 +409,13 @@ impl<'a> ScalarSliceMutRepr<'a> {
     }
     fn copy_from_scalar_slice(&mut self, src: &ScalarSliceRepr) -> Result<()> {
         if self.scalar_type() != src.scalar_type() {
-            bail!("Can not copy slice from {:?} to {:?}", src.scalar_type(), self.scalar_type());
+            bail!(
+                "Can not copy slice from {:?} to {:?}",
+                src.scalar_type(),
+                self.scalar_type()
+            );
         }
-        macro_wrap!(paste! { 
+        macro_wrap!(paste! {
             match self.scalar_type() {
                 macro_for!($T in  [u8, i8, u16, i16, f16, bf16, u32, i32, f32, u64, i64, f64] {
                     ScalarType::[<$T:upper>] => {
@@ -672,7 +676,7 @@ impl<S: ScalarDataOwned> ScalarBufferBase<S> {
     - OutOfDeviceMemory
     - Could not dispatch the kernel.
         - This may require [`Features`](crate::device::Features) for the type.
-        
+
     See [.fill()](ScalarBufferBase::fill).
      */
     pub fn from_elem(device: Device, len: usize, elem: ScalarElem) -> Result<Self> {
@@ -796,7 +800,7 @@ impl<S: ScalarData> ScalarBufferBase<S> {
         }
     }
     /** Copies to the device.
-    
+
     See [`BufferBase::to_device`]. */
     pub fn to_device(&self, device: Device) -> Result<ScalarBuffer> {
         let slice = self.as_scalar_slice();
@@ -808,7 +812,7 @@ impl<S: ScalarData> ScalarBufferBase<S> {
         }})
     }
     /** Copies to the device as a scalar arc buffer.
-    
+
     See [`.to_device()`](ScalarBufferBase::to_device). */
     pub fn to_device_shared(&self, device: Device) -> Result<ScalarArcBuffer> {
         if device == self.device() {
@@ -818,7 +822,7 @@ impl<S: ScalarData> ScalarBufferBase<S> {
         }
     }
     /** Fills the buffer with `elem`.
-    
+
     See [`BufferBase::fill`]. */
     pub fn fill(&mut self, elem: ScalarElem) -> Result<()>
     where
@@ -833,7 +837,7 @@ impl<S: ScalarData> ScalarBufferBase<S> {
         }})
     }
     /** Casts to `scalar_type`.
-    
+
     See [`BufferBase::cast`]. */
     pub fn cast(&self, scalar_type: ScalarType) -> Result<ScalarBuffer> {
         macro_for!($X in [u8, i8, u16, i16, f16, bf16, u32, i32, f32, u64, i64, f64] {
@@ -853,7 +857,7 @@ impl<S: ScalarData> ScalarBufferBase<S> {
         unreachable!()
     }
     /** Casts into `scalar_type`.
-    
+
     See [`.cast()`](ScalarBufferBase::cast). */
     pub fn cast_into(self, scalar_type: ScalarType) -> Result<ScalarBuffer> {
         if self.scalar_type() == scalar_type {
@@ -863,7 +867,7 @@ impl<S: ScalarData> ScalarBufferBase<S> {
         }
     }
     /** Casts into `scalar_type` as a scalar arc buffer.
-    
+
     See [`.cast()`](ScalarBufferBase::cast). */
     pub fn cast_shared(&self, scalar_type: ScalarType) -> Result<ScalarArcBuffer> {
         if self.scalar_type() == scalar_type {
@@ -890,23 +894,25 @@ impl<S: ScalarData> ScalarBufferBase<S> {
         Ok(ScalarSliceMut { data })
     }
     /** Copies from src.
-    
+
     See [`BufferBase::copy_from_slice`]. */
     pub fn copy_from_scalar_slice(&mut self, src: &ScalarSlice) -> Result<()>
     where
         S: DataMut,
     {
-        self.data.as_scalar_slice_mut().copy_from_scalar_slice(&src.data)
+        self.data
+            .as_scalar_slice_mut()
+            .copy_from_scalar_slice(&src.data)
     }
     /** A subslice with `range`.
-    
+
     See [`BufferBase::slice`]. */
     pub fn slice(&self, range: impl RangeBounds<usize>) -> Option<ScalarSlice> {
         let data = self.data.as_scalar_slice().slice(range)?;
         Some(ScalarSlice { data })
     }
     /** A mutable subslice with `range`.
-    
+
     See [`BufferBase::slice_mut`]. */
     pub fn slice_mut(&mut self, range: impl RangeBounds<usize>) -> Option<ScalarSliceMut>
     where
@@ -1870,7 +1876,7 @@ impl<T: Scalar, S: Data<Elem = T>> BufferBase<S> {
     /** Copies to a buffer.
 
     **errors**
-    
+
     - DeviceLost
     - OutOfDeviceMemory
     - Could not dispatch the kernel. */
@@ -1917,7 +1923,7 @@ impl<T: Scalar, S: Data<Elem = T>> BufferBase<S> {
     /** Copies to the device.
 
     **errors**
-    
+
     - DeviceLost
     - OutOfDeviceMemory
     - Could not dispatch the kernel. */
@@ -1926,7 +1932,7 @@ impl<T: Scalar, S: Data<Elem = T>> BufferBase<S> {
         Ok(Buffer { data })
     }
     /** Copies to the device as an arc buffer.
-    
+
     See [`.to_device()`](BufferBase::to_device). */
     pub fn to_device_shared(&self, device: Device) -> Result<ArcBuffer<T>> {
         if device == self.device() {
