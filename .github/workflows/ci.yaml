@@ -112,8 +112,9 @@ jobs:
   cargo-deny:    
     runs-on: ubuntu-latest    
     continue-on-error: true
-    - uses: actions/checkout@v2
-    - uses: EmbarkStudios/cargo-deny-action@v1
-    - uses: EmbarkStudios/cargo-deny-action@v1
-      with:         
-        argume"nts: --manifest-path krnlc/Cargo".
+      steps:
+      - uses: actions/checkout@v2
+      - uses: EmbarkStudios/cargo-deny-action@v1
+      - uses: EmbarkStudios/cargo-deny-action@v1
+        with:         
+          arguments: "--manifest-path krnlc/Cargo.toml"
