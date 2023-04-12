@@ -36,18 +36,15 @@ fn main() {
     }
     let sysroot = String::from_utf8(output.stdout).unwrap();
     let sysroot = sysroot.trim();
-    eprintln!("sysroot = {sysroot}");
-    for entry in fs::read_dir(&sysroot).unwrap().map(Result::unwrap) {
-        eprintln!("{entry:?}");
-    }
     let toolchain_lib = PathBuf::from(sysroot).join("lib");
     println!(
         "cargo:rustc-env=KRNLC_TOOLCHAIN_LIB={}",
         toolchain_lib.display()
     );
     for entry in fs::read_dir(&toolchain_lib).unwrap().map(Result::unwrap) {
+        eprintln!("{entry:?}");
         let file_name = entry.file_name();
-        let file_name = file_name.to_string_lossy();
+        let file_name = file_name.to_str().unwrap();
         if file_name.starts_with(&format!("{DLL_PREFIX}LLVM-")) {
             println!("cargo:rustc-env=KRNLC_LIBLLVM={file_name}");
         } else if file_name.starts_with(&format!("{DLL_PREFIX}rustc_driver-")) {
