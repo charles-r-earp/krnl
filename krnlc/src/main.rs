@@ -72,9 +72,12 @@ fn cargo_expand(
     krnlc_metadata: &KrnlcMetadata,
     verbose: bool,
 ) -> Result<FxHashMap<String, ModuleData>> {
+    use std::env::var;
     let mut command = Command::new("cargo");
+    if let Ok("stable" | "beta") | Err(_) = var("RUSTUP_TOOLCHAIN").as_deref() {
+        command.arg("+nightly");
+    }
     command.args([
-        "+nightly",
         "rustc",
         "--manifest-path",
         package.manifest_path.as_str(),
@@ -475,7 +478,7 @@ fn compile(
         } else {
             lib_dir.into_os_string()
         };
-        std::env::set_var(dbg!(path_var), dbg!(path));
+        std::env::set_var(path_var, path);
         INIT_LIB_DIR.call_once(|| {});
     }
     let crate_name = package.name.as_str();

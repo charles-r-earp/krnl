@@ -42,7 +42,6 @@ fn main() {
         toolchain_lib.display()
     );
     for entry in fs::read_dir(&toolchain_lib).unwrap().map(Result::unwrap) {
-        eprintln!("{entry:?}");
         let file_name = entry.file_name();
         let file_name = file_name.to_str().unwrap();
         if file_name.starts_with(&format!("{DLL_PREFIX}LLVM-")) {

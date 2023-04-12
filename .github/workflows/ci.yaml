@@ -79,10 +79,10 @@ jobs:
         with:
           toolchain: nightly-2023-01-21
           components: rust-src, rustc-dev, llvm-tools-preview
-      - name: build krnlc
-        run: cargo +nightly-2023-01-21 build --manifest-path krnlc/Cargo.toml --no-default-features --features use-installed-tools -vv
+      - name: install krnlc
+        run: cargo +nightly-2023-01-21 install --path krnlc --root . --no-default-features --features use-installed-tools -vv
       - name: krnlc check 
-        run: cargo +nightly-2023-01-21 run --manifest-path krnlc/Cargo.toml --no-default-features --features use-installed-tools -- --check -p krnl -p krnlc-tests -p compute-benchmarks -v
+        run: ./bin/krnlc --check -p krnl -p krnlc-tests -p compute-benchmarks -v
   lint: 
     runs-on: ubuntu-latest
     env:
