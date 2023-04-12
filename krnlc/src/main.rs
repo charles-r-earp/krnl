@@ -437,10 +437,13 @@ fn compile(
             std::fs::create_dir(&lib_dir)?;
         }
         for lib in [
-            env!("KRNLC_LIBLLVM"),
-            env!("KRNLC_LIBRUSTC_DRIVER"),
-            env!("KRNLC_LIBSTD"),
-        ] {
+            option_env!("KRNLC_LIBLLVM"),
+            option_env!("KRNLC_LIBRUSTC_DRIVER"),
+            option_env!("KRNLC_LIBSTD"),
+        ]
+        .into_iter()
+        .flatten()
+        {
             let link = lib_dir.join(lib);
             if !link.exists() {
                 symlink::symlink_file(

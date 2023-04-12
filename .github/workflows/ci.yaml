@@ -102,19 +102,21 @@ jobs:
       run: cargo fmt --check
       continue-on-error: true
     - name: clippy
-      run: cargo clippy  
+      run: cargo clippy -- -D warnings
       continue-on-error: true
     - name: krnlc fmt
       run: cargo +nightly-2023-01-21 fmt --check --manifest-path krnlc/Cargo.toml
       continue-on-error: true
     - name: krnlc clippy
-      run: cargo +nightly-2023-01-21 clippy -Dwarnings --manifest-path krnlc/Cargo.toml --no-default-features --features use-installed-tools -v
+      run: cargo +nightly-2023-01-21 clippy --manifest-path krnlc/Cargo.toml --no-default-features --features use-installed-tools -v -- -D warnings
   cargo-deny:    
     runs-on: ubuntu-latest    
     continue-on-error: true
-    steps:
+    
+    s
+    
     - uses: actions/checkout@v2
     - uses: EmbarkStudios/cargo-deny-action@v1
     - uses: EmbarkStudios/cargo-deny-action@v1
       with:         
-        arguments: --manifest-path krnlc/Cargo.
+        argume"nts: --manifest-path krnlc/Cargo".
