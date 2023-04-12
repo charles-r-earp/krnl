@@ -53,7 +53,7 @@ mod kernels {
 
     pub unsafe fn fill_ones_impl(index: usize, y: UnsafeSlice<u32>) {
         unsafe {
-            *y.unsafe_index_mut(index);
+            *y.unsafe_index_mut(index) = 1;
         }
     }
 
@@ -86,8 +86,8 @@ pub fn fill_ones(device: Device, len: usize) -> Result<Buffer<u32>> {
 ```
 Each kernel is called with a hidden kernel: [`Kernel`](krnl_core::kernel::Kernel) argument.
 
-
-*But wait! This is Rust, we can use iterators!* Item kernels are a safe, zero cost abstraction for iterator patterns:
+## *But wait! This is Rust, we can use iterators!*
+Item kernels are a safe, zero cost abstraction for iterator patterns:
 ```
 use krnl::macros::module;
 
@@ -266,6 +266,7 @@ let kernel = group_sum::builder()?.specialize(128)?.build(device)?;
 # todo!()
 # }
 ```
+Specialization will return an [`Err`] if a thread dimension is 0.
 
 # Panics
 Panics will abort the thread, but this will not be caught from the host. You can use [debug_printf](#debug_printf) to ensure a
@@ -287,13 +288,18 @@ See <https://github.com/KhronosGroup/Vulkan-ValidationLayers/blob/main/docs/debu
 # Compiling
 Kernels are compiled with **krnlc**.
 
-**krnlc** requires a [specific nightly toolchain](https://github.com/EmbarkStudios/rust-gpu/tree/main/crates/spirv-builder). Install
-with rustup: 
+## Toolchains
+To locate modules, **krnlc** will use the nightly toolchain. Install it with:
+```text
+rustup toolchain install nightly
+```
+To compile kernels with [spirv-builder](https://docs.rs/crate/spirv-builder), a specific nightly is required:
 ```text
 rustup component add --toolchain nightly-2023-01-21 rust-src rustc-dev llvm-tools-preview
 ```
 
-With spirv-tools installed:
+## Installing
+With spirv-tools installed (will save significant compile time):
 ```text
 cargo +nightly-2023-01-21 install krnlc --no-default-features --features use-installed-tools
 ```
@@ -302,6 +308,7 @@ Otherwise:
 cargo +nightly-2023-01-21 install krnlc
 ```
 
+## Metadata
 **krnlc** can read metadata from Cargo.toml:
 ```toml
 [package.metadata.krnlc]
@@ -317,11 +324,12 @@ bar = { default-features = false }
 baz = {}
 ```
 
+## Compiling your kernels!
 Compile with `krnlc` or `krnlc -p my-crate`:
 1. Runs the equivalent of [`cargo expand`](https://github.com/dtolnay/cargo-expand) to locate all modules.
 2. Generates a device crate under \<target-dir\>/krnlc/crates/\<my-crate\>.
 3. Compiles the device crate with [spirv-builder](https://docs.rs/crate/spirv-builder).
-4. Processes the output, validates and optimizes with spirv-tools.
+4. Processes the output, validates and optimizes with [spirv-tools](https://docs.rs/spirv-tools).
 5. Writes out to "krnl-cache.rs".
 
 Note: Can also run with `--check` which will check that the cache is up to date without writing to it.
