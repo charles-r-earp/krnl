@@ -72,7 +72,7 @@ jobs:
 #      - name: test
 #        run: cargo test --no-default-features -p krnl -p krnlc-tests -v -- --format=terse
 #        continue-on-error: true
-        - uses: actions-rs/toolchain@v1
+      - uses: actions-rs/toolchain@v1
         with:
           toolchain: nightly
       - uses: actions-rs/toolchain@v1
@@ -117,4 +117,4 @@ jobs:
     - uses: EmbarkStudios/cargo-deny-action@v1
     - uses: EmbarkStudios/cargo-deny-action@v1
       with:         
-        arguments: --manifest-path krnlc/Cargo.toml
+        arguments: --manifest-path krnlc/Cargo.
