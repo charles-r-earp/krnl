@@ -65,8 +65,7 @@ jobs:
       - if: ${{ runner.os == 'Windows' }}
         # Runs separately to add spir-v tools to Powershell's Path.
         run: echo "$HOME/spirv-tools/install/bin" >> $env:GITHUB_PATH
-    
-    steps:
+    # end install spirv-tools
     - uses: actions/checkout@v2
     - name: build
       run: cargo build -v
