@@ -402,9 +402,10 @@ fn cache(
     );
     if check {
         let prev = std::fs::read_to_string(&cache_path)?;
-        for (i, (a, b)) in prev.chars().zip(cache.chars()).enumerate() {
-            if a != b {
-                eprintln!("\n{}\n{}", &prev[..=i], &cache[..=i]);
+        for (i, (prev, cache)) in prev.lines().zip(cache.lines()).enumerate() {
+            if prev != cache {
+                eprintln!("{i}: {prev}");
+                eprintln!("{i}: {cache}");
                 bail!("{cache_path:?} check failed!");
             }
         }
