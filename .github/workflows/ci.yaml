@@ -16,8 +16,7 @@ jobs:
     env:
       RUST_BACKTRACE: 1
       CARGO_INCREMENTAL: 0
-      
-       # spirv tools install copied from https://github.com/EmbarkStudios/rust-gpu/blob/main/.github/workflows/ci.yaml
+      # spirv tools install copied from https://github.com/EmbarkStudios/rust-gpu/blob/main/.github/workflows/ci.yaml
       spirv_tools_version: "20221024"
       # NOTE(eddyb) do not forget to update both the above date and below links!
       # FIXME(eddyb) automate this somewhat by taking advantage of the bucket APIs,
@@ -37,7 +36,7 @@ jobs:
 #            target: x86_64-pc-windows-msvc
 #          - os: macos-latest
 #            target: x86_64-apple-darwin 
-     # spirv tools install copied from https://github.com/EmbarkStudios/rust-gpu/blob/main/.github/workflows/ci.yaml
+    # spirv tools install copied from https://github.com/EmbarkStudios/rust-gpu/blob/main/.github/workflows/ci.yaml
     steps:
       - uses: actions/checkout@v2
       - if: ${{ runner.os == 'Linux' }}
@@ -65,23 +64,23 @@ jobs:
       - if: ${{ runner.os == 'Windows' }}
         # Runs separately to add spir-v tools to Powershell's Path.
         run: echo "$HOME/spirv-tools/install/bin" >> $env:GITHUB_PATH
-    # end install spirv-tools
-    - uses: actions/checkout@v2
-    - name: build
-      run: cargo build -v
-    - name: test
-      run: cargo test --no-default-features -p krnl -p krnlc-tests -v -- --format=terse
-    - uses: actions-rs/toolchain@v1
-      with:
-        toolchain: nightly
-    - uses: actions-rs/toolchain@v1
-      with:
-        toolchain: nightly-2023-01-21
-        components: rust-src, rustc-dev, llvm-tools-preview
-    - name: build krnlc
-      run: cargo +nightly-2023-01-21 build --manifest-path krnlc/Cargo.toml --no-default-features --features use-installed-tools -v
-    - name: krnlc check 
-      run: cargo +nightly-2023-01-21 run --manifest-path krnlc/Cargo.toml --no-default-features --features use-installed-tools -- --check -p krnl -p krnlc-tests -p compute-benchmarks -v
+      # end install spirv-tools
+      - uses: actions/checkout@v2
+      - name: build
+        run: cargo build -v
+      - name: test
+        run: cargo test --no-default-features -p krnl -p krnlc-tests -v -- --format=terse
+      - uses: actions-rs/toolchain@v1
+        with:
+          toolchain: nightly
+      - uses: actions-rs/toolchain@v1
+        with:
+          toolchain: nightly-2023-01-21
+          components: rust-src, rustc-dev, llvm-tools-preview
+      - name: build krnlc
+        run: cargo +nightly-2023-01-21 build --manifest-path krnlc/Cargo.toml --no-default-features --features use-installed-tools -v
+      - name: krnlc check 
+        run: cargo +nightly-2023-01-21 run --manifest-path krnlc/Cargo.toml --no-default-features --features use-installed-tools -- --check -p krnl -p krnlc-tests -p compute-benchmarks -v
 
 
 #  lint: 
