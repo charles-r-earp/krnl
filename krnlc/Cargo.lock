@@ -479,7 +479,7 @@ dependencies = [
 
 [[package]]
 name = "krnlc"
-version = "0.0.1"
+version = "0.0.2-alpha"
 dependencies = [
  "anyhow",
  "bincode2",
@@ -493,6 +493,7 @@ dependencies = [
  "prettyplease",
  "rayon",
  "rspirv",
+ "rustversion",
  "serde",
  "spirv-builder",
  "spirv-tools",
@@ -729,6 +730,12 @@ dependencies = [
  "linux-raw-sys",
  "windows-sys 0.48.0",
 ]
+
+[[package]]
+name = "rustversion"
+version = "1.0.12"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4f3208ce4d8448b3f3e7d168a73f5e0c43a61e32930de3bceeccedb388b6bf06"
 
 [[package]]
 name = "ryu"

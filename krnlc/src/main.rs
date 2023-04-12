@@ -422,11 +422,16 @@ fn compile(
     non_semantic_info: bool,
     verbose: bool,
 ) -> Result<FxHashMap<String, FxHashMap<String, KernelDesc>>> {
-    use std::fmt::Write;
+    use std::{
+        env::consts::{DLL_PREFIX, DLL_SUFFIX},
+        fmt::Write,
+        sync::Once,
+    };
     let target_krnl_dir = PathBuf::from(target_dir).join("krnlc");
-    std::fs::create_dir_all(&target_krnl_dir)?;
-    {
-        // lib
+
+    static INIT_LIB_DIR: Once = Once::new();
+    if !INIT_LIB_DIR.is_completed() {
+        std::fs::create_dir_all(&target_krnl_dir)?;
         let lib_dir = target_krnl_dir.join("lib");
         if !lib_dir.exists() {
             std::fs::create_dir(&lib_dir)?;
@@ -444,13 +449,10 @@ fn compile(
                 )?;
             }
         }
-        let librustc_codegen_spirv = include_bytes!(concat!(
-            env!("OUT_DIR"),
-            "/../../../librustc_codegen_spirv.so"
-        ));
-        assert!(!librustc_codegen_spirv.is_empty());
+        let rustc_codegen_spirv_lib = format!("{DLL_PREFIX}rustc_codegen_spirv{DLL_SUFFIX}");
+        let librustc_codegen_spirv = include_bytes!(env!("KRNLC_LIBRUSTC_CODEGEN_SPIRV"));
         std::fs::write(
-            lib_dir.join("librustc_codegen_spirv.so"),
+            lib_dir.join(&rustc_codegen_spirv_lib),
             librustc_codegen_spirv.as_ref(),
         )?;
         // https://github.com/EmbarkStudios/rust-gpu/blob/main/crates/spirv-builder/src/lib.rs
@@ -470,7 +472,8 @@ fn compile(
         } else {
             lib_dir.into_os_string()
         };
-        std::env::set_var(path_var, path);
+        std::env::set_var(dbg!(path_var), dbg!(path));
+        INIT_LIB_DIR.call_once(|| {});
     }
     let crate_name = package.name.as_str();
     let device_crate_dir = target_krnl_dir.join("crates").join(crate_name);
@@ -605,7 +608,10 @@ extern crate krnl_core;
                 .or_default()
                 .insert(kernel_name_with_hash, kernel_desc);
             if let Some(prev) = prev {
-                bail!("Hash collsion `{name}` with `{}`! Try renaming a kernel.", prev.name);
+                bail!(
+                    "Hash collsion `{name}` with `{}`! Try renaming a kernel.",
+                    prev.name
+                );
             }
         }
         modules
@@ -980,7 +986,11 @@ fn kernel_post_process(
             .to_vec();
         spirv
     };
-    let kernel_name_with_hash = format!("{}_{}", kernel_name.rsplit("::").next().unwrap(), kernel_desc.hash);
+    let kernel_name_with_hash = format!(
+        "{}_{}",
+        kernel_name.rsplit("::").next().unwrap(),
+        kernel_desc.hash
+    );
     Ok((
         module_name_with_hash.to_string(),
         (kernel_name_with_hash, kernel_desc),

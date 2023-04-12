@@ -88,10 +88,20 @@ jobs:
       CARGO_INCREMENTAL: 0
     steps:
     - uses: actions/checkout@v2
-    - name: lint
-      run: cargo xtask lint -v
+    - uses: actions-rs/toolchain@v1
+      with:
+        toolchain: [stable, nightly-2023-01-21]
+        components: rustfmt, clippy
+    - name: fmt
+      run: cargo fmt --check
+    - name: clippy
+      run: cargo clippy  
+    - name: krnlc fmt
+      run: cargo +nightly-2023-01-21 fmt --check --manifest-path krnlc/Cargo.toml
+    - name: krnlc clippy
+      run: cargo +nightly-2023-01-21 clippy -Dwarnings --manifest-path krnlc/Cargo.toml --no-default-features --features use-installed-tools -v
   cargo-deny:    
-    runs-on: ubuntu-latest##    
+    runs-on: ubuntu-latest    
     steps:
     - uses: actions/checkout@v2
     - uses: EmbarkStudios/cargo-deny-action@v1
