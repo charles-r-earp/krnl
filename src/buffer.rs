@@ -58,6 +58,37 @@ use std::{
 #[cfg(feature = "device")]
 use crate::device::DeviceBuffer;
 
+/// Errors.
+pub mod error {
+    #[cfg(feature = "device")]
+    use crate::device::DeviceId;
+    use std::fmt::{self, Debug, Display};
+    
+    /// No more memory on the device.
+    #[derive(Clone, Copy, Debug, thiserror::Error)]
+    pub struct OutOfDeviceMemory(#[cfg(feature = "device")] pub(crate) DeviceId);
+
+    impl Display for OutOfDeviceMemory {
+        fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+            Debug::fmt(self, f)
+        }
+    }
+    
+    /// Device buffers are limited to [`i32::MAX`] (2147483647) bytes .
+    #[derive(Clone, Copy, Debug, thiserror::Error)]
+    pub struct DeviceBufferTooLarge {
+        #[cfg(feature = "device")]
+        #[allow(unused)]
+        pub(crate) bytes: usize,
+    }
+
+    impl Display for DeviceBufferTooLarge {
+        fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+            Debug::fmt(self, f)
+        }
+    }
+}
+
 #[derive(Copy, Clone)]
 struct RawHostSlice {
     ptr: *mut u8,
@@ -1229,9 +1260,8 @@ pub struct SliceRepr<'a, T> {
 
 impl<'a, T: Scalar> SliceRepr<'a, T> {
     fn from_host_slice(host_slice: &'a [T]) -> Self {
-        let width = std::mem::size_of::<T>();
         let ptr = host_slice.as_ptr() as *mut u8;
-        let len = host_slice.len() * width;
+        let len = std::mem::size_of_val(host_slice);
         let raw = RawSlice {
             inner: RawSliceInner::Host(RawHostSlice { ptr, len }),
         };
@@ -1318,9 +1348,8 @@ pub struct SliceMutRepr<'a, T> {
 
 impl<'a, T: Scalar> SliceMutRepr<'a, T> {
     fn from_host_slice_mut(host_slice: &'a mut [T]) -> Self {
-        let width = std::mem::size_of::<T>();
         let ptr = host_slice.as_ptr() as *mut u8;
-        let len = host_slice.len() * width;
+        let len = std::mem::size_of_val(host_slice);
         let raw = RawSlice {
             inner: RawSliceInner::Host(RawHostSlice { ptr, len }),
         };

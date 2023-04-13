@@ -55,6 +55,9 @@ compile_error!("device feature not supported on wasm");
 pub mod error {
     #[cfg(feature = "device")]
     use super::DeviceId;
+    #[cfg(feature = "device")]
+    pub(super) use crate::buffer::error::{DeviceBufferTooLarge, OutOfDeviceMemory};
+    
     use std::fmt::{self, Debug, Display};
 
     /** Device is unavailable.
@@ -89,17 +92,7 @@ pub mod error {
         fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
             Debug::fmt(self, f)
         }
-    }
-
-    /// No more memory on the device.
-    #[derive(Clone, Copy, Debug, thiserror::Error)]
-    pub struct OutOfDeviceMemory(#[cfg(feature = "device")] pub(super) DeviceId);
-
-    impl Display for OutOfDeviceMemory {
-        fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-            Debug::fmt(self, f)
-        }
-    }
+    } 
 }
 use error::*;
 
@@ -361,7 +354,7 @@ impl Eq for RawDevice {}
 
 #[cfg(feature = "device")]
 #[derive(Clone, Copy, Eq, PartialEq)]
-struct DeviceId {
+pub(crate) struct DeviceId {
     index: usize,
     handle: usize,
 }
@@ -389,7 +382,13 @@ pub(crate) struct DeviceBuffer {
 
 #[cfg(feature = "device")]
 impl DeviceBuffer {
+    const MAX_SIZE: usize = i32::MAX as usize;
     pub(crate) unsafe fn uninit(device: RawDevice, len: usize) -> Result<Self> {
+        if len > Self::MAX_SIZE {
+            return Err(DeviceBufferTooLarge {
+                bytes: len,
+            }.into());
+        }
         let inner =
             unsafe { <Engine as DeviceEngine>::DeviceBuffer::uninit(device.engine, len)?.into() };
         Ok(Self { inner })

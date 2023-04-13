@@ -110,10 +110,9 @@ jobs:
     - name: krnlc clippy
       run: cargo +nightly-2023-01-21 clippy --manifest-path krnlc/Cargo.toml --no-default-features --features use-installed-tools -v -- -D warnings
       continue-on-error: true
-    - uses: actions-rs/clippy-check@v1
-      with:
-        toolchain: nightly-2023-01-21
-        args: "--manifest-path krnlc/Cargo.toml --no-default-features --features use-installed-tools -v -- -D warnings"
+    - name: krnlc clippy 2
+      run: rustup run nightly-2023-01-21 cargo clippy --manifest-path krnlc/Cargo.toml --no-default-features --features use-installed-tools -v -- -D warnings
+      continue-on-error: true
   cargo-deny:    
     runs-on: ubuntu-latest    
     continue-on-error: true
