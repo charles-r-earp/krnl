@@ -22,8 +22,8 @@ fn main() {}
 #[cfg(not(target_arch = "wasm32"))]
 fn main() {
     let mut args = Arguments::from_args();
-    args.test_threads.replace(1);
-    dbg!(args.test_threads);
+    //args.test_threads.replace(2);
+    //dbg!(args.test_threads);
     let tests = if cfg!(feature = "device") && !cfg!(miri) {
         let devices: Vec<_> = [Device::builder().build().unwrap()]
             .into_iter()

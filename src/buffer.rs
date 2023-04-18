@@ -1,6 +1,6 @@
 /*!
 
-Buffers store data, and can be arguments to [kernels](crate::_kernel_programming_guide). Buffers on the [host](crate::device::Device::host)
+Buffers store data, and can be arguments to [kernels](crate::kernel). Buffers on the [host](crate::device::Device::host)
 store data inline, essentially as a [`Vec`] or `[_]`.
 
 [`BufferBase`](crate::buffer::BufferBase) is a generic buffer. [`ScalarBufferBase`](crate::buffer::ScalarBufferBase) is a dynamically typed buffer.

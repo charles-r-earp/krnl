@@ -1547,7 +1547,8 @@ fn kernel_impl(attr_tokens: TokenStream2, item_tokens: TokenStream2) -> Result<T
                     anyhow::{self, Result},
                     krnl_core::{half::{f16, bf16}, glam::{UVec2, UVec3}},
                     buffer::{Slice, SliceMut},
-                    device::{Device, __private::{Kernel as KernelBase, KernelBuilder as KernelBuilderBase}},
+                    device::Device,
+                    kernel::__private::{Kernel as KernelBase, KernelBuilder as KernelBuilderBase},
                     once_cell::sync::Lazy,
                 };
 
@@ -1608,14 +1609,14 @@ fn kernel_impl(attr_tokens: TokenStream2, item_tokens: TokenStream2) -> Result<T
                     ///
                     /// Implicitly declares groups by rounding up to the next multiple of threads.
                     pub fn with_global_threads(mut self, global_threads: #kernel_dim) -> Self {
-                        self.inner = self.inner.global_threads(&global_threads.to_array());
+                        self.inner = self.inner.with_global_threads(&global_threads.to_array());
                         self
                     }
                     /// Groups to dispatch.
                     ///
-                    /// For item kernels, is inferred based on item arguments.
+                    /// For item kernels, if not provided, is inferred based on item arguments.
                     pub fn with_groups(mut self, groups: #kernel_dim) -> Self {
-                        self.inner = self.inner.groups(&groups.to_array());
+                        self.inner = self.inner.with_groups(&groups.to_array());
                         self
                     }
                     /// Dispatches the kernel.

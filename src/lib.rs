@@ -23,7 +23,7 @@ For device functionality (kernels), install Vulkan for your platform.
     - vulkaninfo
     - Validation layers
     - vkconfig
-        - This can be used for valiation and with [debug_printf](_kernel_programming_guide#debug_printf).
+        - This can be used for valiation and with [debug_printf](kernel#debug_printf).
     - spirv-tools
         - This is used by **krnlc** for validation and optimization.
             - **krnlc** builds by default without needing spirv-tools to be installed.
@@ -38,7 +38,7 @@ For device functionality (kernels), install Vulkan for your platform.
 # Getting Started
 - See [device](device) for creating devices.
 - See [buffer](buffer) for creating buffers.
-- Read the [Kernel Programming Guide](_kernel_programming_guide).
+- See [kernel](kernel) for compute kernels.
 
 # Example
 ```
@@ -125,7 +125,5 @@ pub use krnl_core::scalar;
 pub mod buffer;
 /// Devices.
 pub mod device;
-
-/// Kernel programming guide.
-#[cfg(doc)]
-pub mod _kernel_programming_guide;
+/// Kernels.
+pub mod kernel;
