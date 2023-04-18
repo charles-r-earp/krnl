@@ -222,6 +222,7 @@ impl KrnlcMetadata {
                                 dependency.features.clone(),
                             )
                         } else {
+                            // TODO maybe allow depencies not included in host?
                             bail!("{manifest_path_str:?} [package.metadata.krnlc.dependencies] {dep:?} is not a dependency of {:?}!", package.name);
                         };
                         let mut default_features = None;
@@ -545,8 +546,6 @@ extern crate krnl_core;
         for (name, module) in module_datas.iter() {
             writeln!(&mut source, "pub mod {name} {{ {} }}", module.source).unwrap();
         }
-        let file = syn::parse_str(&source)?;
-        let source = prettyplease::unparse(&file);
         let src_path = src_dir.join("lib.rs");
         let mut src_changed = true;
         if let Ok(old_source) = std::fs::read_to_string(&src_path) {

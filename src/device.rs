@@ -57,7 +57,7 @@ pub mod error {
     use super::DeviceId;
     #[cfg(feature = "device")]
     pub(super) use crate::buffer::error::{DeviceBufferTooLarge, OutOfDeviceMemory};
-    
+
     use std::fmt::{self, Debug, Display};
 
     /** Device is unavailable.
@@ -92,7 +92,7 @@ pub mod error {
         fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
             Debug::fmt(self, f)
         }
-    } 
+    }
 }
 use error::*;
 
@@ -385,9 +385,7 @@ impl DeviceBuffer {
     const MAX_SIZE: usize = i32::MAX as usize;
     pub(crate) unsafe fn uninit(device: RawDevice, len: usize) -> Result<Self> {
         if len > Self::MAX_SIZE {
-            return Err(DeviceBufferTooLarge {
-                bytes: len,
-            }.into());
+            return Err(DeviceBufferTooLarge { bytes: len }.into());
         }
         let inner =
             unsafe { <Engine as DeviceEngine>::DeviceBuffer::uninit(device.engine, len)?.into() };
@@ -658,6 +656,10 @@ impl KernelDesc {
                     }
                 }
             }
+        }
+        {
+            //use rspirv::binary::Disassemble;
+            //eprintln!("{}", module.disassemble())
         }
         let spirv = module.assemble();
         Ok(Self {

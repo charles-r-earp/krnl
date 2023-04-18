@@ -382,14 +382,31 @@ impl KernelItem {
     }
 }
 
-#[derive(Parse, Debug)]
+#[derive(Debug)]
 struct KernelGenerics {
-    #[allow(unused)]
-    lt: Lt,
-    #[call(Punctuated::parse_separated_nonempty)]
-    specs: Punctuated<KernelSpec, Comma>,
-    #[allow(unused)]
-    gt: Gt,
+    //#[allow(unused)]
+    //lt: Lt,
+    //#[call(Punctuated::parse_terminated)]
+    specs: Punctuated<KernelSpec, Comma>, // TODO: doesn't support trailing comma
+                                          //#[allow(unused)]
+                                          //gt: Gt,
+}
+
+impl Parse for KernelGenerics {
+    fn parse(input: ParseStream) -> Result<Self> {
+        input.parse::<Lt>()?;
+        let mut specs = Punctuated::new();
+        while input.peek(Const) {
+            specs.push(input.parse()?);
+            if input.peek(Comma) {
+                input.parse::<Comma>()?;
+            } else {
+                break;
+            }
+        }
+        input.parse::<Gt>()?;
+        Ok(Self { specs })
+    }
 }
 
 #[derive(Parse, Debug)]
@@ -917,7 +934,7 @@ impl KernelMeta {
         let group_barrier = if self.arg_metas.iter().any(|arg| arg.kind.is_global()) {
             quote! {
                 unsafe {
-                    ::krnl_core::spirv_std::arch::workgroup_memory_barrier();
+                     ::krnl_core::spirv_std::arch::workgroup_memory_barrier();
                 }
             }
         } else {
@@ -956,11 +973,13 @@ impl KernelMeta {
                         use ::krnl_core::spirv_std::arch::IndexUnchecked;
                         let mut __krnl_i = kernel.thread_index() as usize;
                         let __krnl_group_stride = (__krnl_threads.x * __krnl_threads.y * __krnl_threads.z) as usize;
-                        while __krnl_i < #len {
-                            unsafe {
-                                *#ident.index_unchecked_mut(__krnl_i) = Default::default();
+                        if __krnl_i < __krnl_group_stride { // <- Needed for some reason? or else zeroing fails
+                            while __krnl_i < #len {
+                                unsafe {
+                                    *#ident.index_unchecked_mut(__krnl_i) = Default::default();
+                                }
+                                __krnl_i += __krnl_group_stride;
                             }
-                            __krnl_i += __krnl_group_stride;
                         }
                     }
                 };

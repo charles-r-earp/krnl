@@ -1,8 +1,8 @@
 use dry::macro_for;
 use half::{bf16, f16};
-use krnl::{buffer::Slice, device::Device, scalar::Scalar};
 #[cfg(feature = "device")]
 use krnl::buffer::Buffer;
+use krnl::{buffer::Slice, device::Device, scalar::Scalar};
 #[cfg(not(target_arch = "wasm32"))]
 use krnl::{device::Features, scalar::ScalarType};
 #[cfg(not(target_arch = "wasm32"))]
@@ -87,15 +87,13 @@ fn buffer_tests(device: &Device, device2: Option<&Device>) -> impl IntoIterator<
     tests.push(device_test(device, "buffer_from_vec", buffer_from_vec));
 
     if device.is_device() {
-        tests.push(
-            Trial::test("device_buffer_too_large", {
-                let device = device.clone();
-                move || {
-                    device_buffer_too_large(device);
-                    Ok(())
-                }
-            })
-        );
+        tests.push(Trial::test("device_buffer_too_large", {
+            let device = device.clone();
+            move || {
+                device_buffer_too_large(device);
+                Ok(())
+            }
+        }));
         tests.push(
             Trial::test("buffer_device_to_device", {
                 let device = device.clone();
@@ -204,9 +202,9 @@ fn buffer_from_vec(device: Device) {
 #[cfg(feature = "device")]
 fn device_buffer_too_large(device: Device) {
     use krnl::buffer::error::DeviceBufferTooLarge;
-    let error = unsafe {
-        Buffer::<u32>::uninit(device, (i32::MAX / 4 + 1).try_into().unwrap())
-    }.err().unwrap();
+    let error = unsafe { Buffer::<u32>::uninit(device, (i32::MAX / 4 + 1).try_into().unwrap()) }
+        .err()
+        .unwrap();
     error.downcast_ref::<DeviceBufferTooLarge>().unwrap();
 }
 

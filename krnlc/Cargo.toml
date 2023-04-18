@@ -27,7 +27,6 @@ cargo_metadata = "0.15.1"
 spirv-builder = { version = "=0.6.0", default-features = false }
 serde = { version = "1.0.143", default-features = false, features = ["derive"] }
 bincode2 = "2.0.1"
-prettyplease = "0.1.21"
 symlink = "0.1.0"
 rspirv = "0.11.0"
 spirv-tools = { version = "0.9.0", default-features = false }

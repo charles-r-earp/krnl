@@ -7,8 +7,11 @@ use core::{arch::asm, mem::MaybeUninit};
 #[cfg(target_arch = "spirv")]
 use spirv_std::arch::IndexUnchecked;
 
-#[cfg(all(target_arch = "spirv", feature = "ext:SPV_KHR_non_semantic_info"))]
-fn debug_index_out_of_bounds(index: usize, len: usize) {
+#[cfg(all(
+    target_arch = "spirv",
+    target_feature = "ext:SPV_KHR_non_semantic_info"
+))]
+fn debug_index_out_of_bounds(_index: usize, _len: usize) {
     unsafe {
         spirv_std::macros::debug_printfln!(
             "index out of bounds: the len is %u but the index is %u",
@@ -277,7 +280,7 @@ impl<'a, T: Scalar> UnsafeSlice<'a, T> {
     // For kernel macro.
     #[doc(hidden)]
     #[cfg(target_arch = "spirv")]
-    pub unsafe fn from_unsafe_raw_parts(inner: &'a mut [T; 1], offset: usize, len: usize) -> Self {
+    pub unsafe fn from_unsafe_raw_parts(inner: &'a [T; 1], offset: usize, len: usize) -> Self {
         let data = UnsafeSliceRepr {
             inner: &*inner,
             offset,

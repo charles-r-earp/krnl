@@ -63,7 +63,7 @@ pub mod error {
     #[cfg(feature = "device")]
     use crate::device::DeviceId;
     use std::fmt::{self, Debug, Display};
-    
+
     /// No more memory on the device.
     #[derive(Clone, Copy, Debug, thiserror::Error)]
     pub struct OutOfDeviceMemory(#[cfg(feature = "device")] pub(crate) DeviceId);
@@ -73,7 +73,7 @@ pub mod error {
             Debug::fmt(self, f)
         }
     }
-    
+
     /// Device buffers are limited to [`i32::MAX`] (2147483647) bytes .
     #[derive(Clone, Copy, Debug, thiserror::Error)]
     pub struct DeviceBufferTooLarge {
@@ -1649,6 +1649,21 @@ impl<'a, T: Scalar> Data for CowBufferRepr<'a, T> {
     }
 }
 
+impl<'a, T: Scalar> DataOwned for CowBufferRepr<'a, T> {
+    fn from_buffer(buffer: BufferRepr<T>) -> Self {
+        Self::Owned(buffer)
+    }
+    fn make_slice_mut(&mut self) -> Result<SliceMutRepr<T>> {
+        match self {
+            Self::Borrowed(slice) => {
+                *self = Self::Owned(slice.to_buffer()?);
+                Ok(self.get_slice_mut().unwrap())
+            }
+            Self::Owned(buffer) => buffer.make_slice_mut(),
+        }
+    }
+}
+
 /** A buffer.
 
 Use [`TryFrom`](core::convert::TryFrom) to convert from [`ScalarBufferBase`].
@@ -1815,6 +1830,11 @@ impl<T: Scalar, S: DataOwned<Elem = T>> BufferBase<S> {
     /// Create a buffer from a [`Vec`].
     pub fn from_vec(vec: Vec<T>) -> Self {
         let data = S::from_buffer(BufferRepr::from_vec(vec));
+        Self { data }
+    }
+    /// Create a buffer from a [`Buffer`].
+    pub fn from_buffer(buffer: Buffer<T>) -> Self {
+        let data = S::from_buffer(buffer.data);
         Self { data }
     }
 }
