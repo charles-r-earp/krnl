@@ -42,7 +42,7 @@ use std::ops::Range;
 #[cfg(all(not(target_arch = "wasm32"), feature = "device"))]
 mod vulkan_engine;
 #[cfg(all(not(target_arch = "wasm32"), feature = "device"))]
-pub(crate) use vulkan_engine::Engine;
+use vulkan_engine::Engine;
 
 #[cfg(all(target_arch = "wasm32", feature = "device"))]
 compile_error!("device feature not supported on wasm");
