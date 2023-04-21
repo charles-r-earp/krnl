@@ -1,2 +1,5 @@
 [alias]
 xtask = "run -p xtask -- "
+
+[target.'cfg(target_arch = "wasm32")']
+rustflags = ["--cfg=web_sys_unstable_apis"]

@@ -32,12 +32,14 @@ One kernel can be queued while another is executing on that queue.
 use crate::kernel::{KernelDesc, KernelKey};
 use anyhow::Result;
 use serde::Deserialize;
+#[cfg(feature = "device")]
+use std::ops::Range;
 use std::{
     fmt::{self, Debug},
     sync::Arc,
 };
-#[cfg(feature = "device")]
-use std::ops::Range;
+#[cfg(all(target_arch = "wasm32", feature = "device"))]
+use std::{future::Future, pin::Pin};
 
 #[cfg(all(not(target_arch = "wasm32"), feature = "device"))]
 mod vulkan_engine;
@@ -45,7 +47,9 @@ mod vulkan_engine;
 pub(crate) use vulkan_engine::Engine;
 
 #[cfg(all(target_arch = "wasm32", feature = "device"))]
-compile_error!("device feature not supported on wasm");
+mod wgpu_engine;
+#[cfg(all(target_arch = "wasm32", feature = "device"))]
+pub(crate) use wgpu_engine::Engine;
 
 /// Errors.
 pub mod error {
@@ -103,6 +107,7 @@ pub mod builder {
     }
 
     impl DeviceBuilder {
+        #[cfg(not(target_arch = "wasm32"))]
         /// Index of the device, defaults to 0.
         pub fn index(self, index: usize) -> Self {
             #[cfg(feature = "device")]
@@ -117,6 +122,7 @@ pub mod builder {
                 self
             }
         }
+        #[cfg(not(target_arch = "wasm32"))]
         /// Creates a device.
         ///
         /// **errors**
@@ -137,6 +143,27 @@ pub mod builder {
                 Err(DeviceUnavailable.into())
             }
         }
+        #[cfg(target_arch = "wasm32")]
+        /// Creates a device.
+        ///
+        /// **errors**
+        ///
+        /// - [`DeviceUnavailable`](super::error::DeviceUnavailable)
+        /// - [`DeviceIndexOutofRange`](super::error::DeviceIndexOutOfRange)
+        /// - The device could not be created.
+        pub async fn build_async(self) -> Result<Device> {
+            #[cfg(feature = "device")]
+            {
+                let raw = RawDevice::new(self.options).await?;
+                Ok(Device {
+                    inner: DeviceInner::Device(raw),
+                })
+            }
+            #[cfg(not(feature = "device"))]
+            {
+                Err(DeviceUnavailable.into())
+            }
+        }
     }
 }
 use builder::*;
@@ -145,7 +172,10 @@ use builder::*;
 trait DeviceEngine {
     type DeviceBuffer: DeviceEngineBuffer<Engine = Self>;
     type Kernel: DeviceEngineKernel<Engine = Self, DeviceBuffer = Self::DeviceBuffer>;
+    #[cfg(not(target_arch = "wasm32"))]
     fn new(options: DeviceOptions) -> Result<Arc<Self>>;
+    #[cfg(target_arch = "wasm32")]
+    fn new(options: DeviceOptions) -> Pin<Box<dyn Future<Output = Result<Arc<Self>>>>>;
     fn id(&self) -> DeviceId;
     fn info(&self) -> &Arc<DeviceInfo>;
     fn wait(&self) -> Result<(), DeviceLost>;
@@ -326,8 +356,14 @@ pub(crate) struct RawDevice {
 
 #[cfg(feature = "device")]
 impl RawDevice {
+    #[cfg(not(target_arch = "wasm32"))]
     fn new(options: DeviceOptions) -> Result<Self> {
         let engine = Engine::new(options)?;
+        Ok(Self { engine })
+    }
+    #[cfg(target_arch = "wasm32")]
+    async fn new(options: DeviceOptions) -> Result<Self> {
+        let engine = Engine::new(options).await?;
         Ok(Self { engine })
     }
     pub(crate) fn info(&self) -> &Arc<DeviceInfo> {
@@ -380,9 +416,7 @@ pub(crate) struct DeviceBuffer {
 fn cast_device_buffers(buffers: &[DeviceBuffer]) -> &[Arc<<Engine as DeviceEngine>::DeviceBuffer>] {
     // # Safety
     // Safe because transparent
-    unsafe {
-        std::slice::from_raw_parts(buffers.as_ptr() as _, buffers.len())
-    }
+    unsafe { std::slice::from_raw_parts(buffers.as_ptr() as _, buffers.len()) }
 }
 
 #[cfg(feature = "device")]
@@ -616,8 +650,8 @@ impl RawKernel {
         key: KernelKey,
         desc_fn: impl FnOnce() -> Result<Arc<KernelDesc>>,
     ) -> Result<Self> {
-        Ok(Self { 
-            inner: <Engine as DeviceEngine>::Kernel::cached(device.engine, key, desc_fn)?
+        Ok(Self {
+            inner: <Engine as DeviceEngine>::Kernel::cached(device.engine, key, desc_fn)?,
         })
     }
     pub(crate) unsafe fn dispatch(
@@ -627,11 +661,12 @@ impl RawKernel {
         push_consts: Vec<u8>,
     ) -> Result<()> {
         unsafe {
-            self.inner.dispatch(groups, cast_device_buffers(buffers), push_consts)
+            self.inner
+                .dispatch(groups, cast_device_buffers(buffers), push_consts)
         }
     }
     pub(crate) fn device(&self) -> RawDevice {
-        RawDevice { 
+        RawDevice {
             engine: self.inner.engine().clone(),
         }
     }

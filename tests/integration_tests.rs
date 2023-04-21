@@ -1,3 +1,5 @@
+#[cfg(all(target_arch = "wasm32", feature = "device"))]
+use anyhow::Result;
 use dry::macro_for;
 use half::{bf16, f16};
 #[cfg(feature = "device")]
@@ -56,6 +58,16 @@ fn main() {
         tests(&Device::host(), None).into_iter().collect()
     };
     libtest_mimic::run(&args, tests).exit()
+}
+
+#[cfg(all(target_arch = "wasm32", feature = "device"))]
+async fn web_device() -> Result<Device> {
+    use async_once_cell::OnceCell;
+    static DEVICE: OnceCell<Device> = OnceCell::new();
+    DEVICE
+        .get_or_try_init(async { Device::builder().build_async().await })
+        .await
+        .map(Clone::clone)
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -170,14 +182,11 @@ fn buffer_test_lengths() -> impl ExactSizeIterator<Item = usize> {
     [0, 1, 3, 4, 16, 67, 157].into_iter()
 }
 fn buffer_transfer_test_lengths() -> impl ExactSizeIterator<Item = usize> {
-    #[cfg(not(miri))]
-    {
-        [0, 1, 3, 4, 16, 345, 9_337_791].into_iter()
+    let mut lens = vec![0, 1, 3, 4, 16, 345, 9_337_791];
+    if cfg!(miri) {
+        lens.pop();
     }
-    #[cfg(miri)]
-    {
-        [0, 1, 3, 4, 16, 345].into_iter()
-    }
+    lens.into_iter()
 }
 
 fn buffer_from_vec(device: Device) {
@@ -286,32 +295,60 @@ fn buffer_bitcast<X: Scalar, Y: Scalar>(device: Device) {
     }
 }
 
+#[cfg(all(target_arch = "wasm32", feature = "device"))]
 #[test]
-fn buffer_from_vec_host() {
-    buffer_from_vec(Device::host());
+async fn buffer_from_vec_device() {
+    let device = web_device().await.unwrap();
+    wasm_thread::spawn(move || {
+        buffer_from_vec(device);
+    })
+    .join_async()
+    .await
+    .unwrap();
 }
 
-#[cfg(target_arch = "wasm32")]
-macro_for!($T in [u8, i8, u16, i16, f16, bf16, u32, i32, f32, u64, i64, f64] {
-    paste! {
-        #[test]
-        fn [<buffer_fill_ $T _host>]() {
-            buffer_fill::<$T>(Device::host());
-        }
-    }
-});
 
-macro_for!($X in [u8, i8, u16, i16, f16, bf16, u32, i32, f32, u64, i64, f64] {
-    macro_for!($Y in [u8, i8, u16, i16, f16, bf16, u32, i32, f32, u64, i64, f64] {
-        paste! {
-            #[test]
-            fn [<buffer_cast_ $X _ $Y _host>]() {
-                buffer_cast::<$X, $Y>(Device::host());
-            }
-            #[test]
-            fn [<buffer_bitcast_ $X _ $Y _host>]() {
-                buffer_bitcast::<$X, $Y>(Device::host());
-            }
-        }
+#[cfg(all(target_arch = "wasm32", feature = "device"))]
+#[test]
+async fn buffer_fill_u32_device() {
+    let device = web_device().await.unwrap();
+    wasm_thread::spawn(move || {
+        buffer_fill::<u32>(device);
+    })
+    .join_async()
+    .await
+    .unwrap();
+}
+
+/*
+#[test]
+async fn foo() {
+    use wgpu::*;
+
+    let instance = Instance::new(InstanceDescriptor {
+        backends: Backends::BROWSER_WEBGPU,
+        ..Default::default()
     });
-});
+
+    let adapter = instance
+        .request_adapter(&RequestAdapterOptions {
+            //power_preference: PowerPreference::HighPerformance,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    let (device, queue) = adapter
+        .request_device(&Default::default(), None)
+        .await
+        .unwrap();
+
+    let desc = BufferDescriptor {
+        label: None,
+        size: 16,
+        usage: BufferUsages::MAP_WRITE | BufferUsages::COPY_SRC,
+        mapped_at_creation: true,
+    };
+    let buffer1 = device.create_buffer(&desc);
+    let buffer2 = device.create_buffer(&desc);
+}
+*/

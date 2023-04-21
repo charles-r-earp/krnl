@@ -73,7 +73,7 @@ flate2.workspace = true
 dashmap = { version = "5.3.4", optional = true }
 rspirv = { workspace = true, optional = true }
 fxhash = { workspace = true, optional = true }
-
+naga = { version = "0.12.0", features = ["spv-in"] }
 
 #[target."cfg(any(target_os = \"ios\", target_os = \"macos\"))".dependencies]
 #ash-molten = { version = "0.13.1", features = ["external"], optional = true }
@@ -83,10 +83,17 @@ vulkano = { version = "0.32.3", optional = true, default-features = false }
 ash = { version = "0.37.1", optional = true }
 atomicbox = { version = "0.4.0", optional = true }
 
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wgpu = { version = "0.16.0", default-features = true, features = ["spirv"], optional = true }
+#wgpu = { path = "../wgpu/wgpu", default-features = true, features = ["spirv"], optional = true }
+#blocker = { version = "0.1.2", features = ["thread_yield"], optional = true }
+wasm-bindgen-futures = { version = "0.4.34", optional = true }
+futures-lite = { version = "1.13.0", default-features = false, optional = true }
+
 [features]
 default = ["device"]
 # Enables device functionality. Not supported on the web.
-device = ["dep:vulkano", "dep:ash", "dep:dashmap", "dep:rspirv", "dep:atomicbox", "dep:fxhash"]
+device = ["dep:vulkano", "dep:ash", "dep:dashmap", "dep:rspirv", "dep:atomicbox", "dep:fxhash", "dep:wgpu", "wasm-bindgen-futures", "futures-lite"]
 
 [package.metadata.krnlc]
 default-features = false
@@ -107,3 +114,5 @@ rayon = "1.7.0"
 
 [target.'cfg(target_arch = "wasm32")'.dev-dependencies]
 wasm-bindgen-test = "0.3.33"
+wasm_thread = { version = "0.2.0", features = ["es_modules"] }
+async-once-cell = "0.4.4" 
