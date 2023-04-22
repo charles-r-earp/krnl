@@ -1,4 +1,5 @@
 /*!
+
 Kernels are functions that can be executed repeatedly and or concurrently. For example:
 ```
 fn fill_ones_impl(index: usize, y: &mut [u32]) {
@@ -228,7 +229,7 @@ and [`UVec3`](krnl_core::glam::UVec3). These are x, y, and z dimensions, where z
 is the fastest changing dimension. Thus 1 dimensional kernels have y and z equal to 1.
 
 For simple kernels, threads can be arbitrary, typically 128, 256, or 512. This can be tuned for optimal performance.
-Note that the device may impose limits on the maximum thread dimensions. This is at least (1024, 1024, 64).
+Note that the device may impose limits on the maximum thread dimensions. 
 
 Threads can be [specialized](#specialization).
 
@@ -253,7 +254,7 @@ fn group_sum(
     #[group] x_group: UnsafeSlice<f32, 64>,
     #[global] y: UnsafeSlice<f32>,
 ) {
-    use krnl_core::{buffer::UnsafeIndex, spirv_std::arch::workgroup_barrier};
+    use krnl_core::{buffer::UnsafeIndex, spirv_std::arch::workgroup_memory_barrier};
 
     let global_id = kernel.global_id() as usize;
     let group_id = kernel.group_id() as usize;
@@ -262,7 +263,7 @@ fn group_sum(
         x_group.unsafe_index_mut(thread_id) = x[global_id];
         // Barriers are used to synchronize access to group memory.
         // This call must be reached by all threads in the group!
-        workgroup_barrier();
+        workgroup_memory_barrier();
     }
     if thread_id == 0 {
         for i in 0 .. kernel.threads() as usize {
