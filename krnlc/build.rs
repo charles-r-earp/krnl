@@ -13,17 +13,17 @@ macro_rules! toolchain_check {
         #[rustversion::stable]
         compile_error!($msg);
 
-        #[rustversion::before(2023-01-14)]
+        #[rustversion::before(2023-02-25)]
         compile_error!($msg);
 
-        #[rustversion::since(2023-01-28)]
+        #[rustversion::since(2023-03-11)]
         compile_error!($msg);
     };
 }
 
 toolchain_check!(
-    "krnlc requires nightly-2023-01-21, install with rustup:
-rustup component add --toolchain nightly-2023-01-21 rust-src rustc-dev llvm-tools-preview"
+    "krnlc requires nightly-2023-03-04, install with rustup:
+rustup component add --toolchain nightly-2023-03-04 rust-src rustc-dev llvm-tools-preview"
 );
 
 fn main() {

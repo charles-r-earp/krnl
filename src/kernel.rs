@@ -345,17 +345,17 @@ rustup toolchain install nightly
 ```
 To compile kernels with [spirv-builder](https://docs.rs/crate/spirv-builder), a specific nightly is required:
 ```text
-rustup component add --toolchain nightly-2023-01-21 rust-src rustc-dev llvm-tools-preview
+rustup component add --toolchain nightly-2023-03-04 rust-src rustc-dev llvm-tools-preview
 ```
 
 ## Installing
 With spirv-tools installed (will save significant compile time):
 ```text
-cargo +nightly-2023-01-21 install krnlc --no-default-features --features use-installed-tools
+cargo +nightly-2023-03-04 install krnlc --no-default-features --features use-installed-tools
 ```
 Otherwise:
 ```text
-cargo +nightly-2023-01-21 install krnlc
+cargo +nightly-2023-03-04 install krnlc
 ```
 
 ## Metadata
