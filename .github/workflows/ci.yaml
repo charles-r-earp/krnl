@@ -85,8 +85,9 @@ jobs:
         run: ./bin/krnlc --check -p krnl -p krnlc-tests -p compute-benchmarks -v
   miri:
     runs-on: ubuntu-latest
-    RUST_BACKTRACE: 1
-    CARGO_INCREMENTAL: 0
+    env:
+      RUST_BACKTRACE: 1
+      CARGO_INCREMENTAL: 0
     continue-on-error: true
     steps:
     - uses: actions-rs/toolchain@v1
