@@ -200,7 +200,7 @@ impl<'de> Deserialize<'de> for ScalarType {
 #[allow(missing_docs)]
 #[cfg(not(target_arch = "spirv"))]
 #[non_exhaustive]
-#[derive(Clone, Copy, PartialEq, Debug)]
+#[derive(Clone, Copy, PartialEq, Debug, Serialize, Deserialize)]
 pub enum ScalarElem {
     U8(u8),
     I8(i8),
