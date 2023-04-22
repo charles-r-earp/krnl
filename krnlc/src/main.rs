@@ -5,6 +5,7 @@ use cargo_metadata::{Metadata, Package, PackageId};
 use clap::Parser;
 use clap_cargo::{Manifest, Workspace};
 use fxhash::FxHashMap;
+use semver::{Version, VersionReq};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use spirv_builder::{MetadataPrintout, SpirvBuilder, SpirvMetadata};
 use std::{
@@ -13,7 +14,6 @@ use std::{
     str::FromStr,
 };
 use syn::{visit::Visit, Expr, Item, ItemMod, Lit, Visibility};
-use semver::{Version, VersionReq};
 
 #[derive(Parser, Debug)]
 #[command(
@@ -179,7 +179,10 @@ impl KrnlcMetadata {
                 package.name
             );
         };
-        if !krnlc_version_compatible(env!("CARGO_PKG_VERSION"), &krnl_core_package.version.to_string()) {
+        if !krnlc_version_compatible(
+            env!("CARGO_PKG_VERSION"),
+            &krnl_core_package.version.to_string(),
+        ) {
             bail!("krnlc version is not compatible!");
         }
         let krnl_core_source = format!(

@@ -1860,6 +1860,12 @@ impl<'a, T: Scalar> TryFrom<ScalarCowBuffer<'a>> for CowBuffer<'a, T> {
     }
 }
 
+impl<T: Scalar, S: DataOwned<Elem = T>> Default for BufferBase<S> {
+    fn default() -> Self {
+        Self::zeros(Device::host(), 0).unwrap()
+    }     
+}
+
 impl<T: Scalar, S: DataOwned<Elem = T>> BufferBase<S> {
     /// Allocate a buffer.
     ///
