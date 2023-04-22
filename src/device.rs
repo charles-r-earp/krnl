@@ -32,12 +32,12 @@ One kernel can be queued while another is executing on that queue.
 use crate::kernel::{KernelDesc, KernelKey};
 use anyhow::Result;
 use serde::Deserialize;
+#[cfg(feature = "device")]
+use std::ops::Range;
 use std::{
     fmt::{self, Debug},
     sync::Arc,
 };
-#[cfg(feature = "device")]
-use std::ops::Range;
 
 #[cfg(all(not(target_arch = "wasm32"), feature = "device"))]
 mod vulkan_engine;
@@ -386,9 +386,7 @@ pub(crate) struct DeviceBuffer {
 fn cast_device_buffers(buffers: &[DeviceBuffer]) -> &[Arc<<Engine as DeviceEngine>::DeviceBuffer>] {
     // # Safety
     // Safe because transparent
-    unsafe {
-        std::slice::from_raw_parts(buffers.as_ptr() as _, buffers.len())
-    }
+    unsafe { std::slice::from_raw_parts(buffers.as_ptr() as _, buffers.len()) }
 }
 
 #[cfg(feature = "device")]
@@ -565,8 +563,8 @@ impl RawKernel {
         key: KernelKey,
         desc_fn: impl FnOnce() -> Result<Arc<KernelDesc>>,
     ) -> Result<Self> {
-        Ok(Self { 
-            inner: <Engine as DeviceEngine>::Kernel::cached(device.engine, key, desc_fn)?
+        Ok(Self {
+            inner: <Engine as DeviceEngine>::Kernel::cached(device.engine, key, desc_fn)?,
         })
     }
     pub(crate) unsafe fn dispatch(
@@ -576,11 +574,12 @@ impl RawKernel {
         push_consts: Vec<u8>,
     ) -> Result<()> {
         unsafe {
-            self.inner.dispatch(groups, cast_device_buffers(buffers), push_consts)
+            self.inner
+                .dispatch(groups, cast_device_buffers(buffers), push_consts)
         }
     }
     pub(crate) fn device(&self) -> RawDevice {
-        RawDevice { 
+        RawDevice {
             engine: self.inner.engine().clone(),
         }
     }

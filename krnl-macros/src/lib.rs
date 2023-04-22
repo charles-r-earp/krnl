@@ -9,8 +9,8 @@ use fxhash::FxHashMap;
 use proc_macro::TokenStream;
 use proc_macro2::{Span as Span2, TokenStream as TokenStream2};
 use quote::{format_ident, quote, ToTokens};
-use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use semver::{Version, VersionReq};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::{hash::Hash, str::FromStr};
 use syn::{
     parse::{Parse, ParseStream},
@@ -1762,7 +1762,7 @@ fn krnlc_version_compatible(krnlc_version: &str, version: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn krnlc_version_semver() {
         assert!(krnlc_version_compatible("0.0.1", "0.0.1"));

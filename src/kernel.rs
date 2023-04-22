@@ -134,7 +134,7 @@ pub mod fill_ones {
     ///
     /// See [`builder()`](builder).
     pub struct KernelBuilder { /* .. */ }
-    
+
     /// Creates a builder.
     ///
     /// The builder is lazily created on first call.
@@ -143,14 +143,14 @@ pub mod fill_ones {
     /// - The kernel wasn't compiled (with `#[krnl(no_build)]` applied to `#[module]`).
     /// - The kernel could not be deserialized. For stable releases, this is a bug, as `#[module]` should produce a compile error.
     pub fn builder() -> Result<KernelBuilder>;
-    
+
     impl KernelBuilder {
         pub fn build(&self, device: Device) -> Result<Kernel>;
     }
-    
+
     /// Kernel.
-    pub struct Kernel { /* .. */ } 
-    
+    pub struct Kernel { /* .. */ }
+
     impl Kernel {
         /// Global threads to dispatch.
         ///
@@ -229,7 +229,7 @@ and [`UVec3`](krnl_core::glam::UVec3). These are x, y, and z dimensions, where z
 is the fastest changing dimension. Thus 1 dimensional kernels have y and z equal to 1.
 
 For simple kernels, threads can be arbitrary, typically 128, 256, or 512. This can be tuned for optimal performance.
-Note that the device may impose limits on the maximum thread dimensions. 
+Note that the device may impose limits on the maximum thread dimensions.
 
 Threads can be [specialized](#specialization).
 
@@ -385,7 +385,10 @@ Compile with `krnlc` or `krnlc -p my-crate`:
 Note: Can also run with `--check` which will check that the cache is up to date without writing to it.
 */
 
-use crate::{scalar::{ScalarElem, ScalarType}, device::{Device, Features, DeviceInner}};
+use crate::{
+    device::{Device, DeviceInner, Features},
+    scalar::{ScalarElem, ScalarType},
+};
 use anyhow::{bail, Result};
 #[cfg(feature = "device")]
 use rspirv::{binary::Assemble, dr::Operand};
@@ -503,10 +506,13 @@ pub(crate) struct KernelKey {
 #[doc(hidden)]
 pub mod __private {
     use super::*;
-    use crate::{scalar::Scalar, buffer::{ScalarSlice, ScalarSliceMut, Slice, SliceMut}};
     #[cfg(feature = "device")]
     use crate::device::{DeviceBuffer, RawKernel};
-    
+    use crate::{
+        buffer::{ScalarSlice, ScalarSliceMut, Slice, SliceMut},
+        scalar::Scalar,
+    };
+
     #[doc(hidden)]
     #[cfg_attr(not(feature = "device"), allow(dead_code))]
     #[derive(Clone)]
@@ -598,9 +604,7 @@ pub mod __private {
                             .map(Arc::new)
                         })?
                     } else {
-                        RawKernel::cached(device.clone(), key, || {
-                            Ok(desc.clone())
-                        })?
+                        RawKernel::cached(device.clone(), key, || Ok(desc.clone()))?
                     };
                     Ok(Kernel {
                         inner,
