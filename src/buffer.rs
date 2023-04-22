@@ -889,6 +889,20 @@ impl<S: ScalarData> ScalarBufferBase<S> {
             _ => unreachable!(),
         }})
     }
+    /** Copies to the device in place.
+
+    **errors**
+
+    See [`.to_device()`](BufferBase::to_device). */
+    pub fn to_device_mut(&mut self, device: Device) -> Result<()>
+    where
+        S: ScalarDataOwned,
+    {
+        if self.device() != device {
+            self.data = S::from_scalar_buffer(self.data.as_scalar_slice().to_device(device)?);
+        }
+        Ok(())
+    }
     /** Copies to the device as a scalar arc buffer.
 
     See [`.to_device()`](ScalarBufferBase::to_device). */
@@ -2065,6 +2079,20 @@ impl<T: Scalar, S: Data<Elem = T>> BufferBase<S> {
     pub fn to_device(&self, device: Device) -> Result<Buffer<T>> {
         let data = self.data.as_slice().to_device(device)?;
         Ok(Buffer { data })
+    }
+    /** Copies to the device in place.
+
+    **errors**
+
+    See [`.to_device()`](BufferBase::to_device). */
+    pub fn to_device_mut(&mut self, device: Device) -> Result<()>
+    where
+        S: DataOwned,
+    {
+        if self.device() != device {
+            self.data = S::from_buffer(self.data.as_slice().to_device(device)?);
+        }
+        Ok(())
     }
     /** Copies to the device as an arc buffer.
 
