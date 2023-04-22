@@ -1,3 +1,5 @@
+#![forbid(unsafe_code)]
+
 use anyhow::{bail, format_err, Result};
 use cargo_metadata::{Metadata, Package, PackageId};
 use clap::Parser;
@@ -11,6 +13,7 @@ use std::{
     str::FromStr,
 };
 use syn::{visit::Visit, Expr, Item, ItemMod, Lit, Visibility};
+use semver::{Version, VersionReq};
 
 #[derive(Parser, Debug)]
 #[command(
@@ -119,6 +122,25 @@ fn cargo_expand(
     Ok(modules)
 }
 
+// Should match krnl_macros
+fn krnlc_version_compatible(krnlc_version: &str, version: &str) -> bool {
+    let krnlc_version = Version::parse(krnlc_version).unwrap();
+    let (version, req) = (
+        Version::parse(version).unwrap(),
+        VersionReq::parse(version).unwrap(),
+    );
+    if !req.matches(&krnlc_version) {
+        return false;
+    }
+    if !krnlc_version.pre.is_empty() && krnlc_version < version {
+        return false;
+    }
+    if !version.pre.is_empty() && version != krnlc_version {
+        return false;
+    }
+    true
+}
+
 struct KrnlcMetadata {
     default_features: bool,
     features: String,
@@ -157,6 +179,9 @@ impl KrnlcMetadata {
                 package.name
             );
         };
+        if !krnlc_version_compatible(env!("CARGO_PKG_VERSION"), &krnl_core_package.version.to_string()) {
+            bail!("krnlc version is not compatible!");
+        }
         let krnl_core_source = format!(
             " path = {:?}",
             krnl_core_package.manifest_path.parent().unwrap()
@@ -669,20 +694,6 @@ fn kernel_post_process(
             }
         });
         add_spec_constant_ops(&mut spirv_module);
-        /*{
-            let spirv = spirv_module.assemble();
-            let target_env = TargetEnv::Vulkan_1_2;
-            let mut optimizer = spirv_tools::opt::create(Some(target_env));
-            optimizer
-                .register_pass(Passes::StripNonSemanticInfo)
-                .register_pass(Passes::StripDebugInfo)
-                .register_performance_passes();
-            let spirv = optimizer
-                .optimize(&spirv, &mut |_| (), None)?
-                .as_words()
-                .to_vec();
-            spirv_module = rspirv::dr::load_words(&spirv).unwrap();
-        }*/
         let mut constants = FxHashMap::default();
         for inst in spirv_module.types_global_values.iter() {
             if let Some(result_id) = inst.result_id {
@@ -734,21 +745,6 @@ fn kernel_post_process(
         spirv_module.debug_names.retain_mut(|inst| {
             let op = inst.class.opcode;
             let operands = inst.operands.as_mut_slice();
-            /*match (op, operands) {
-                (Op::Name, [Operand::IdRef(var), Operand::LiteralString(name)]) => {
-                    if *var == kernel_data_var {
-                        kernel_data.replace(std::mem::take(name));
-                        return false;
-                    } else if name.starts_with("__krnl_group_array_")
-                        || name.starts_with("__krnl_subgroup_array_")
-                    {
-                        if let Some(id) = name.rsplit_once('_').and_then(|x| x.1.parse().ok()) {
-                            array_ids.insert(*var, id);
-                        }
-                    }
-                }
-                _ => {}
-            }*/
             if let (Op::Name, [Operand::IdRef(var), Operand::LiteralString(name)]) = (op, operands)
             {
                 if *var == kernel_data_var {

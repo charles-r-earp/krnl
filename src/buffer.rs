@@ -48,11 +48,13 @@ use half::{bf16, f16};
 #[cfg(feature = "device")]
 use krnl_macros::module;
 use paste::paste;
+use serde::{Serialize, ser::Serializer, Deserialize, de::Deserializer};
 use std::{
     marker::PhantomData,
     mem::{forget, size_of},
     ops::{Bound, RangeBounds},
     sync::Arc,
+    fmt::{self, Debug},
 };
 
 #[cfg(feature = "device")]
@@ -377,6 +379,9 @@ impl<'a> ScalarSliceRepr<'a> {
     fn to_scalar_buffer(&self) -> Result<ScalarBufferRepr> {
         Ok(ScalarSlice { data: self.clone() }.to_owned()?.data)
     }
+     fn to_device(&self, device: Device) -> Result<ScalarBufferRepr> {
+        Ok(ScalarSlice { data: self.clone() }.to_device(device)?.data)
+    }
     fn bitcast(
         self,
         scalar_type: ScalarType,
@@ -411,6 +416,43 @@ impl ScalarData for ScalarSliceRepr<'_> {
             scalar_type: self.scalar_type,
             _m: PhantomData::default(),
         }
+    }
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(rename = "Buffer")]
+struct BufferSerde<'a>(
+    ScalarType,
+    #[serde(with = "serde_bytes")]
+    &'a [u8],
+);
+
+impl Serialize for ScalarSliceRepr<'_> {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer {
+        use serde::ser::Error;
+        
+        let scalar_type = self.scalar_type;
+        let slice: ScalarCowBufferRepr = if self.device().is_host() {
+            self.clone().into()
+        } else {
+            self.to_device(Device::host()).map_err(S::Error::custom)?.into()
+        };
+        let slice = slice.as_scalar_slice();
+        let slice = SliceRepr::<u8>::try_from(slice.bitcast(ScalarType::U8).unwrap()).ok().unwrap();
+        let bytes = slice.as_host_slice().unwrap();
+        BufferSerde(scalar_type, bytes).serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for ScalarBufferRepr {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de> {
+        
+        let BufferSerde(scalar_type, bytes) = BufferSerde::deserialize(deserializer)?;
+        Ok(ScalarSliceRepr::from(SliceRepr::from_host_slice(bytes)).bitcast(scalar_type).unwrap().to_scalar_buffer().unwrap())
     }
 }
 
@@ -1029,6 +1071,34 @@ impl<'a> From<ScalarSlice<'a>> for ScalarCowBuffer<'a> {
     }
 }
 
+impl<S: ScalarData> Debug for ScalarBufferBase<S> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.debug_struct("ScalarBufferBase")
+            .field("device", &self.device())
+            .field("scalar_type", &self.scalar_type())
+            .field("len", &self.len())
+            .finish()
+    }
+}
+
+impl<S1: ScalarData> Serialize for ScalarBufferBase<S1> {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer {
+        self.data.as_scalar_slice().serialize(serializer)
+    }
+}
+
+impl<'de, S: ScalarDataOwned> Deserialize<'de> for ScalarBufferBase<S> {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de> {
+        Ok(Self { 
+            data: S::from_scalar_buffer(ScalarBufferRepr::deserialize(deserializer)?),
+        })
+    }
+}
+
 macro_for!($S in [BufferRepr, ArcBufferRepr] {
     impl<T: Scalar> Sealed for $S<T> {}
     unsafe impl<T: Scalar> Send for $S<T> {}
@@ -1339,6 +1409,7 @@ impl<'a, T: Scalar> TryFrom<ScalarSliceRepr<'a>> for SliceRepr<'a, T> {
         }
     }
 }
+
 
 /// [`SliceMut`] representation.
 pub struct SliceMutRepr<'a, T> {
@@ -2207,6 +2278,40 @@ fn device_scalar_buffer_cast_impl(x: ScalarSlice, y: ScalarSliceMut) -> Result<(
     unreachable!()
 }
 
+
+impl<S: Data> Debug for BufferBase<S> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.debug_struct("BufferBase")
+            .field("device", &self.device())
+            .field("scalar_type", &self.scalar_type())
+            .field("len", &self.len())
+            .finish()
+    }
+}
+
+impl<S1: Data> Serialize for BufferBase<S1> {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer {
+        self.data.as_scalar_slice().serialize(serializer)
+    }
+}
+
+impl<'de, T: Scalar, S: DataOwned<Elem=T>> Deserialize<'de> for BufferBase<S> {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de> {
+        use serde::de::Error;
+        let scalar_buffer = ScalarBufferRepr::deserialize(deserializer)?;
+        let buffer = BufferRepr::try_from(scalar_buffer).map_err(|e| {
+            D::Error::custom(format!("Expected {:?}, found {:?}!", T::scalar_type(), e.scalar_type()))
+        })?;
+        Ok(Self {
+            data: S::from_buffer(buffer),
+        })
+    }
+}
+
 #[cfg(feature = "device")]
 #[module]
 #[krnl(crate=crate)]
@@ -2242,4 +2347,39 @@ mod kernels {
             }
         });
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_test::{Token, assert_tokens};
+    
+    #[test]
+    fn buffer_serde() {
+        static DATA: &[u32] = &[1u32, 2, 3, 4];
+        let bytes: &[u8] = bytemuck::cast_slice(&DATA);
+        let buffer = Buffer::from_vec(DATA.to_vec());
+        let tokens = [
+            Token::TupleStruct {
+                name: "Buffer",
+                len: 2,
+            },
+            Token::Str("U32"),
+            Token::BorrowedBytes(bytes),
+            Token::TupleStructEnd,
+        ];
+        
+        #[derive(Debug, Serialize, Deserialize)]
+        #[serde(transparent)]
+        struct BufferWrap(Buffer<u32>);
+        
+        impl PartialEq for BufferWrap {
+            fn eq(&self, other: &Self) -> bool {
+                self.0.as_host_slice().unwrap() == other.0.as_host_slice().unwrap()
+            }
+        }
+        
+        impl Eq for BufferWrap {}
+        assert_tokens(&BufferWrap(buffer), &tokens);
+    }
 }

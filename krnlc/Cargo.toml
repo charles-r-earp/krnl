@@ -35,6 +35,7 @@ rayon = "1.7.0"
 flate2 = "1.0.25"
 hex = "0.4.3"
 fxhash = "0.2.1"
+semver = "1.0.17"
 
 
 [features]

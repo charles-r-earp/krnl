@@ -10,6 +10,7 @@ use proc_macro::TokenStream;
 use proc_macro2::{Span as Span2, TokenStream as TokenStream2};
 use quote::{format_ident, quote, ToTokens};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use semver::{Version, VersionReq};
 use std::{hash::Hash, str::FromStr};
 use syn::{
     parse::{Parse, ParseStream},
@@ -1667,7 +1668,7 @@ pub fn __krnl_module(input: TokenStream) -> TokenStream {
     let krnlc_version: String =
         bincode2::deserialize_from(GzDecoder::new(&*cache_bytes)).expect("Expected krnlc version!");
     let mut error = None;
-    if krnlc_version != version {
+    if !krnlc_version_compatible(&krnlc_version, version) {
         error.replace(format!(
             "Cached krnlc version {krnlc_version} is not compatible!"
         ));
@@ -1738,4 +1739,40 @@ struct KrnlcCache {
     #[allow(unused)]
     version: String,
     modules: Vec<(String, Vec<(String, KernelDesc)>)>,
+}
+
+fn krnlc_version_compatible(krnlc_version: &str, version: &str) -> bool {
+    let krnlc_version = Version::parse(krnlc_version).unwrap();
+    let (version, req) = (
+        Version::parse(version).unwrap(),
+        VersionReq::parse(version).unwrap(),
+    );
+    if !req.matches(&krnlc_version) {
+        return false;
+    }
+    if !krnlc_version.pre.is_empty() && krnlc_version < version {
+        return false;
+    }
+    if !version.pre.is_empty() && version != krnlc_version {
+        return false;
+    }
+    true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    
+    #[test]
+    fn krnlc_version_semver() {
+        assert!(krnlc_version_compatible("0.0.1", "0.0.1"));
+        assert!(!krnlc_version_compatible("0.0.1", "0.0.2"));
+        assert!(!krnlc_version_compatible("0.0.2", "0.0.1"));
+        assert!(!krnlc_version_compatible("0.0.2-alpha", "0.0.2"));
+        assert!(!krnlc_version_compatible("0.0.2", "0.0.2-alpha"));
+        assert!(!krnlc_version_compatible("0.0.2", "0.1.0"));
+        assert!(!krnlc_version_compatible("0.1.1-alpha", "0.1.0"));
+        assert!(krnlc_version_compatible("0.1.1", "0.1.0"));
+        assert!(!krnlc_version_compatible("0.1.1", "0.2.0"));
+    }
 }

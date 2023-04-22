@@ -73,6 +73,7 @@ flate2.workspace = true
 dashmap = { version = "5.3.4", optional = true }
 rspirv = { workspace = true, optional = true }
 fxhash = { workspace = true, optional = true }
+serde_bytes = "0.11.9"
 
 
 #[target."cfg(any(target_os = \"ios\", target_os = \"macos\"))".dependencies]
@@ -100,6 +101,9 @@ paste = {}
 name = "integration_tests"
 path = "tests/integration_tests.rs"
 harness = false
+
+[dev-dependencies]
+serde_test = "1.0.160"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 libtest-mimic = "0.6.0"

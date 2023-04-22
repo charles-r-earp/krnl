@@ -149,7 +149,6 @@ trait DeviceEngine {
     fn id(&self) -> DeviceId;
     fn info(&self) -> &Arc<DeviceInfo>;
     fn wait(&self) -> Result<(), DeviceLost>;
-    //fn performance_metrics(&self) -> PerformanceMetrics;
 }
 
 #[cfg(feature = "device")]
@@ -270,6 +269,13 @@ impl Device {
             #[cfg(feature = "device")]
             DeviceInner::Device(raw) => raw.wait(),
         }
+    }
+}
+
+/// See [`Device::host()`].
+impl Default for Device {
+    fn default() -> Self {
+        Self::host()
     }
 }
 
@@ -545,63 +551,6 @@ impl DeviceInfo {
         self.features
     }
 }
-
-/*
-#[derive(Clone, Copy, Debug)]
-struct TransferMetrics {
-    bytes: usize,
-    time: Duration,
-}
-
-#[derive(Clone, Copy, Debug)]
-struct KernelMetrics {
-    dispatches: usize,
-    time: Duration,
-}
-
-#[derive(Clone, Debug)]
-pub struct PerformanceMetrics {
-    upload: TransferMetrics,
-    download: TransferMetrics,
-    kernels: HashMap<String, KernelMetrics>,
-}*/
-
-/*
-#[derive(Default, Clone)]
-struct KernelKey {
-    inner: Arc<()>,
-    spec_consts: Vec<ScalarElem>,
-}
-
-impl PartialEq for KernelKey {
-    fn eq(&self, other: &Self) -> bool {
-        Arc::ptr_eq(&self.inner, &other.inner) && self.spec_consts == other.spec_consts
-    }
-}
-
-impl Eq for KernelKey {}
-
-impl Hash for KernelKey {
-    fn hash<H: Hasher>(&self, hasher: &mut H) {
-        (Arc::as_ptr(&self.inner) as usize).hash(hasher);
-        for spec in self.spec_consts.iter().copied() {
-            use ScalarElem::*;
-            match spec {
-                U8(x) => x.hash(hasher),
-                I8(x) => x.hash(hasher),
-                U16(x) => x.hash(hasher),
-                I16(x) => x.hash(hasher),
-                F16(x) => x.to_bits().hash(hasher),
-                BF16(x) => x.to_bits().hash(hasher),
-                U32(x) => x.hash(hasher),
-                I32(x) => x.hash(hasher),
-                F32(x) => x.to_bits().hash(hasher),
-                F64(x) => x.to_bits().hash(hasher),
-                _ => unreachable!(),
-            }
-        }
-    }
-}*/
 
 #[cfg(feature = "device")]
 #[derive(Clone)]

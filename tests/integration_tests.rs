@@ -21,9 +21,7 @@ fn main() {}
 
 #[cfg(not(target_arch = "wasm32"))]
 fn main() {
-    let mut args = Arguments::from_args();
-    //args.test_threads.replace(2);
-    //dbg!(args.test_threads);
+    let args = Arguments::from_args();
     let tests = if cfg!(feature = "device") && !cfg!(miri) {
         let devices: Vec<_> = [Device::builder().build().unwrap()]
             .into_iter()
@@ -87,6 +85,7 @@ fn buffer_tests(device: &Device, device2: Option<&Device>) -> impl IntoIterator<
     tests.push(device_test(device, "buffer_from_vec", buffer_from_vec));
 
     if device.is_device() {
+        #[cfg(feature = "device")]
         tests.push(Trial::test("device_buffer_too_large", {
             let device = device.clone();
             move || {
