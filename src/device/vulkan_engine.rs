@@ -142,6 +142,7 @@ impl DeviceEngine for Engine {
             .intersection(&optimal_device_extensions);
         let optimal_device_features = vulkano::device::Features {
             vulkan_memory_model: true,
+            descriptor_buffer_push_descriptors: true,
             shader_int8: optimal_features.shader_int8,
             shader_int16: optimal_features.shader_int16,
             shader_int64: optimal_features.shader_int64,
@@ -385,7 +386,7 @@ impl Worker {
                 ..Default::default()
             },
         )?;
-        let descriptor_pool = if compute {
+        let descriptor_pool = if compute && !device.enabled_features().descriptor_buffer_push_descriptors {
             Some(DescriptorPool::new(
                 device.clone(),
                 DescriptorPoolCreateInfo {
@@ -506,7 +507,6 @@ impl Worker {
                             groups,
                             submit,
                         } => {
-                            let descriptor_pool = descriptor_pool.as_ref().unwrap();
                             unsafe {
                                 builder.bind_pipeline_compute(&compute_pipeline);
                             }
@@ -514,35 +514,41 @@ impl Worker {
                             if !buffers.is_empty() {
                                 let descriptor_set_layout =
                                     pipeline_layout.set_layouts().first().unwrap();
-                                // TODO Push descriptor
-                                let mut descriptor_set = unsafe {
-                                    descriptor_pool
-                                        .allocate_descriptor_sets([DescriptorSetAllocateInfo {
-                                            layout: descriptor_set_layout,
-                                            variable_descriptor_count: 0,
-                                        }])
-                                        .unwrap()
-                                        .next()
-                                        .unwrap()
-                                };
-                                #[allow(clippy::map_clone)]
-                                let buffer_iter = buffers
-                                    .iter()
-                                    .cloned();
-                                unsafe {
-                                    descriptor_set.write(
-                                        descriptor_set_layout,
-                                        &[WriteDescriptorSet::buffer_array(0, 0, buffer_iter)],
-                                    );
-                                }
-                                unsafe {
-                                    builder.bind_descriptor_sets(
-                                        PipelineBindPoint::Compute,
-                                        pipeline_layout,
-                                        0,
-                                        &[descriptor_set],
-                                        [],
-                                    );
+                                let write_descriptor_set = WriteDescriptorSet::buffer_array(0, 0, buffers.iter().cloned());
+                                if descriptor_set_layout.push_descriptor() {
+                                    unsafe {
+                                        builder.push_descriptor_set(PipelineBindPoint::Compute,
+                                            pipeline_layout,
+                                            0,
+                                            &[write_descriptor_set]);
+                                    }
+                                } else {
+                                    let descriptor_pool = descriptor_pool.as_ref().unwrap();
+                                    let mut descriptor_set = unsafe {
+                                        descriptor_pool
+                                            .allocate_descriptor_sets([DescriptorSetAllocateInfo {
+                                                layout: descriptor_set_layout,
+                                                variable_descriptor_count: 0,
+                                            }])
+                                            .unwrap()
+                                            .next()
+                                            .unwrap()
+                                    };
+                                    unsafe {
+                                        descriptor_set.write(
+                                            descriptor_set_layout,
+                                            [&write_descriptor_set],
+                                        );
+                                    }
+                                    unsafe {
+                                        builder.bind_descriptor_sets(
+                                            PipelineBindPoint::Compute,
+                                            pipeline_layout,
+                                            0,
+                                            &[descriptor_set],
+                                            [],
+                                        );
+                                    }
                                 }
                             }
                             if !push_consts.is_empty() {
@@ -572,8 +578,10 @@ impl Worker {
                             }
                             fence.wait(None).unwrap();
                             state.finish();
-                            unsafe {
-                                descriptor_pool.reset().unwrap();
+                            if let Some(descriptor_pool) = descriptor_pool.as_ref() {
+                                unsafe {
+                                    descriptor_pool.reset().unwrap();
+                                }
                             }
                         }
                     }
@@ -1089,6 +1097,7 @@ impl KernelInner {
             .collect();
         let descriptor_set_layout_create_info = DescriptorSetLayoutCreateInfo {
             bindings,
+            push_descriptor: device.enabled_features().descriptor_buffer_push_descriptors,
             ..DescriptorSetLayoutCreateInfo::default()
         };
         let descriptor_set_layout =
