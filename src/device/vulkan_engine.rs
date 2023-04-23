@@ -19,13 +19,7 @@ use std::{
     time::{Duration, Instant},
 };
 use vulkano::{
-    DeviceSize,
-    buffer::{
-        BufferError,
-        Buffer,
-        Subbuffer, BufferUsage,
-        BufferCreateInfo,
-    },
+    buffer::{Buffer, BufferCreateInfo, BufferError, BufferUsage, Subbuffer},
     command_buffer::{
         pool::{CommandBufferAllocateInfo, CommandPool, CommandPoolCreateInfo},
         sys::{CommandBufferBeginInfo, UnsafeCommandBuffer, UnsafeCommandBufferBuilder},
@@ -36,16 +30,23 @@ use vulkano::{
         pool::{DescriptorPool, DescriptorPoolCreateInfo, DescriptorSetAllocateInfo},
         WriteDescriptorSet,
     },
-    device::{Device, DeviceCreateInfo, DeviceOwned, Queue, QueueFlags, QueueCreateInfo},
+    device::{Device, DeviceCreateInfo, DeviceOwned, Queue, QueueCreateInfo, QueueFlags},
     instance::{Instance, InstanceCreateInfo, Version},
     library::{LoadingError, VulkanLibrary},
-    memory::allocator::{GenericMemoryAllocatorCreateInfo, StandardMemoryAllocator, AllocationCreateInfo, MemoryUsage},
+    memory::allocator::{
+        AllocationCreateInfo, GenericMemoryAllocatorCreateInfo, MemoryUsage,
+        StandardMemoryAllocator,
+    },
     pipeline::{ComputePipeline, Pipeline, PipelineBindPoint},
     shader::{
-        DescriptorRequirements, ShaderExecution, ShaderInterface, ShaderModule, ShaderStages, DescriptorBindingRequirements,
+        DescriptorBindingRequirements, DescriptorRequirements, ShaderExecution, ShaderInterface,
+        ShaderModule, ShaderStages,
     },
-    sync::{Sharing, fence::{Fence, FenceCreateInfo}},
-    VulkanObject,
+    sync::{
+        fence::{Fence, FenceCreateInfo},
+        Sharing,
+    },
+    DeviceSize, VulkanObject,
 };
 
 /*#[cfg(any(target_os = "ios", target_os = "macos"))]
@@ -135,6 +136,7 @@ impl DeviceEngine for Engine {
         let name = physical_device.properties().device_name.clone();
         let optimal_device_extensions = vulkano::device::DeviceExtensions {
             khr_vulkan_memory_model: true,
+            khr_push_descriptor: true,
             ..vulkano::device::DeviceExtensions::empty()
         };
         let device_extensions = physical_device
@@ -174,7 +176,9 @@ impl DeviceEngine for Engine {
             .iter()
             .position(|x| {
                 let flags = x.queue_flags;
-                flags.contains(QueueFlags::TRANSFER) && !flags.contains(QueueFlags::COMPUTE) && !flags.contains(QueueFlags::GRAPHICS)
+                flags.contains(QueueFlags::TRANSFER)
+                    && !flags.contains(QueueFlags::COMPUTE)
+                    && !flags.contains(QueueFlags::GRAPHICS)
             })
             .map(|x| x as u32);
         if transfer_family.is_none() {
@@ -296,19 +300,6 @@ unsafe impl DeviceOwned for HostBuffer {
     }
 }
 
-/*
-unsafe impl BufferAccess for HostBuffer {
-    fn inner(&self) -> BufferInner {
-        BufferInner {
-            buffer: &self.inner,
-            offset: 0,
-        }
-    }
-    fn size(&self) -> vulkano::DeviceSize {
-        self.inner.size()
-    }
-}*/
-
 #[derive(Default, Clone, Debug)]
 struct WorkerState {
     pending: Arc<AtomicUsize>,
@@ -359,9 +350,8 @@ impl Worker {
         let device = queue.device();
         let host_buffer = if let Some(memory_allocator) = memory_allocator {
             let buffer_info = BufferCreateInfo {
-                //size: DeviceBuffer::HOST_BUFFER_SIZE.try_into().unwrap(),
                 usage: BufferUsage::TRANSFER_SRC | BufferUsage::TRANSFER_DST,
-                .. Default::default()
+                ..Default::default()
             };
             let allocation_info = AllocationCreateInfo {
                 usage: MemoryUsage::Download,
@@ -386,18 +376,19 @@ impl Worker {
                 ..Default::default()
             },
         )?;
-        let descriptor_pool = if compute && !device.enabled_features().descriptor_buffer_push_descriptors {
-            Some(DescriptorPool::new(
-                device.clone(),
-                DescriptorPoolCreateInfo {
-                    max_sets: 1,
-                    pool_sizes: [(DescriptorType::StorageBuffer, 8)].into_iter().collect(),
-                    ..Default::default()
-                },
-            )?)
-        } else {
-            None
-        };
+        let descriptor_pool =
+            if compute && !device.enabled_features().descriptor_buffer_push_descriptors {
+                Some(DescriptorPool::new(
+                    device.clone(),
+                    DescriptorPoolCreateInfo {
+                        max_sets: 1,
+                        pool_sizes: [(DescriptorType::StorageBuffer, 8)].into_iter().collect(),
+                        ..Default::default()
+                    },
+                )?)
+            } else {
+                None
+            };
         let fence = Fence::new(
             device.clone(),
             FenceCreateInfo {
@@ -514,13 +505,16 @@ impl Worker {
                             if !buffers.is_empty() {
                                 let descriptor_set_layout =
                                     pipeline_layout.set_layouts().first().unwrap();
-                                let write_descriptor_set = WriteDescriptorSet::buffer_array(0, 0, buffers.iter().cloned());
+                                let write_descriptor_set =
+                                    WriteDescriptorSet::buffer_array(0, 0, buffers.iter().cloned());
                                 if descriptor_set_layout.push_descriptor() {
                                     unsafe {
-                                        builder.push_descriptor_set(PipelineBindPoint::Compute,
+                                        builder.push_descriptor_set(
+                                            PipelineBindPoint::Compute,
                                             pipeline_layout,
                                             0,
-                                            &[write_descriptor_set]);
+                                            &[write_descriptor_set],
+                                        );
                                     }
                                 } else {
                                     let descriptor_pool = descriptor_pool.as_ref().unwrap();
@@ -535,10 +529,8 @@ impl Worker {
                                             .unwrap()
                                     };
                                     unsafe {
-                                        descriptor_set.write(
-                                            descriptor_set_layout,
-                                            [&write_descriptor_set],
-                                        );
+                                        descriptor_set
+                                            .write(descriptor_set_layout, [&write_descriptor_set]);
                                     }
                                     unsafe {
                                         builder.bind_descriptor_sets(
@@ -740,16 +732,21 @@ impl DeviceEngineBuffer for DeviceBuffer {
         use vulkano::{memory::allocator::AllocationCreationError, VulkanError};
         let inner = if len > 0 {
             let len = aligned_ceil(len, Self::ALIGN);
-            let usage = BufferUsage::STORAGE_BUFFER | BufferUsage::TRANSFER_DST | BufferUsage::TRANSFER_SRC;
+            let sharing = if engine.compute_families.len() >= 2 {
+                Sharing::Concurrent(engine.compute_families.iter().copied().collect())
+            } else {
+                Sharing::Exclusive
+            };
+            let usage =
+                BufferUsage::STORAGE_BUFFER | BufferUsage::TRANSFER_DST | BufferUsage::TRANSFER_SRC;
             let buffer_info = BufferCreateInfo {
-                sharing: Sharing::Concurrent(engine.compute_families.iter().copied().collect()),
-                //size: len.try_into().unwrap(),
+                sharing,
                 usage,
-                .. Default::default()
+                ..Default::default()
             };
             let allocation_info = AllocationCreateInfo {
                 usage: MemoryUsage::DeviceOnly,
-                .. Default::default()
+                ..Default::default()
             };
             match Buffer::new_slice(
                 &engine.memory_allocator,
@@ -758,9 +755,11 @@ impl DeviceEngineBuffer for DeviceBuffer {
                 len.try_into().unwrap(),
             ) {
                 Ok(inner) => Some(inner),
-                Err(e @ BufferError::AllocError(AllocationCreationError::VulkanError(VulkanError::OutOfDeviceMemory))) => {
-                    return Err(Error::new(OutOfDeviceMemory(engine.id())).context(e))
-                }
+                Err(
+                    e @ BufferError::AllocError(AllocationCreationError::VulkanError(
+                        VulkanError::OutOfDeviceMemory,
+                    )),
+                ) => return Err(Error::new(OutOfDeviceMemory(engine.id())).context(e)),
                 Err(e) => {
                     return Err(e.into());
                 }
@@ -792,8 +791,10 @@ impl DeviceEngineBuffer for DeviceBuffer {
                     .zip(workers.into_iter().cycle())
                 {
                     let src = worker.host_buffer.as_ref().unwrap();
-                    let dst = buffer.clone()
-                        .slice(DeviceSize::try_from(offset).unwrap()..DeviceSize::try_from(offset + data.len()).unwrap());
+                    let dst = buffer.clone().slice(
+                        DeviceSize::try_from(offset).unwrap()
+                            ..DeviceSize::try_from(offset + data.len()).unwrap(),
+                    );
                     let submit = Arc::new(AtomicBool::default());
                     let op = Op::Upload {
                         dst,
@@ -818,7 +819,10 @@ impl DeviceEngineBuffer for DeviceBuffer {
             let prev_future = self.future.read();
             if self.host_visible() {
                 engine.wait_for_future(&prev_future)?;
-                let buffer = buffer.clone().slice(DeviceSize::try_from(self.offset).unwrap() .. DeviceSize::try_from(self.offset + self.len).unwrap());
+                let buffer = buffer.clone().slice(
+                    DeviceSize::try_from(self.offset).unwrap()
+                        ..DeviceSize::try_from(self.offset + self.len).unwrap(),
+                );
                 let mapped = buffer.read()?;
                 data.copy_from_slice(&mapped);
                 return Ok(());
@@ -846,8 +850,10 @@ impl DeviceEngineBuffer for DeviceBuffer {
                 .chunks_mut(Self::HOST_BUFFER_SIZE)
                 .zip(workers.into_iter().cycle())
             {
-                let src = buffer.clone()
-                    .slice(DeviceSize::try_from(offset).unwrap() .. DeviceSize::try_from(offset + data.len()).unwrap());
+                let src = buffer.clone().slice(
+                    DeviceSize::try_from(offset).unwrap()
+                        ..DeviceSize::try_from(offset + data.len()).unwrap(),
+                );
                 offset += data.len();
                 let submit = Arc::new(AtomicBool::default());
                 let op = Op::Download {
@@ -882,10 +888,16 @@ impl DeviceEngineBuffer for DeviceBuffer {
         let prev_future = self.future.read();
         if self.host_visible() {
             engine1.wait_for_future(&prev_future)?;
-            let buffer1 = buffer1.clone().slice(DeviceSize::try_from(self.offset).unwrap() .. DeviceSize::try_from(self.offset + self.len()).unwrap());
+            let buffer1 = buffer1.clone().slice(
+                DeviceSize::try_from(self.offset).unwrap()
+                    ..DeviceSize::try_from(self.offset + self.len()).unwrap(),
+            );
             let mapped1 = buffer1.read()?;
             if dst.host_visible() {
-                let buffer2 = buffer2.clone().slice(DeviceSize::try_from(dst.offset).unwrap() .. DeviceSize::try_from(dst.offset + dst.len()).unwrap());
+                let buffer2 = buffer2.clone().slice(
+                    DeviceSize::try_from(dst.offset).unwrap()
+                        ..DeviceSize::try_from(dst.offset + dst.len()).unwrap(),
+                );
                 let mut mapped2 = buffer2.write()?;
                 mapped2.copy_from_slice(&mapped1[..output.len()]);
             } else {
@@ -893,7 +905,10 @@ impl DeviceEngineBuffer for DeviceBuffer {
             }
             return Ok(());
         } else if output.host_visible() {
-            let buffer2 = buffer2.clone().slice(DeviceSize::try_from(dst.offset).unwrap() .. DeviceSize::try_from(dst.offset + dst.len()).unwrap());
+            let buffer2 = buffer2.clone().slice(
+                DeviceSize::try_from(dst.offset).unwrap()
+                    ..DeviceSize::try_from(dst.offset + dst.len()).unwrap(),
+            );
             let mut mapped2 = buffer2.write()?;
             self.download(&mut mapped2)?;
             return Ok(());
@@ -945,10 +960,14 @@ impl DeviceEngineBuffer for DeviceBuffer {
                 .checked_sub(offset2)
                 .unwrap()
                 .min(Self::HOST_BUFFER_SIZE);
-            let src = buffer1.clone()
-                .slice(DeviceSize::try_from(offset1).unwrap() .. DeviceSize::try_from(offset1 + chunk_size).unwrap());
-            let dst = buffer2.clone()
-                .slice(DeviceSize::try_from(offset2).unwrap() .. DeviceSize::try_from(offset2 + chunk_size).unwrap());
+            let src = buffer1.clone().slice(
+                DeviceSize::try_from(offset1).unwrap()
+                    ..DeviceSize::try_from(offset1 + chunk_size).unwrap(),
+            );
+            let dst = buffer2.clone().slice(
+                DeviceSize::try_from(offset2).unwrap()
+                    ..DeviceSize::try_from(offset2 + chunk_size).unwrap(),
+            );
             offset1 += chunk_size;
             offset2 += chunk_size;
             let submit = Arc::new(AtomicBool::default());
@@ -1035,7 +1054,11 @@ impl KernelInner {
             .map(|(i, desc)| {
                 let set = 0;
                 let binding = i.try_into().unwrap();
-                let memory_write = if desc.mutable { ShaderStages::COMPUTE } else { ShaderStages::empty() };
+                let memory_write = if desc.mutable {
+                    ShaderStages::COMPUTE
+                } else {
+                    ShaderStages::empty()
+                };
                 let descriptors = DescriptorRequirements {
                     memory_read: ShaderStages::COMPUTE,
                     memory_write,
@@ -1046,7 +1069,7 @@ impl KernelInner {
                     descriptor_count: Some(1),
                     stages: ShaderStages::COMPUTE,
                     descriptors: [(Some(0), descriptors)].into_iter().collect(),
-                    .. Default::default()
+                    ..Default::default()
                 };
                 ((set, binding), descriptor_binding_requirements)
             })
