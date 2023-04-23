@@ -41,6 +41,8 @@ use crate::{
     device::{Device, DeviceInner},
     scalar::{Scalar, ScalarElem, ScalarType},
 };
+#[cfg(doc)]
+use crate::device::error::DeviceLost;
 use anyhow::{bail, Result};
 use bytemuck::PodCastError;
 use dry::{macro_for, macro_wrap};
@@ -90,6 +92,8 @@ pub mod error {
         }
     }
 }
+#[cfg(doc)]
+use error::{OutOfDeviceMemory, DeviceBufferTooLarge};
 
 #[derive(Copy, Clone)]
 struct RawHostSlice {
@@ -733,8 +737,9 @@ impl<S: ScalarDataOwned> ScalarBufferBase<S> {
     /// The buffer will not be initialized.
     ///
     /// **errors**
-    /// - DeviceLost
-    /// - OutOfDeviceMemory
+    /// - [`DeviceLost`]
+    /// - [`DeviceBufferTooLarge`]
+    /// - [`OutOfDeviceMemory`]
     ///
     /// See [`ScalarBufferBase::zeros()`] for a safe alternative.
     pub unsafe fn uninit(device: Device, len: usize, scalar_type: ScalarType) -> Result<Self> {
@@ -750,8 +755,9 @@ impl<S: ScalarDataOwned> ScalarBufferBase<S> {
     /** Create a scalar buffer filled with `elem'.
 
     **errors**
-    - DeviceLost
-    - OutOfDeviceMemory
+    - [`DeviceLost`]
+    - [`DeviceBufferTooLarge`]
+    - [`OutOfDeviceMemory`]
     - Could not dispatch the kernel.
         - This may require [`Features`](crate::device::Features) for the type.
 
@@ -826,8 +832,8 @@ impl<S: ScalarData> ScalarBufferBase<S> {
 
     **errors**
 
-    - DeviceLost
-    - OutOfDeviceMemory
+    - [`DeviceLost`]
+    - [`OutOfDeviceMemory`]
     - Could not dispatch the kernel. */
     pub fn to_owned(&self) -> Result<ScalarBuffer> {
         self.cast(self.scalar_type())
@@ -1895,6 +1901,12 @@ impl<T: Scalar, S: DataOwned<Elem = T>> BufferBase<S> {
     /// # Safety
     /// The buffer will not be initialized.
     ///
+    /// **errors**
+    ///
+    /// - [`DeviceLost`]
+    /// - [`DeviceBufferTooLarge`]
+    /// - [`OutOfDeviceMemory`]
+    /// 
     /// See [`zeros()`](Buffer::zeros) for a safe alternative.
     pub unsafe fn uninit(device: Device, len: usize) -> Result<Self> {
         let data = S::from_buffer(unsafe { BufferRepr::uninit(device, len)? });
@@ -1903,8 +1915,9 @@ impl<T: Scalar, S: DataOwned<Elem = T>> BufferBase<S> {
     /** Create a buffer filled with `elem'
 
     **errors**
-    - DeviceLost
-    - OutOfDeviceMemory
+    - [`DeviceLost`]
+    - [`DeviceBufferTooLarge`]
+    - [`OutOfDeviceMemory`]
 
     See [`.fill()`](BufferBase::fill).
     */
@@ -2026,8 +2039,8 @@ impl<T: Scalar, S: Data<Elem = T>> BufferBase<S> {
 
     **errors**
 
-    - DeviceLost
-    - OutOfDeviceMemory
+    - [`DeviceLost`]
+    - [`OutOfDeviceMemory`]
     - Could not dispatch the kernel. */
     pub fn to_owned(&self) -> Result<Buffer<T>> {
         self.cast()
@@ -2073,8 +2086,8 @@ impl<T: Scalar, S: Data<Elem = T>> BufferBase<S> {
 
     **errors**
 
-    - DeviceLost
-    - OutOfDeviceMemory
+    - [`DeviceLost`]
+    - [`OutOfDeviceMemory`]
     - Could not dispatch the kernel. */
     pub fn to_device(&self, device: Device) -> Result<Buffer<T>> {
         let data = self.data.as_slice().to_device(device)?;
@@ -2122,9 +2135,8 @@ impl<T: Scalar, S: Data<Elem = T>> BufferBase<S> {
     /** Fills with `elem`.
 
     **errors**
-    - DeviceLost
+    - [`DeviceLost`]
     - The kernel could not be dispatched.
-    - Could not dispatch the kernel.
         - This may require [`Features`](crate::device::Features) for the type. */
     pub fn fill(&mut self, elem: T) -> Result<()>
     where
@@ -2190,7 +2202,6 @@ impl<T: Scalar, S: Data<Elem = T>> BufferBase<S> {
     **errors**
     - DeviceLost
     - The kernel could not be dispatched.
-    - Could not dispatch the kernel.
         - This may require [`Features`](crate::device::Features) for the type. */
     pub fn cast<Y: Scalar>(&self) -> Result<Buffer<Y>> {
         let mut output = unsafe { Buffer::uninit(self.device(), self.len())? };
@@ -2240,7 +2251,7 @@ impl<T: Scalar, S: Data<Elem = T>> BufferBase<S> {
 
     **errors**
     - `src` is not the same length.
-    - DeviceLost
+    - [`DeviceLost`]
     - The kernel could not be dispatched.
     */
     pub fn copy_from_slice(&mut self, src: &Slice<T>) -> Result<()>
