@@ -94,8 +94,6 @@ fn main() -> Result<()> {
 ## Compute
 ![Saxpy](benches/compute-benches/charts/nv_gtx1060/saxpy.svg)
 
-
-
 # Recent Changes 
 See [Releases.md](https://github.com/charles-r-earp/krnl/blob/main/Releases.md)
 
