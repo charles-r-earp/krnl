@@ -23,6 +23,7 @@ macro_rules! toolchain_check {
 
 toolchain_check!(
     "krnlc requires nightly-2023-03-04, install with rustup:
+rustup toolchain install nightly-2023-03-04
 rustup component add --toolchain nightly-2023-03-04 rust-src rustc-dev llvm-tools-preview"
 );
 
