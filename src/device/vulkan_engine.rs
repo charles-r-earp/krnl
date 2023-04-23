@@ -19,9 +19,12 @@ use std::{
     time::{Duration, Instant},
 };
 use vulkano::{
+    DeviceSize,
     buffer::{
-        sys::Buffer, BufferAccess, BufferInner, BufferSlice, BufferUsage, CpuAccessibleBuffer,
-        DeviceLocalBuffer,
+        BufferError,
+        Buffer,
+        Subbuffer, BufferUsage,
+        BufferCreateInfo,
     },
     command_buffer::{
         pool::{CommandBufferAllocateInfo, CommandPool, CommandPoolCreateInfo},
@@ -33,15 +36,15 @@ use vulkano::{
         pool::{DescriptorPool, DescriptorPoolCreateInfo, DescriptorSetAllocateInfo},
         WriteDescriptorSet,
     },
-    device::{Device, DeviceCreateInfo, DeviceOwned, Queue, QueueCreateInfo},
+    device::{Device, DeviceCreateInfo, DeviceOwned, Queue, QueueFlags, QueueCreateInfo},
     instance::{Instance, InstanceCreateInfo, Version},
     library::{LoadingError, VulkanLibrary},
-    memory::allocator::{GenericMemoryAllocatorCreateInfo, StandardMemoryAllocator},
+    memory::allocator::{GenericMemoryAllocatorCreateInfo, StandardMemoryAllocator, AllocationCreateInfo, MemoryUsage},
     pipeline::{ComputePipeline, Pipeline, PipelineBindPoint},
     shader::{
-        DescriptorRequirements, ShaderExecution, ShaderInterface, ShaderModule, ShaderStages,
+        DescriptorRequirements, ShaderExecution, ShaderInterface, ShaderModule, ShaderStages, DescriptorBindingRequirements,
     },
-    sync::Fence,
+    sync::{Sharing, fence::{Fence, FenceCreateInfo}},
     VulkanObject,
 };
 
@@ -160,17 +163,17 @@ impl DeviceEngine for Engine {
             .queue_family_properties()
             .iter()
             .enumerate()
-            .filter(|(_, x)| x.queue_flags.compute)
+            .filter(|(_, x)| x.queue_flags.contains(QueueFlags::COMPUTE))
             .map(|(i, x)| (i as u32, x.queue_flags))
             .collect();
-        compute_families.sort_by_key(|(_, flags)| flags.graphics);
+        compute_families.sort_by_key(|(_, flags)| flags.contains(QueueFlags::GRAPHICS));
         let mut compute_families: Vec<u32> = compute_families.iter().map(|(i, _)| *i).collect();
         let transfer_family = physical_device
             .queue_family_properties()
             .iter()
             .position(|x| {
                 let flags = x.queue_flags;
-                flags.transfer && !flags.compute && !flags.graphics
+                flags.contains(QueueFlags::TRANSFER) && !flags.contains(QueueFlags::COMPUTE) && !flags.contains(QueueFlags::GRAPHICS)
             })
             .map(|x| x as u32);
         if transfer_family.is_none() {
@@ -292,6 +295,7 @@ unsafe impl DeviceOwned for HostBuffer {
     }
 }
 
+/*
 unsafe impl BufferAccess for HostBuffer {
     fn inner(&self) -> BufferInner {
         BufferInner {
@@ -302,7 +306,7 @@ unsafe impl BufferAccess for HostBuffer {
     fn size(&self) -> vulkano::DeviceSize {
         self.inner.size()
     }
-}
+}*/
 
 #[derive(Default, Clone, Debug)]
 struct WorkerState {
@@ -340,7 +344,7 @@ struct Worker {
     op_slot: Arc<AtomicOptionBox<Op>>,
     ready: Arc<AtomicBool>,
     state: WorkerState,
-    host_buffer: Option<Arc<CpuAccessibleBuffer<[u8]>>>,
+    host_buffer: Option<Subbuffer<[u8]>>,
     thread: Thread,
 }
 
@@ -353,14 +357,19 @@ impl Worker {
     ) -> Result<Self> {
         let device = queue.device();
         let host_buffer = if let Some(memory_allocator) = memory_allocator {
-            let buffer = CpuAccessibleBuffer::from_iter(
+            let buffer_info = BufferCreateInfo {
+                //size: DeviceBuffer::HOST_BUFFER_SIZE.try_into().unwrap(),
+                usage: BufferUsage::TRANSFER_SRC | BufferUsage::TRANSFER_DST,
+                .. Default::default()
+            };
+            let allocation_info = AllocationCreateInfo {
+                usage: MemoryUsage::Download,
+                ..Default::default()
+            };
+            let buffer = Buffer::from_iter(
                 memory_allocator,
-                BufferUsage {
-                    transfer_src: true,
-                    transfer_dst: true,
-                    ..Default::default()
-                },
-                true,
+                buffer_info,
+                allocation_info,
                 (0..DeviceBuffer::HOST_BUFFER_SIZE).map(|_| 0u8),
             )?;
             Some(buffer)
@@ -390,7 +399,7 @@ impl Worker {
         };
         let fence = Fence::new(
             device.clone(),
-            vulkano::sync::FenceCreateInfo {
+            FenceCreateInfo {
                 signaled: true,
                 ..Default::default()
             },
@@ -519,7 +528,7 @@ impl Worker {
                                 #[allow(clippy::map_clone)]
                                 let buffer_iter = buffers
                                     .iter()
-                                    .map(|x| -> Arc<dyn BufferAccess> { x.clone() });
+                                    .cloned();
                                 unsafe {
                                     descriptor_set.write(
                                         descriptor_set_layout,
@@ -540,7 +549,7 @@ impl Worker {
                                 unsafe {
                                     builder.push_constants(
                                         pipeline_layout,
-                                        ShaderStages::compute(),
+                                        ShaderStages::COMPUTE,
                                         0,
                                         push_consts.len() as u32,
                                         push_consts.as_slice(),
@@ -643,17 +652,17 @@ impl Drop for WorkerDropGuard {
 
 enum Op {
     Upload {
-        dst: Arc<BufferSlice<[u8], DeviceLocalBuffer<[u8]>>>,
+        dst: Subbuffer<[u8]>,
         submit: Arc<AtomicBool>,
     },
     Download {
-        src: Arc<BufferSlice<[u8], DeviceLocalBuffer<[u8]>>>,
+        src: Subbuffer<[u8]>,
         submit: Arc<AtomicBool>,
     },
     Compute {
         compute_pipeline: Arc<ComputePipeline>,
         #[allow(clippy::type_complexity)]
-        buffers: Vec<Arc<BufferSlice<[u8], DeviceLocalBuffer<[u8]>>>>,
+        buffers: Vec<Subbuffer<[u8]>>,
         push_consts: Vec<u8>,
         groups: [u32; 3],
         submit: Arc<AtomicBool>,
@@ -693,7 +702,7 @@ impl Deref for WorkerFutureGuard<'_> {
 
 #[derive(Clone)]
 pub(super) struct DeviceBuffer {
-    inner: Option<Arc<DeviceLocalBuffer<[u8]>>>,
+    inner: Option<Subbuffer<[u8]>>,
     engine: Arc<Engine>,
     offset: usize,
     len: usize,
@@ -706,13 +715,11 @@ impl DeviceBuffer {
     const ALIGN: usize = 256;
     const HOST_BUFFER_SIZE: usize = 32_000_000;
     fn host_visible(&self) -> bool {
-        use vulkano::buffer::sys::BufferMemory;
         if let Some(inner) = self.inner.as_ref() {
-            if let BufferMemory::Normal(memory_alloc) = inner.inner().buffer.memory() {
-                return memory_alloc.mapped_ptr().is_some();
-            }
+            inner.mapped_ptr().is_some()
+        } else {
+            false
         }
-        false
     }
 }
 
@@ -725,20 +732,25 @@ impl DeviceEngineBuffer for DeviceBuffer {
         use vulkano::{memory::allocator::AllocationCreationError, VulkanError};
         let inner = if len > 0 {
             let len = aligned_ceil(len, Self::ALIGN);
-            let usage = BufferUsage {
-                storage_buffer: true,
-                transfer_dst: true,
-                transfer_src: true,
-                ..Default::default()
-            };
-            match DeviceLocalBuffer::array(
-                &engine.memory_allocator,
-                len as _,
+            let usage = BufferUsage::STORAGE_BUFFER | BufferUsage::TRANSFER_DST | BufferUsage::TRANSFER_SRC;
+            let buffer_info = BufferCreateInfo {
+                sharing: Sharing::Concurrent(engine.compute_families.iter().copied().collect()),
+                //size: len.try_into().unwrap(),
                 usage,
-                engine.compute_families.iter().copied(),
+                .. Default::default()
+            };
+            let allocation_info = AllocationCreateInfo {
+                usage: MemoryUsage::DeviceOnly,
+                .. Default::default()
+            };
+            match Buffer::new_slice(
+                &engine.memory_allocator,
+                buffer_info,
+                allocation_info,
+                len.try_into().unwrap(),
             ) {
                 Ok(inner) => Some(inner),
-                Err(e @ AllocationCreationError::VulkanError(VulkanError::OutOfDeviceMemory)) => {
+                Err(e @ BufferError::AllocError(AllocationCreationError::VulkanError(VulkanError::OutOfDeviceMemory))) => {
                     return Err(Error::new(OutOfDeviceMemory(engine.id())).context(e))
                 }
                 Err(e) => {
@@ -760,7 +772,7 @@ impl DeviceEngineBuffer for DeviceBuffer {
         let engine = &self.engine;
         let mut future_guard = self.future.write();
         if let Some(buffer) = self.inner.as_ref() {
-            if let Ok(mut mapped) = buffer.inner().buffer.write(0..data.len() as _) {
+            if let Ok(mut mapped) = buffer.write() {
                 engine.wait_for_future(&future_guard)?;
                 mapped[..data.len()].copy_from_slice(data);
             } else {
@@ -772,9 +784,8 @@ impl DeviceEngineBuffer for DeviceBuffer {
                     .zip(workers.into_iter().cycle())
                 {
                     let src = worker.host_buffer.as_ref().unwrap();
-                    let dst = buffer
-                        .slice(offset as _..(offset + data.len()) as _)
-                        .unwrap();
+                    let dst = buffer.clone()
+                        .slice(DeviceSize::try_from(offset).unwrap()..DeviceSize::try_from(offset + data.len()).unwrap());
                     let submit = Arc::new(AtomicBool::default());
                     let op = Op::Upload {
                         dst,
@@ -797,14 +808,11 @@ impl DeviceEngineBuffer for DeviceBuffer {
         if let Some(buffer) = self.inner.as_ref() {
             let engine = &self.engine;
             let prev_future = self.future.read();
-            let buffer_inner = buffer.inner();
             if self.host_visible() {
                 engine.wait_for_future(&prev_future)?;
-                let mapped = buffer_inner
-                    .buffer
-                    .read(buffer_inner.offset..buffer_inner.offset + data.len() as u64)
-                    .unwrap();
-                data.copy_from_slice(&mapped[..data.len()]);
+                let buffer = buffer.clone().slice(DeviceSize::try_from(self.offset).unwrap() .. DeviceSize::try_from(self.offset + self.len).unwrap());
+                let mapped = buffer.read()?;
+                data.copy_from_slice(&mapped);
                 return Ok(());
             }
             let (_transfer, workers) = engine.transfer_workers();
@@ -830,9 +838,8 @@ impl DeviceEngineBuffer for DeviceBuffer {
                 .chunks_mut(Self::HOST_BUFFER_SIZE)
                 .zip(workers.into_iter().cycle())
             {
-                let src = buffer
-                    .slice(offset as _..(offset + data.len()) as _)
-                    .unwrap();
+                let src = buffer.clone()
+                    .slice(DeviceSize::try_from(offset).unwrap() .. DeviceSize::try_from(offset + data.len()).unwrap());
                 offset += data.len();
                 let submit = Arc::new(AtomicBool::default());
                 let op = Op::Download {
@@ -865,23 +872,21 @@ impl DeviceEngineBuffer for DeviceBuffer {
         let buffer2 = output.inner.as_ref().unwrap();
         let engine2 = &output.engine;
         let prev_future = self.future.read();
-        let buffer_inner1 = buffer1.inner();
-        let buffer_inner2 = buffer2.inner();
         if self.host_visible() {
             engine1.wait_for_future(&prev_future)?;
-            let mapped1 = buffer_inner1
-                .buffer
-                .read(buffer_inner1.offset..buffer_inner1.offset + self.len() as u64)
-                .unwrap();
+            let buffer1 = buffer1.clone().slice(DeviceSize::try_from(self.offset).unwrap() .. DeviceSize::try_from(self.offset + self.len()).unwrap());
+            let mapped1 = buffer1.read()?;
             if dst.host_visible() {
-                let mut mapped2 = buffer_inner2.buffer.write(0..output.len() as u64).unwrap();
+                let buffer2 = buffer2.clone().slice(DeviceSize::try_from(dst.offset).unwrap() .. DeviceSize::try_from(dst.offset + dst.len()).unwrap());
+                let mut mapped2 = buffer2.write()?;
                 mapped2.copy_from_slice(&mapped1[..output.len()]);
             } else {
                 output.upload(&mapped1)?;
             }
             return Ok(());
         } else if output.host_visible() {
-            let mut mapped2 = buffer_inner2.buffer.write(0..output.len() as u64).unwrap();
+            let buffer2 = buffer2.clone().slice(DeviceSize::try_from(dst.offset).unwrap() .. DeviceSize::try_from(dst.offset + dst.len()).unwrap());
+            let mut mapped2 = buffer2.write()?;
             self.download(&mut mapped2)?;
             return Ok(());
         }
@@ -932,12 +937,10 @@ impl DeviceEngineBuffer for DeviceBuffer {
                 .checked_sub(offset2)
                 .unwrap()
                 .min(Self::HOST_BUFFER_SIZE);
-            let src = buffer1
-                .slice(offset1 as _..(offset1 + chunk_size) as _)
-                .unwrap();
-            let dst = buffer2
-                .slice(offset2 as _..(offset2 + chunk_size) as _)
-                .unwrap();
+            let src = buffer1.clone()
+                .slice(DeviceSize::try_from(offset1).unwrap() .. DeviceSize::try_from(offset1 + chunk_size).unwrap());
+            let dst = buffer2.clone()
+                .slice(DeviceSize::try_from(offset2).unwrap() .. DeviceSize::try_from(offset2 + chunk_size).unwrap());
             offset1 += chunk_size;
             offset2 += chunk_size;
             let submit = Arc::new(AtomicBool::default());
@@ -1017,32 +1020,33 @@ impl KernelInner {
             shader::{spirv::ExecutionModel, EntryPointInfo},
         };
         let device = &engine.device;
-        let stages = ShaderStages {
-            compute: true,
-            ..ShaderStages::empty()
-        };
-        let descriptor_requirements = desc
+        let descriptor_binding_requirements = desc
             .slice_descs
             .iter()
             .enumerate()
             .map(|(i, desc)| {
-                let set = 0u32;
-                let binding = i as u32;
-                let storage_write = if desc.mutable { Some(binding) } else { None };
-                let descriptor_requirements = DescriptorRequirements {
-                    descriptor_types: vec![DescriptorType::StorageBuffer],
-                    descriptor_count: Some(1),
-                    stages,
-                    storage_write: storage_write.into_iter().collect(),
+                let set = 0;
+                let binding = i.try_into().unwrap();
+                let memory_write = if desc.mutable { ShaderStages::COMPUTE } else { ShaderStages::empty() };
+                let descriptors = DescriptorRequirements {
+                    memory_read: ShaderStages::COMPUTE,
+                    memory_write,
                     ..DescriptorRequirements::default()
                 };
-                ((set, binding), descriptor_requirements)
+                let descriptor_binding_requirements = DescriptorBindingRequirements {
+                    descriptor_types: vec![DescriptorType::StorageBuffer],
+                    descriptor_count: Some(1),
+                    stages: ShaderStages::COMPUTE,
+                    descriptors: [(Some(0), descriptors)].into_iter().collect(),
+                    .. Default::default()
+                };
+                ((set, binding), descriptor_binding_requirements)
             })
             .collect();
         let push_consts_range = desc.push_consts_range();
         let push_constant_range = if push_consts_range > 0 {
             Some(PushConstantRange {
-                stages,
+                stages: ShaderStages::COMPUTE,
                 offset: 0,
                 size: push_consts_range,
             })
@@ -1051,7 +1055,7 @@ impl KernelInner {
         };
         let entry_point_info = EntryPointInfo {
             execution: ShaderExecution::Compute,
-            descriptor_requirements,
+            descriptor_binding_requirements,
             push_constant_requirements: push_constant_range,
             specialization_constant_requirements: Default::default(),
             input_interface: ShaderInterface::empty(),
@@ -1077,10 +1081,10 @@ impl KernelInner {
             .map(|binding| {
                 let descriptor_set_layout_binding = DescriptorSetLayoutBinding {
                     descriptor_count: 1,
-                    stages,
+                    stages: ShaderStages::COMPUTE,
                     ..DescriptorSetLayoutBinding::descriptor_type(DescriptorType::StorageBuffer)
                 };
-                (binding as u32, descriptor_set_layout_binding)
+                (binding.try_into().unwrap(), descriptor_set_layout_binding)
             })
             .collect();
         let descriptor_set_layout_create_info = DescriptorSetLayoutCreateInfo {
@@ -1177,7 +1181,7 @@ impl DeviceEngineKernel for Kernel {
             .collect();
         let buffers = buffers
             .iter()
-            .map(|x| x.inner.as_ref().unwrap().into_buffer_slice())
+            .map(|x| x.inner.as_ref().unwrap().clone())
             .collect();
         let submit = Arc::new(AtomicBool::default());
         let op = Op::Compute {
