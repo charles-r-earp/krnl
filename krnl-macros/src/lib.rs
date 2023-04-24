@@ -116,6 +116,7 @@ pub fn module(attr: TokenStream, item: TokenStream) -> TokenStream {
         let tokens = item.tokens;
         item.tokens = quote! {
             #[cfg(not(target_arch = "spirv"))]
+            #[doc(hidden)]
             macro_rules! __krnl_module_arg {
                 (use crate as $i:ident) => {
                     use #krnl as $i;
@@ -1115,17 +1116,36 @@ impl KernelMeta {
         }
         tokens
     }
-    fn dispatch_push_args(&self) -> TokenStream2 {
-        let mut tokens = TokenStream2::new();
-        for arg in self.arg_metas.iter() {
-            let ident = &arg.ident;
-            if arg.kind.is_push() {
-                tokens.extend(quote! {
-                    #ident.into(),
-                })
-            }
-        }
-        tokens
+    fn check_spec_args(&self) -> Punctuated<TokenStream2, Comma> {
+        self.spec_metas
+            .iter()
+            .map(|arg| {
+                let name = arg.ident.to_string();
+                let scalar_type = Ident::new(arg.ty.scalar_type.as_str(), Span2::call_site());
+                quote! {
+                    (#name, ScalarType::#scalar_type)
+                }
+            })
+            .collect()
+    }
+    fn check_buffer_args(&self) -> Punctuated<TokenStream2, Comma> {
+        self.arg_metas
+            .iter()
+            .filter(|arg| arg.binding.is_some())
+            .map(|arg| {
+                let name = arg.ident.to_string();
+                let scalar_type =
+                    Ident::new(arg.scalar_ty.scalar_type.as_str(), Span2::call_site());
+                let mutability = if arg.mutable {
+                    format_ident!("Mutable")
+                } else {
+                    format_ident!("Immutable")
+                };
+                quote! {
+                    (#name, ScalarType::#scalar_type, Mutability::#mutability)
+                }
+            })
+            .collect()
     }
 }
 
@@ -1172,8 +1192,8 @@ impl ScalarType {
         match self {
             U8 => "U8",
             I8 => "I8",
-            U16 => "I16",
-            I16 => "U16",
+            U16 => "U16",
+            I16 => "I16",
             F16 => "F16",
             BF16 => "BF16",
             U32 => "U32",
@@ -1262,23 +1282,12 @@ impl KernelDesc {
     }
     fn push_const_fields(&self) -> TokenStream2 {
         let mut tokens = TokenStream2::new();
-        let mut bytes = 0;
         for push_desc in self.push_descs.iter() {
             let ident = format_ident!("{}", push_desc.name);
             let ty = format_ident!("{}", push_desc.scalar_type.name());
             tokens.extend(quote! {
                #ident: #ty,
             });
-            bytes += push_desc.scalar_type.size();
-        }
-        let mut pad_bytes = 0;
-        while bytes % 4 != 0 {
-            let ident = format_ident!("__krnl_pad{pad_bytes}");
-            tokens.extend(quote! {
-               #ident: u8,
-            });
-            pad_bytes += 1;
-            bytes += 1;
         }
         for slice_desc in self.slice_descs.iter() {
             let offset_ident = format_ident!("__krnl_offset_{}", slice_desc.name);
@@ -1289,6 +1298,24 @@ impl KernelDesc {
             });
         }
         tokens
+    }
+    fn dispatch_push_args(&self) -> Vec<Ident> {
+        self.push_descs
+            .iter()
+            .map(|push| format_ident!("{}", push.name))
+            .collect()
+    }
+    fn check_push_args(&self) -> Punctuated<TokenStream2, Comma> {
+        self.push_descs
+            .iter()
+            .map(|push| {
+                let name = &push.name;
+                let scalar_type = Ident::new(push.scalar_type.as_str(), Span2::call_site());
+                quote! {
+                    (#name, ScalarType::#scalar_type)
+                }
+            })
+            .collect()
     }
 }
 
@@ -1487,9 +1514,12 @@ fn kernel_impl(attr_tokens: TokenStream2, item_tokens: TokenStream2) -> Result<T
         } else {
             TokenStream2::new()
         };
+        let check_spec_args = kernel_meta.check_spec_args();
+        let check_buffer_args = kernel_meta.check_buffer_args();
+        let check_push_args = kernel_desc.check_push_args();
         let dispatch_args = kernel_meta.dispatch_args();
         let dispatch_slice_args = kernel_meta.dispatch_slice_args();
-        let dispatch_push_args = kernel_meta.dispatch_push_args();
+        let dispatch_push_args = kernel_desc.dispatch_push_args();
         let hash = kernel_desc.hash;
         let kernel_name_with_hash = format_ident!("{ident}_{hash}");
         let safe = unsafe_token.is_none();
@@ -1549,7 +1579,8 @@ fn kernel_impl(attr_tokens: TokenStream2, item_tokens: TokenStream2) -> Result<T
                     krnl_core::{half::{f16, bf16}, glam::{UVec2, UVec3}},
                     buffer::{Slice, SliceMut},
                     device::Device,
-                    kernel::__private::{Kernel as KernelBase, KernelBuilder as KernelBuilderBase},
+                    scalar::ScalarType,
+                    kernel::__private::{Kernel as KernelBase, KernelBuilder as KernelBuilderBase, Mutability},
                     once_cell::sync::Lazy,
                 };
 
@@ -1572,6 +1603,7 @@ fn kernel_impl(attr_tokens: TokenStream2, item_tokens: TokenStream2) -> Result<T
                 /// - The kernel could not be deserialized. For stable releases, this is a bug, as `#[module]` should produce a compile error.
                 pub fn builder() -> Result<KernelBuilder> {
                     let name = module_path!();
+                    #[doc(hidden)]
                     static BUILDER: Lazy<Result<KernelBuilderBase, String>> = Lazy::new(|| {
                         let bytes = __krnl_kernel!(#kernel_name_with_hash);
                         if bytes.is_empty() {
@@ -1581,6 +1613,9 @@ fn kernel_impl(attr_tokens: TokenStream2, item_tokens: TokenStream2) -> Result<T
                             .map_err(|e| e.to_string())?;
                         assert_eq!(inner.hash(), #hash);
                         assert_eq!(inner.safe(), #safe);
+                        inner.check_spec_consts(&[#check_spec_args]);
+                        inner.check_buffers(&[#check_buffer_args]);
+                        inner.check_push_consts(&[#check_push_args]);
                         Ok(inner)
                     });
                     match &*BUILDER {
@@ -1633,7 +1668,7 @@ fn kernel_impl(attr_tokens: TokenStream2, item_tokens: TokenStream2) -> Result<T
                     /// - DeviceLost: The device was lost.
                     /// - The kernel could not be queued.
                     pub #unsafe_token fn dispatch(&self, #dispatch_args) -> Result<()> {
-                        unsafe { self.inner.dispatch(&[#dispatch_slice_args], &[#dispatch_push_args]) }
+                        unsafe { self.inner.dispatch(&[#dispatch_slice_args], &[#(#dispatch_push_args.into()),*]) }
                     }
                 }
 

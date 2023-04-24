@@ -83,6 +83,8 @@ jobs:
         run: cargo +nightly-2023-03-04 install --path krnlc --root . --no-default-features --features use-installed-tools -vv --debug
       - name: krnlc check 
         run: ./bin/krnlc --check -p krnl -p krnlc-tests -p compute-benchmarks -v
+      - name: krnlc non-semantic-info
+        run: ./bin/krnlc --non-semantic-info -p krnl -p krnlc-tests -p compute-benchmarks -v
   miri:
     runs-on: ubuntu-latest
     env:

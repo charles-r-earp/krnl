@@ -101,8 +101,8 @@ impl ScalarType {
         match self {
             U8 => "U8",
             I8 => "I8",
-            U16 => "I16",
-            I16 => "U16",
+            U16 => "U16",
+            I16 => "I16",
             F16 => "F16",
             BF16 => "BF16",
             U32 => "U32",

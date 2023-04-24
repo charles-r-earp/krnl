@@ -414,7 +414,13 @@ pub(crate) struct KernelDesc {
 #[cfg(feature = "device")]
 impl KernelDesc {
     pub(crate) fn push_consts_range(&self) -> u32 {
-        let mut size: usize = self.push_descs.iter().map(|x| x.scalar_type.size()).sum();
+        let mut size = 0;
+        for push_desc in self.push_descs.iter() {
+            while size % push_desc.scalar_type.size() != 0 {
+                size += 1;
+            }
+            size += push_desc.scalar_type.size()
+        }
         while size % 4 != 0 {
             size += 1;
         }
@@ -455,10 +461,6 @@ impl KernelDesc {
                     }
                 }
             }
-        }
-        {
-            //use rspirv::binary::Disassemble;
-            //eprintln!("{}", module.disassemble())
         }
         let spirv = module.assemble();
         Ok(Self {
@@ -505,6 +507,9 @@ pub(crate) struct KernelKey {
 
 #[doc(hidden)]
 pub mod __private {
+    #[cfg(feature = "device")]
+    use num_traits::ToPrimitive;
+
     use super::*;
     #[cfg(feature = "device")]
     use crate::device::{DeviceBuffer, RawKernel};
@@ -513,7 +518,6 @@ pub mod __private {
         scalar::Scalar,
     };
 
-    #[doc(hidden)]
     #[cfg_attr(not(feature = "device"), allow(dead_code))]
     #[derive(Clone)]
     pub struct KernelBuilder {
@@ -565,6 +569,64 @@ pub mod __private {
         pub fn safe(&self) -> bool {
             self.desc.safe
         }
+        pub fn check_spec_consts(&self, spec_consts: &[(&str, ScalarType)]) {
+            let spec_descs = &self.desc.spec_descs;
+            if spec_consts.len() == spec_descs.len() {
+                let mut success = true;
+                for ((name, scalar_type), spec_desc) in spec_consts.iter().copied().zip(spec_descs)
+                {
+                    if name != spec_desc.name || scalar_type != spec_desc.scalar_type {
+                        success = false;
+                        break;
+                    }
+                }
+                if success {
+                    return;
+                }
+            }
+            let name = &self.desc.name;
+            panic!("Kernel `{name}` spec consts check failed:\n {spec_consts:#?}\n{spec_descs:#?}")
+        }
+        pub fn check_buffers(&self, buffers: &[(&str, ScalarType, Mutability)]) {
+            let buffer_descs = &self.desc.slice_descs;
+            if buffers.len() == buffer_descs.len() {
+                let mut success = true;
+                for ((name, scalar_type, mutability), buffer_desc) in
+                    buffers.iter().copied().zip(buffer_descs)
+                {
+                    if name != buffer_desc.name
+                        || scalar_type != buffer_desc.scalar_type
+                        || mutability.is_mutable() != buffer_desc.mutable
+                    {
+                        success = false;
+                        break;
+                    }
+                }
+                if success {
+                    return;
+                }
+            }
+            let name = &self.desc.name;
+            panic!("Kernel `{name}` buffers check failed:\n {buffers:#?}\n{buffer_descs:#?}")
+        }
+        pub fn check_push_consts(&self, push_consts: &[(&str, ScalarType)]) {
+            let push_descs = &self.desc.push_descs;
+            if push_consts.len() == push_descs.len() {
+                let mut success = true;
+                for ((name, scalar_type), push_desc) in push_consts.iter().copied().zip(push_descs)
+                {
+                    if name != push_desc.name || scalar_type != push_desc.scalar_type {
+                        success = false;
+                        break;
+                    }
+                }
+                if success {
+                    return;
+                }
+            }
+            let name = &self.desc.name;
+            panic!("Kernel `{name}` push consts check failed:\n {push_consts:#?}\n{push_descs:#?}")
+        }
         pub fn build(&self, device: Device) -> Result<Kernel> {
             match device.inner() {
                 DeviceInner::Host => {
@@ -582,6 +644,15 @@ pub mod __private {
                     let spec_bytes = if !self.desc.spec_descs.is_empty() {
                         if self.spec_consts.is_empty() {
                             bail!("Kernel `{name}` must be specialized!");
+                        }
+                        debug_assert_eq!(self.spec_consts.len(), desc.spec_descs.len());
+                        #[cfg(debug_assertions)]
+                        {
+                            for (spec_const, spec_desc) in
+                                self.spec_consts.iter().zip(desc.spec_descs.iter())
+                            {
+                                assert_eq!(spec_const.scalar_type(), spec_desc.scalar_type);
+                            }
                         }
                         self.spec_consts
                             .iter()
@@ -615,7 +686,6 @@ pub mod __private {
         }
     }
 
-    #[doc(hidden)]
     #[derive(Clone)]
     pub struct Kernel {
         #[cfg(feature = "device")]
@@ -686,6 +756,18 @@ pub mod __private {
                 let mut buffers = Vec::with_capacity(desc.slice_descs.len());
                 let mut items: Option<usize> = None;
                 let device = self.inner.device();
+                let mut push_bytes = Vec::with_capacity(desc.push_consts_range() as usize);
+                debug_assert_eq!(push_consts.len(), desc.push_descs.len());
+                for (push, push_desc) in push_consts.iter().zip(desc.push_descs.iter()) {
+                    debug_assert_eq!(push.scalar_type(), push_desc.scalar_type);
+                    while push_bytes.len() % push.scalar_type().size() != 0 {
+                        push_bytes.push(0u8);
+                    }
+                    push_bytes.extend_from_slice(push.as_bytes());
+                }
+                while push_bytes.len() % 4 != 0 {
+                    push_bytes.push(0);
+                }
                 for (slice, slice_desc) in slices.iter().zip(desc.slice_descs.iter()) {
                     debug_assert_eq!(slice.scalar_type(), slice_desc.scalar_type);
                     debug_assert!(!slice_desc.mutable || slice.mutable());
@@ -709,6 +791,8 @@ pub mod __private {
                             slice.len()
                         });
                     }
+                    push_bytes.extend_from_slice(&buffer.offset().to_u32().unwrap().to_ne_bytes());
+                    push_bytes.extend_from_slice(&buffer.len().to_u32().unwrap().to_ne_bytes());
                 }
                 let groups = if let Some(groups) = self.groups {
                     groups
@@ -720,11 +804,7 @@ pub mod __private {
                 } else {
                     bail!("Kernel `{kernel_name}` global_threads or groups not provided!");
                 };
-                let mut push_bytes = Vec::with_capacity(desc.push_consts_range() as usize);
-                for (push, push_desc) in push_consts.iter().zip(desc.push_descs.iter()) {
-                    debug_assert_eq!(push.scalar_type(), push_desc.scalar_type);
-                    push_bytes.extend_from_slice(push.as_bytes());
-                }
+
                 unsafe { self.inner.dispatch(groups, &buffers, push_bytes) }
             }
             #[cfg(not(feature = "device"))]
@@ -805,5 +885,11 @@ pub mod __private {
         fn from(slice: SliceMut<'a, T>) -> Self {
             Self::SliceMut(slice.into())
         }
+    }
+
+    #[derive(Clone, Copy, Debug, derive_more::IsVariant)]
+    pub enum Mutability {
+        Mutable,
+        Immutable,
     }
 }

@@ -1183,10 +1183,10 @@ impl DeviceEngineKernel for Kernel {
         &self,
         groups: [u32; 3],
         buffers: &[Arc<Self::DeviceBuffer>],
-        mut push_consts: Vec<u8>,
+        push_consts: Vec<u8>,
     ) -> Result<()> {
         let engine = &self.engine;
-        while push_consts.len() % 4 != 0 {
+        /*while push_consts.len() % 4 != 0 {
             push_consts.push(0);
         }
         for (buffer, slice_desc) in buffers.iter().zip(self.desc.slice_descs.iter()) {
@@ -1194,7 +1194,7 @@ impl DeviceEngineKernel for Kernel {
             let len = buffer.len / slice_desc.scalar_type.size();
             debug_assert_ne!(len, 0);
             push_consts.extend((len as u32).to_ne_bytes());
-        }
+        }*/
         let mut futures: Vec<_> = buffers
             .iter()
             .map(|x| x.future.clone())

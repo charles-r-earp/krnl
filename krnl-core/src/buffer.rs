@@ -11,7 +11,7 @@ use spirv_std::arch::IndexUnchecked;
     target_arch = "spirv",
     target_feature = "ext:SPV_KHR_non_semantic_info"
 ))]
-fn debug_index_out_of_bounds(_index: usize, _len: usize) {
+fn debug_index_out_of_bounds(index: usize, len: usize) {
     unsafe {
         spirv_std::macros::debug_printfln!(
             "index out of bounds: the len is %u but the index is %u",
