@@ -791,8 +791,11 @@ pub mod __private {
                             slice.len()
                         });
                     }
-                    push_bytes.extend_from_slice(&buffer.offset().to_u32().unwrap().to_ne_bytes());
-                    push_bytes.extend_from_slice(&buffer.len().to_u32().unwrap().to_ne_bytes());
+                    let width = slice_desc.scalar_type.size();
+                    let offset = buffer.offset() / width;
+                    let len = buffer.len() / width;
+                    push_bytes.extend_from_slice(&offset.to_u32().unwrap().to_ne_bytes());
+                    push_bytes.extend_from_slice(&len.to_u32().unwrap().to_ne_bytes());
                 }
                 let groups = if let Some(groups) = self.groups {
                     groups

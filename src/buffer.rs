@@ -37,12 +37,12 @@ fn main() -> Result<()> {
 ```
 */
 
+#[cfg(doc)]
+use crate::device::error::DeviceLost;
 use crate::{
     device::{Device, DeviceInner},
     scalar::{Scalar, ScalarElem, ScalarType},
 };
-#[cfg(doc)]
-use crate::device::error::DeviceLost;
 use anyhow::{bail, Result};
 use bytemuck::PodCastError;
 use dry::{macro_for, macro_wrap};
@@ -93,7 +93,7 @@ pub mod error {
     }
 }
 #[cfg(doc)]
-use error::{OutOfDeviceMemory, DeviceBufferTooLarge};
+use error::{DeviceBufferTooLarge, OutOfDeviceMemory};
 
 #[derive(Copy, Clone)]
 struct RawHostSlice {
@@ -1907,7 +1907,7 @@ impl<T: Scalar, S: DataOwned<Elem = T>> BufferBase<S> {
     /// - [`DeviceLost`]
     /// - [`DeviceBufferTooLarge`]
     /// - [`OutOfDeviceMemory`]
-    /// 
+    ///
     /// See [`zeros()`](Buffer::zeros) for a safe alternative.
     pub unsafe fn uninit(device: Device, len: usize) -> Result<Self> {
         let data = S::from_buffer(unsafe { BufferRepr::uninit(device, len)? });
