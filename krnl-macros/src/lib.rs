@@ -849,7 +849,7 @@ impl KernelMeta {
         }
         kernel_desc
             .push_descs
-            .sort_by_key(|x| x.scalar_type.size() as i32);
+            .sort_by_key(|x| -(x.scalar_type.size() as i32));
         Ok(kernel_desc)
     }
     fn compute_def_args(&self) -> Punctuated<TokenStream2, Comma> {
@@ -1280,24 +1280,38 @@ impl KernelDesc {
         let bytes = bincode2::serialize(self).map_err(|e| Error::new(Span2::call_site(), e))?;
         Ok(format!("__krnl_kernel_data_{}", hex::encode(bytes)))
     }
-    fn push_const_fields(&self) -> TokenStream2 {
-        let mut tokens = TokenStream2::new();
+    fn push_const_fields(&self) -> Punctuated<TokenStream2, Comma> {
+        let mut fields = Punctuated::new();
+        let mut size = 0;
         for push_desc in self.push_descs.iter() {
             let ident = format_ident!("{}", push_desc.name);
             let ty = format_ident!("{}", push_desc.scalar_type.name());
-            tokens.extend(quote! {
-               #ident: #ty,
+            fields.push(quote! {
+               #ident: #ty
             });
+            size += push_desc.scalar_type.size();
+        }
+        for i in 0..4 {
+            if size % 4 == 0 {
+                break;
+            }
+            let ident = format_ident!("__krnl_pad{i}");
+            fields.push(quote! {
+               #ident: u8
+            });
+            size += 1;
         }
         for slice_desc in self.slice_descs.iter() {
             let offset_ident = format_ident!("__krnl_offset_{}", slice_desc.name);
             let len_ident = format_ident!("__krnl_len_{}", slice_desc.name);
-            tokens.extend(quote! {
-                #offset_ident: u32,
-                #len_ident: u32,
+            fields.push(quote! {
+                #offset_ident: u32
+            });
+            fields.push(quote! {
+                #len_ident: u32
             });
         }
-        tokens
+        fields
     }
     fn dispatch_push_args(&self) -> Vec<Ident> {
         self.push_descs

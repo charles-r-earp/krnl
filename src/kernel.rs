@@ -760,9 +760,7 @@ pub mod __private {
                 debug_assert_eq!(push_consts.len(), desc.push_descs.len());
                 for (push, push_desc) in push_consts.iter().zip(desc.push_descs.iter()) {
                     debug_assert_eq!(push.scalar_type(), push_desc.scalar_type);
-                    while push_bytes.len() % push.scalar_type().size() != 0 {
-                        push_bytes.push(0u8);
-                    }
+                    debug_assert_eq!(push_bytes.len() % push.scalar_type().size(), 0);
                     push_bytes.extend_from_slice(push.as_bytes());
                 }
                 while push_bytes.len() % 4 != 0 {
