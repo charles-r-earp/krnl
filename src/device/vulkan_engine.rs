@@ -1168,13 +1168,7 @@ impl DeviceEngineKernel for Kernel {
         } = engine
             .kernels
             .entry(key)
-            .or_try_insert_with(|| {
-                // TODO: remove this
-                // This is to prevent random crashes potentially related to compiling?
-                static MUTEX: Mutex<()> = parking_lot::const_mutex(());
-                let _m = MUTEX.lock();
-                KernelInner::new(&engine, desc_fn()?)
-            })?
+            .or_try_insert_with(|| KernelInner::new(&engine, desc_fn()?))?
             .clone();
         Ok(Arc::new(Kernel {
             engine,
