@@ -6,14 +6,14 @@ use super::{
 
 use anyhow::{Error, Result};
 use ash::vk::Handle;
-use atomicbox::AtomicOptionBox;
+use crossbeam_channel::{Sender, TryRecvError};
 use dashmap::DashMap;
 use parking_lot::{Mutex, MutexGuard, RwLock, RwLockReadGuard, RwLockUpgradableReadGuard};
 use std::{
     ops::{Deref, Range},
     sync::{
         atomic::{AtomicBool, AtomicUsize, Ordering},
-        Arc, Weak,
+        Arc,
     },
     thread::Thread,
     time::{Duration, Instant},
@@ -333,7 +333,7 @@ impl WorkerFuture {
 }
 
 struct Worker {
-    op_slot: Arc<AtomicOptionBox<Op>>,
+    op_sender: Sender<Op>,
     ready: Arc<AtomicBool>,
     state: WorkerState,
     host_buffer: Option<Subbuffer<[u8]>>,
@@ -399,10 +399,9 @@ impl Worker {
         let ready = Arc::new(AtomicBool::default());
         let state = WorkerState::default();
         let guard = WorkerDropGuard { exited };
-        let op_slot = Arc::new(AtomicOptionBox::<Op>::none());
+        let (op_sender, op_receiver) = crossbeam_channel::bounded(0);
         let thread = {
             let ready = ready.clone();
-            let op_slot = op_slot.clone();
             let queue = queue.clone();
             let state = state.clone();
             let host_buffer = host_buffer.clone();
@@ -441,16 +440,17 @@ impl Worker {
                     fence.reset().unwrap();
                     ready.store(true, Ordering::SeqCst);
                     let op = loop {
-                        if Arc::strong_count(&op_slot) == 1 {
-                            return;
+                        match op_receiver.try_recv() {
+                            Ok(op) => break op,
+                            Err(TryRecvError::Empty) => (),
+                            Err(TryRecvError::Disconnected) => return,
                         }
-                        if let Some(op) = op_slot.take(Ordering::SeqCst) {
-                            last_msg = Instant::now();
-                            break *op;
-                        } else if last_msg.elapsed().as_millis() > 400 {
-                            std::thread::park();
+                        if last_msg.elapsed().as_millis() >= 400 {
+                            std::thread::sleep(Duration::from_micros(100));
                         }
                     };
+                    ready.store(false, Ordering::SeqCst);
+                    last_msg = Instant::now();
                     match op {
                         Op::Upload { dst, submit } => {
                             let buffer = host_buffer.as_ref().unwrap();
@@ -584,7 +584,7 @@ impl Worker {
         };
         Ok(Self {
             ready,
-            op_slot,
+            op_sender,
             state,
             host_buffer,
             thread,
@@ -610,11 +610,8 @@ impl Worker {
         Ok(())
     }
     fn send(&self, op: Op) -> Result<WorkerFuture, ()> {
-        self.wait()?;
         let future = self.state.next();
-        self.ready.store(false, Ordering::SeqCst);
-        self.op_slot.store(Some(op.into()), Ordering::SeqCst);
-        self.thread.unpark();
+        self.op_sender.send(op).map_err(|_| ())?;
         Ok(future)
     }
     fn ready(&self) -> bool {
@@ -622,7 +619,7 @@ impl Worker {
     }
     fn wait(&self) -> Result<(), ()> {
         while !self.state.ready() {
-            if Arc::strong_count(&self.op_slot) == 1 {
+            if Arc::strong_count(&self.ready) == 1 {
                 return Err(());
             }
         }
@@ -632,9 +629,9 @@ impl Worker {
 
 impl Drop for Worker {
     fn drop(&mut self) {
-        let op_slot = Arc::downgrade(&std::mem::take(&mut self.op_slot));
+        self.op_sender = crossbeam_channel::bounded(0).0;
         self.thread.unpark();
-        while Weak::strong_count(&op_slot) > 0 {
+        while Arc::strong_count(&self.ready) > 1 {
             std::thread::sleep(Duration::from_micros(1));
         }
     }
