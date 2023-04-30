@@ -1099,6 +1099,14 @@ impl<'a> From<ScalarSlice<'a>> for ScalarCowBuffer<'a> {
     }
 }
 
+impl<'a, T: Scalar> From<CowBuffer<'a, T>> for ScalarCowBuffer<'a> {
+    fn from(buffer: CowBuffer<'a, T>) -> Self {
+        Self {
+            data: buffer.data.into(),
+        }
+    }
+}
+
 impl<S: ScalarData> Debug for ScalarBufferBase<S> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         f.debug_struct("ScalarBufferBase")
