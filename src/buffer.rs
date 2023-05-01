@@ -785,6 +785,11 @@ impl<S: ScalarDataOwned> ScalarBufferBase<S> {
     pub fn ones(device: Device, len: usize, scalar_type: ScalarType) -> Result<Self> {
         Self::from_elem(device, len, ScalarElem::one(scalar_type))
     }
+    /// Create a scalar buffer from a [`ScalarBuffer`].
+    pub fn from_scalar_buffer(buffer: ScalarBuffer) -> Self {
+        let data = S::from_scalar_buffer(buffer.data);
+        Self { data }
+    }
 }
 
 impl<S: ScalarData> ScalarBufferBase<S> {
@@ -999,7 +1004,7 @@ impl<S: ScalarData> ScalarBufferBase<S> {
     See [`BufferBase::copy_from_slice`]. */
     pub fn copy_from_scalar_slice(&mut self, src: &ScalarSlice) -> Result<()>
     where
-        S: DataMut,
+        S: ScalarDataMut,
     {
         self.data
             .as_scalar_slice_mut()
