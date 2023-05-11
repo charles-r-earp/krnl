@@ -62,6 +62,7 @@ impl ScalarType {
         [U8, I8, U16, I16, F16, BF16, U32, I32, F32, U64, I64, F64].into_iter()
     }
     /// Size of the type in bytes.
+    #[inline]
     pub fn size(&self) -> usize {
         use ScalarType::*;
         match self {
@@ -219,6 +220,7 @@ pub enum ScalarElem {
 #[cfg(not(target_arch = "spirv"))]
 impl ScalarElem {
     /// Zero.
+    #[inline]
     pub const fn zero(scalar_type: ScalarType) -> Self {
         use ScalarElem as E;
         use ScalarType as S;
@@ -238,6 +240,7 @@ impl ScalarElem {
         }
     }
     /// One.
+    #[inline]
     pub const fn one(scalar_type: ScalarType) -> Self {
         use ScalarElem as E;
         use ScalarType as S;
@@ -259,6 +262,7 @@ impl ScalarElem {
     /// Casts to `scalar_type`.
     ///
     /// See [`Scalar::cast`].
+    #[inline]
     pub fn scalar_cast(self, scalar_type: ScalarType) -> Self {
         use ScalarElem as E;
         use ScalarType as S;
@@ -299,6 +303,7 @@ impl ScalarElem {
         }
     }
     /// The [`ScalarType`].
+    #[inline]
     pub fn scalar_type(&self) -> ScalarType {
         use ScalarElem::*;
         use ScalarType as T;
@@ -318,6 +323,7 @@ impl ScalarElem {
         }
     }
     /// The bits of the elem, ie u8, u16, u32, or u64.
+    #[inline]
     pub fn to_scalar_bits(&self) -> Self {
         use ScalarElem::*;
         match self {
@@ -338,6 +344,7 @@ impl ScalarElem {
     /// The bytes as as slice.
     ///
     /// See [`bytemuck::bytes_of`].
+    #[inline]
     pub fn as_bytes(&self) -> &[u8] {
         use ScalarElem::*;
         macro_wrap!(match self {
@@ -376,6 +383,7 @@ trait AsScalar<T>: Scalar {
 macro_for!($X in [u8, i8, u16, i16, u32, i32, f32, u64, i64, f64] {
     macro_for!($Y in [u8, i8, u16, i16, u32, i32, f32, u64, i64, f64] {
         impl AsScalar<$Y> for $X {
+            #[inline]
             fn as_scalar(self) -> $Y {
                 self as _
             }
@@ -386,6 +394,7 @@ macro_for!($X in [u8, i8, u16, i16, u32, i32, f32, u64, i64, f64] {
 macro_for!($X in [u8, i8, u16, i16, u32, i32, f32, u64, i64, f64] {
     macro_for!($Y in [f16, bf16] {
         impl AsScalar<$Y> for $X {
+            #[inline]
             fn as_scalar(self) -> $Y {
                 self.as_()
             }
@@ -396,6 +405,7 @@ macro_for!($X in [u8, i8, u16, i16, u32, i32, f32, u64, i64, f64] {
 macro_for!($X in [f16, bf16] {
     macro_for!($Y in [u8, i8, u16, i16, u32, i32, f32, u64, i64, f64]  {
         impl AsScalar<$Y> for $X {
+            #[inline]
             fn as_scalar(self) -> $Y {
                 self.as_()
             }
@@ -406,6 +416,7 @@ macro_for!($X in [f16, bf16] {
 macro_for!($X in [f16, bf16] {
     macro_for!($Y in [f16, bf16]  {
         impl AsScalar<$Y> for $X {
+            #[inline]
             fn as_scalar(self) -> $Y {
                 $Y::from_f32(self.to_f32())
             }
@@ -416,7 +427,17 @@ macro_for!($X in [f16, bf16] {
 #[cfg(target_arch = "spirv")]
 /// Base trait for numerical types.
 pub trait Scalar:
-    Default + Copy + 'static + Send + Sync + NumCast + FromPrimitive + NumAssign + PartialEq + Sealed
+    Default
+    + Copy
+    + 'static
+    + Send
+    + Sync
+    + NumCast
+    + FromPrimitive
+    + NumAssign
+    + PartialEq
+    + PartialOrd
+    + Sealed
 {
     /// The [`ScalarType`] of the scalar.
     fn scalar_type() -> ScalarType;
@@ -436,6 +457,7 @@ pub trait Scalar:
     + FromPrimitive
     + NumAssign
     + PartialEq
+    + PartialOrd
     + Pod
     + Debug
     + Display
@@ -454,10 +476,12 @@ pub trait Scalar:
 macro_for!($X in [u8, i8, u16, i16, f16, bf16, u32, i32, f32, u64, i64, f64] {
     paste! {
         impl Scalar for $X {
+            #[inline(always)]
             fn scalar_type() -> ScalarType {
                 ScalarType::[<$X:upper>]
             }
             #[cfg(not(target_arch = "spirv"))]
+            #[inline(always)]
             fn scalar_elem(self) -> ScalarElem {
                 ScalarElem::[<$X:upper>](self)
             }

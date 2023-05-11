@@ -397,9 +397,11 @@ impl<'a> ScalarSliceRepr<'a> {
             _m: Default::default(),
         })
     }
-    fn slice(mut self, range: impl RangeBounds<usize>) -> Option<Self> {
-        self.raw = self.raw.slice(range, self.scalar_type)?;
-        Some(self)
+    fn slice(self, range: impl RangeBounds<usize>) -> Option<Self> {
+        Some(Self {
+            raw: self.raw.slice(range, self.scalar_type)?,
+            ..self
+        })
     }
 }
 
@@ -485,9 +487,11 @@ impl<'a> ScalarSliceMutRepr<'a> {
             _m: Default::default(),
         })
     }
-    fn slice(mut self, range: impl RangeBounds<usize>) -> Option<Self> {
-        self.raw = self.raw.slice(range, self.scalar_type)?;
-        Some(self)
+    fn slice(self, range: impl RangeBounds<usize>) -> Option<Self> {
+        Some(Self {
+            raw: self.raw.slice(range, self.scalar_type)?,
+            ..self
+        })
     }
     fn copy_from_scalar_slice(&mut self, src: &ScalarSliceRepr) -> Result<()> {
         if self.scalar_type() != src.scalar_type() {
@@ -822,6 +826,21 @@ impl<S: ScalarData> ScalarBufferBase<S> {
         let data = self.data.as_scalar_slice_mut();
         ScalarSliceMut { data }
     }
+    /// Borrows as a mutable scalar slice if possible.
+    pub fn get_scalar_slice_mut(&mut self) -> Option<ScalarSliceMut> {
+        Some(ScalarSliceMut {
+            data: self.data.get_scalar_slice_mut()?,
+        })
+    }
+    /// Borrows as a mutable scalar slice, cloning if necessary.
+    pub fn make_scalar_slice_mut(&mut self) -> Result<ScalarSliceMut>
+    where
+        S: ScalarDataOwned,
+    {
+        Ok(ScalarSliceMut {
+            data: self.data.make_scalar_slice_mut()?,
+        })
+    }
     /** Move into an owned scalar buffer.
 
     Avoids copying if possible.
@@ -964,7 +983,7 @@ impl<S: ScalarData> ScalarBufferBase<S> {
     }
     /** Casts into `scalar_type`.
 
-    See [`.cast()`](ScalarBufferBase::cast). */
+    See [`.cast()`](ScalarBufferBase::scalar_cast). */
     pub fn cast_into(self, scalar_type: ScalarType) -> Result<ScalarBuffer> {
         if self.scalar_type() == scalar_type {
             self.into_owned()
@@ -1090,6 +1109,14 @@ impl From<ScalarBuffer> for ScalarArcBuffer {
 
 impl<T: Scalar> From<ArcBuffer<T>> for ScalarArcBuffer {
     fn from(buffer: ArcBuffer<T>) -> Self {
+        Self {
+            data: buffer.data.into(),
+        }
+    }
+}
+
+impl From<ScalarBuffer> for ScalarCowBuffer<'_> {
+    fn from(buffer: ScalarBuffer) -> Self {
         Self {
             data: buffer.data.into(),
         }
@@ -1416,9 +1443,11 @@ impl<'a, T: Scalar> SliceRepr<'a, T> {
             _m: PhantomData::default(),
         })
     }
-    fn slice(mut self, range: impl RangeBounds<usize>) -> Option<Self> {
-        self.raw = self.raw.slice(range, T::scalar_type())?;
-        Some(self)
+    fn slice(self, range: impl RangeBounds<usize>) -> Option<Self> {
+        Some(Self {
+            raw: self.raw.slice(range, T::scalar_type())?,
+            ..self
+        })
     }
 }
 
@@ -1527,9 +1556,11 @@ impl<'a, T: Scalar> SliceMutRepr<'a, T> {
             _m: PhantomData::default(),
         })
     }
-    fn slice(mut self, range: impl RangeBounds<usize>) -> Option<Self> {
-        self.raw = self.raw.slice(range, T::scalar_type())?;
-        Some(self)
+    fn slice(self, range: impl RangeBounds<usize>) -> Option<Self> {
+        Some(Self {
+            raw: self.raw.slice(range, T::scalar_type())?,
+            ..self
+        })
     }
 }
 
@@ -1885,7 +1916,7 @@ impl<'a, T: Scalar> From<Slice<'a, T>> for CowBuffer<'a, T> {
     }
 }
 
-impl<'a, T: Scalar> From<Buffer<T>> for CowBuffer<'a, T> {
+impl<T: Scalar> From<Buffer<T>> for CowBuffer<'_, T> {
     fn from(buffer: Buffer<T>) -> Self {
         Self {
             data: buffer.data.into(),
@@ -2011,6 +2042,21 @@ impl<T: Scalar, S: Data<Elem = T>> BufferBase<S> {
     {
         let data = self.data.as_slice_mut();
         SliceMut { data }
+    }
+    /// Borrows as a mutable slice if possible.
+    pub fn get_slice_mut(&mut self) -> Option<SliceMut<T>> {
+        Some(SliceMut {
+            data: self.data.get_slice_mut()?,
+        })
+    }
+    /// Borrows as a mutable slice, cloning if necessary.
+    pub fn make_slice_mut(&mut self) -> Result<SliceMut<T>>
+    where
+        S: DataOwned,
+    {
+        Ok(SliceMut {
+            data: self.data.make_slice_mut()?,
+        })
     }
     /** Borrow as a host slice.
 
