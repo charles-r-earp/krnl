@@ -425,16 +425,12 @@ impl ScalarData for ScalarSliceRepr<'_> {
     }
 }
 
-#[derive(Serialize, Deserialize)]
-#[serde(rename = "Buffer")]
-struct BufferSerde<'a>(ScalarType, #[serde(with = "serde_bytes")] &'a [u8]);
-
 impl Serialize for ScalarSliceRepr<'_> {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: Serializer,
     {
-        use serde::ser::Error;
+        use serde::ser::{Error, SerializeSeq, SerializeTupleStruct};
 
         let scalar_type = self.scalar_type;
         let slice: ScalarCowBufferRepr = if self.device().is_host() {
@@ -448,8 +444,36 @@ impl Serialize for ScalarSliceRepr<'_> {
         let slice = SliceRepr::<u8>::try_from(slice.bitcast(ScalarType::U8).unwrap())
             .ok()
             .unwrap();
-        let bytes = slice.as_host_slice().unwrap();
-        BufferSerde(scalar_type, bytes).serialize(serializer)
+        let data = BufferData {
+            bytes: slice.as_host_slice().unwrap(),
+        };
+        let mut tuple_struct = serializer.serialize_tuple_struct("Buffer", 3)?;
+        tuple_struct.serialize_field(&scalar_type)?;
+        tuple_struct.serialize_field(&self.len())?;
+        tuple_struct.serialize_field(&data)?;
+
+        struct BufferData<'a> {
+            bytes: &'a [u8],
+        }
+
+        impl Serialize for BufferData<'_> {
+            fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+            where
+                S: Serializer,
+            {
+                let len = self.bytes.len();
+                let items = len / 8 + (len % 8 != 0) as usize;
+                let mut seq = serializer.serialize_seq(Some(items))?;
+                for chunk in self.bytes.chunks(8) {
+                    let mut item = 0u64;
+                    bytemuck::bytes_of_mut(&mut item)[..chunk.len()].copy_from_slice(chunk);
+                    seq.serialize_element(&item.to_be())?;
+                }
+                seq.end()
+            }
+        }
+
+        tuple_struct.end()
     }
 }
 
@@ -458,12 +482,97 @@ impl<'de> Deserialize<'de> for ScalarBufferRepr {
     where
         D: Deserializer<'de>,
     {
-        let BufferSerde(scalar_type, bytes) = BufferSerde::deserialize(deserializer)?;
-        Ok(ScalarSliceRepr::from(SliceRepr::from_host_slice(bytes))
-            .bitcast(scalar_type)
-            .unwrap()
-            .to_scalar_buffer()
-            .unwrap())
+        use serde::de::{DeserializeSeed, Error, SeqAccess, Visitor};
+
+        struct BufferVisitor;
+
+        impl<'de> Visitor<'de> for BufferVisitor {
+            type Value = ScalarBufferRepr;
+            fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+                write!(formatter, "struct Buffer")
+            }
+            fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
+            where
+                A: SeqAccess<'de>,
+            {
+                let scalar_type = if let Some(scalar_type) = seq.next_element::<ScalarType>()? {
+                    scalar_type
+                } else {
+                    return Err(A::Error::custom("expected ScalarType"));
+                };
+                let len = if let Some(len) = seq.next_element::<usize>()? {
+                    len
+                } else {
+                    return Err(A::Error::custom("expected usize"));
+                };
+                let visitor = BufferDataVisitor { scalar_type, len };
+                if let Some(buffer) = seq.next_element_seed(visitor)? {
+                    Ok(buffer)
+                } else {
+                    return Err(A::Error::custom("expected sequence"));
+                }
+            }
+        }
+
+        struct BufferDataVisitor {
+            scalar_type: ScalarType,
+            len: usize,
+        }
+
+        impl BufferDataVisitor {
+            fn parse<'de, T: Scalar, A>(self, mut seq: A) -> Result<ScalarBufferRepr, A::Error>
+            where
+                A: SeqAccess<'de>,
+            {
+                let Self { scalar_type, len } = self;
+                let mut data = Vec::<T>::with_capacity(len);
+                while data.len() < len {
+                    if let Some(item) = seq.next_element::<u64>()? {
+                        let item = u64::from_be(item);
+                        data.extend(bytemuck::cast_slice(&[item]));
+                    } else {
+                        break;
+                    }
+                }
+                if data.len() != len {
+                    return Err(A::Error::invalid_length(
+                        data.len(),
+                        &len.to_string().as_str(),
+                    ));
+                }
+                assert_eq!(size_of::<T>(), scalar_type.size());
+                let raw = BufferRepr::from_vec(data).raw;
+                Ok(ScalarBufferRepr { raw, scalar_type })
+            }
+        }
+
+        impl<'de> Visitor<'de> for BufferDataVisitor {
+            type Value = ScalarBufferRepr;
+            fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+                write!(formatter, "buffer data")
+            }
+            fn visit_seq<A>(self, seq: A) -> Result<Self::Value, A::Error>
+            where
+                A: SeqAccess<'de>,
+            {
+                match self.scalar_type.size() {
+                    4 => self.parse::<u32, _>(seq),
+                    _ => todo!(),
+                }
+            }
+        }
+
+        impl<'de> DeserializeSeed<'de> for BufferDataVisitor {
+            type Value = ScalarBufferRepr;
+            fn deserialize<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
+            where
+                D: Deserializer<'de>,
+            {
+                deserializer.deserialize_seq(self)
+            }
+        }
+
+        deserializer.deserialize_tuple_struct("Buffer", 3, BufferVisitor)
     }
 }
 
@@ -2474,17 +2583,21 @@ mod tests {
     use serde_test::{assert_tokens, Token};
 
     #[test]
-    fn buffer_serde() {
-        static DATA: &[u32] = &[1u32, 2, 3, 4];
-        let bytes: &[u8] = bytemuck::cast_slice(&DATA);
-        let buffer = Buffer::from_vec(DATA.to_vec());
+    fn buffer_serde_tokens() {
+        let input = vec![1u32, 2, 3, 4];
+        let items: &[u64] = bytemuck::cast_slice(input.as_slice());
+        let buffer = Buffer::from_vec(input.clone());
         let tokens = [
             Token::TupleStruct {
                 name: "Buffer",
-                len: 2,
+                len: 3,
             },
             Token::Str("U32"),
-            Token::BorrowedBytes(bytes),
+            Token::U64(4),
+            Token::Seq { len: Some(2) },
+            Token::U64(items[0].to_be()),
+            Token::U64(items[1].to_be()),
+            Token::SeqEnd,
             Token::TupleStructEnd,
         ];
 
@@ -2499,6 +2612,29 @@ mod tests {
         }
 
         impl Eq for BufferWrap {}
+
         assert_tokens(&BufferWrap(buffer), &tokens);
+    }
+
+    #[test]
+    fn buffer_serde_json() {
+        let x_vec = vec![1u32, 2, 3, 4];
+        let string = serde_json::to_string(&Buffer::from_vec(x_vec.clone())).unwrap();
+        let y_vec = serde_json::from_str::<Buffer<u32>>(&string)
+            .unwrap()
+            .into_vec()
+            .unwrap();
+        assert_eq!(x_vec, y_vec);
+    }
+
+    #[test]
+    fn buffer_serde_bincode2() {
+        let x_vec = vec![1u32, 2, 3, 4];
+        let bytes = bincode2::serialize(&Buffer::from_vec(x_vec.clone())).unwrap();
+        let y_vec = bincode2::deserialize::<Buffer<u32>>(&bytes)
+            .unwrap()
+            .into_vec()
+            .unwrap();
+        assert_eq!(x_vec, y_vec);
     }
 }
