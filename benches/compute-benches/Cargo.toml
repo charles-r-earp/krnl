@@ -13,7 +13,7 @@ autobenches = false
 [dependencies]
 approx = "0.5.1"
 anyhow.workspace = true
-criterion = { version = "0.4.0", default-features = false, features = ["plotters"] }
+criterion = { version = "0.4.0", default-features = false }
 cust = { version = "0.3.2", optional = true }
 futures = { version = "0.1", optional = true }
 krnl = { workspace = true, default-features = false }

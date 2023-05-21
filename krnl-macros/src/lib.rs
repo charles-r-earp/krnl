@@ -1001,7 +1001,13 @@ impl KernelMeta {
             .collect()
     }
     fn host_array_length_checks(&self) -> TokenStream2 {
-        let spec_def_args = self.spec_def_args();
+        let mut spec_def_args = self.spec_def_args();
+        for arg in spec_def_args.iter_mut() {
+            *arg = quote! {
+                #[allow(unused_variables)]
+                #arg
+            };
+        }
         self.arg_metas
             .iter()
             .flat_map(|arg| {

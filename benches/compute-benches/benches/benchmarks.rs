@@ -5,7 +5,7 @@ use compute_benches::cuda_backend::CudaBackend;
 use compute_benches::krnl_backend::KrnlBackend;
 #[cfg(feature = "ocl")]
 use compute_benches::ocl_backend::OclBackend;
-use criterion::{criterion_group, criterion_main, Criterion, PlottingBackend};
+use criterion::{criterion_group, criterion_main, Criterion};
 use rand::{distributions::OpenClosed01, thread_rng, Rng};
 use std::{
     str::FromStr,
@@ -67,9 +67,7 @@ pub fn criterion_benchmark(c: &mut Criterion) {
     let x: Vec<f32> = thread_rng().sample_iter(OpenClosed01).take(n_max).collect();
     let alpha = 0.5;
     let y: Vec<f32> = thread_rng().sample_iter(OpenClosed01).take(n_max).collect();
-    *c = std::mem::take(c)
-        .plotting_backend(PlottingBackend::Plotters)
-        .with_plots();
+
     let mut g = c.benchmark_group("compute");
     {
         let krnl = KrnlBackend::new(device_index).unwrap();
@@ -90,43 +88,25 @@ pub fn criterion_benchmark(c: &mut Criterion) {
         for (s, n) in lens {
             let mut upload = krnl.upload(&x[..n]).unwrap();
             g.bench_function(&format!("upload_{s}_krnl"), move |b| {
-                b.iter_custom(|i| {
-                    let mut duration = Duration::default();
-                    for _ in 0..i {
-                        let start = Instant::now();
-                        upload.run().unwrap();
-                        duration += start.elapsed();
-                    }
-                    duration
-                });
+                b.iter(|| upload.run().unwrap());
             });
         }
         for (s, n) in lens {
             let mut download = krnl.download(&x[..n]).unwrap();
             g.bench_function(&format!("download_{s}_krnl"), move |b| {
-                b.iter_custom(|i| {
-                    let mut duration = Duration::default();
-                    for _ in 0..i {
-                        let start = Instant::now();
-                        download.run().unwrap();
-                        duration += start.elapsed();
-                    }
-                    duration
-                });
+                b.iter(|| download.run().unwrap());
+            });
+        }
+        for (s, n) in lens {
+            let mut zero = krnl.zero(n).unwrap();
+            g.bench_function(&format!("zero_{s}_krnl"), move |b| {
+                b.iter(|| zero.run().unwrap());
             });
         }
         for (s, n) in lens {
             let mut saxpy = krnl.saxpy(&x[..n], alpha, &y[..n]).unwrap();
             g.bench_function(&format!("saxpy_{s}_krnl"), move |b| {
-                b.iter_custom(|i| {
-                    let mut duration = Duration::default();
-                    for _ in 0..i {
-                        let start = Instant::now();
-                        saxpy.run().unwrap();
-                        duration += start.elapsed();
-                    }
-                    duration
-                });
+                b.iter(|| saxpy.run().unwrap());
             });
         }
     }
@@ -213,43 +193,25 @@ pub fn criterion_benchmark(c: &mut Criterion) {
         for (s, n) in lens {
             let mut upload = cuda.upload(&x[..n]).unwrap();
             g.bench_function(&format!("upload_{s}_cuda"), move |b| {
-                b.iter_custom(|i| {
-                    let mut duration = Duration::default();
-                    for _ in 0..i {
-                        let start = Instant::now();
-                        upload.run().unwrap();
-                        duration += start.elapsed();
-                    }
-                    duration
-                });
+                b.iter(|| upload.run().unwrap());
             });
         }
         for (s, n) in lens {
             let mut download = cuda.download(&x[..n]).unwrap();
             g.bench_function(&format!("download_{s}_cuda"), move |b| {
-                b.iter_custom(|i| {
-                    let mut duration = Duration::default();
-                    for _ in 0..i {
-                        let start = Instant::now();
-                        download.run().unwrap();
-                        duration += start.elapsed();
-                    }
-                    duration
-                });
+                b.iter(|| download.run().unwrap());
+            });
+        }
+        for (s, n) in lens {
+            let mut zero = cuda.zero(n).unwrap();
+            g.bench_function(&format!("zero_{s}_cuda"), move |b| {
+                b.iter(|| zero.run().unwrap());
             });
         }
         for (s, n) in lens {
             let mut saxpy = cuda.saxpy(&x[..n], alpha, &y[..n]).unwrap();
             g.bench_function(&format!("saxpy_{s}_cuda"), move |b| {
-                b.iter_custom(|i| {
-                    let mut duration = Duration::default();
-                    for _ in 0..i {
-                        let start = Instant::now();
-                        saxpy.run().unwrap();
-                        duration += start.elapsed();
-                    }
-                    duration
-                });
+                b.iter(|| saxpy.run().unwrap());
             });
         }
     }
@@ -301,15 +263,7 @@ pub fn criterion_benchmark(c: &mut Criterion) {
         for (s, n) in lens {
             let mut saxpy = ocl.saxpy(&x[..n], alpha, &y[..n]).unwrap();
             g.bench_function(&format!("saxpy_{s}_ocl"), move |b| {
-                b.iter_custom(|i| {
-                    let mut duration = Duration::default();
-                    for _ in 0..i {
-                        let start = Instant::now();
-                        saxpy.run().unwrap();
-                        duration += start.elapsed();
-                    }
-                    duration
-                });
+                b.iter(|| saxpy.run().unwrap());
             });
         }
     }

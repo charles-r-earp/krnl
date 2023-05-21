@@ -76,6 +76,9 @@ impl CudaBackend {
             y_host: vec![0f32; x.len()],
         })
     }
+    pub fn zero(&self, n: usize) -> Result<Zero> {
+        Zero::new(self.cuda.clone(), n)
+    }
     pub fn saxpy(&self, x: &[f32], alpha: f32, y: &[f32]) -> Result<Saxpy> {
         assert_eq!(x.len(), y.len());
         let x_device = DeviceBuffer::from_slice(x)?;
@@ -133,6 +136,27 @@ impl Download {
         #[cfg(debug_assertions)]
         {
             assert_eq!(self.y_host, self.x_host);
+        }
+        Ok(())
+    }
+}
+
+pub struct Zero {
+    cuda: Arc<Cuda>,
+    y_device: DeviceBuffer<f32>,
+}
+
+impl Zero {
+    fn new(cuda: Arc<Cuda>, len: usize) -> Result<Self> {
+        let y_device = DeviceBuffer::zeroed(len)?;
+        Ok(Self { cuda, y_device })
+    }
+    pub fn run(&mut self) -> Result<()> {
+        self.y_device.set_zero()?;
+        #[cfg(debug_assertions)]
+        {
+            let y_host = self.y_device.as_host_vec()?;
+            assert_eq!(y_host, vec![0f32; self.y_device.len()]);
         }
         Ok(())
     }

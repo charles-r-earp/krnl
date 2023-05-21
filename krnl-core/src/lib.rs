@@ -9,10 +9,15 @@ Shared core library for [**krnl**](https://docs.rs/krnl).
 #![forbid(unsafe_op_in_unsafe_fn)]
 #![warn(missing_docs)]
 
+#[allow(missing_docs)]
 pub extern crate glam;
+#[allow(missing_docs)]
 pub extern crate half;
+#[allow(missing_docs)]
 pub extern crate krnl_macros as macros;
+#[allow(missing_docs)]
 pub extern crate num_traits;
+#[allow(missing_docs)]
 pub extern crate spirv_std;
 
 /// Buffers for use in kernels.

@@ -108,10 +108,14 @@ fn main() -> Result<()> {
 ```
 */
 
-#![forbid(unsafe_op_in_unsafe_fn, missing_docs)]
+#![forbid(unsafe_op_in_unsafe_fn)]
+#![warn(missing_docs)]
 
+#[allow(missing_docs)]
 pub extern crate anyhow;
+#[allow(missing_docs)]
 pub extern crate krnl_core;
+#[allow(missing_docs)]
 pub extern crate krnl_macros as macros;
 #[doc(hidden)]
 pub extern crate once_cell;

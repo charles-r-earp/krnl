@@ -43,6 +43,9 @@ impl KrnlBackend {
             y_host: vec![0f32; x.len()],
         })
     }
+    pub fn zero(&self, n: usize) -> Result<Zero> {
+        Zero::new(self.device.clone(), n)
+    }
     pub fn saxpy(&self, x: &[f32], alpha: f32, y: &[f32]) -> Result<Saxpy> {
         assert_eq!(x.len(), y.len());
         let device = self.device.clone();
@@ -102,6 +105,28 @@ impl Download {
         #[cfg(debug_assertions)]
         {
             assert_eq!(self.y_host, self.x_host);
+        }
+        Ok(())
+    }
+}
+
+pub struct Zero {
+    y_device: Buffer<f32>,
+}
+
+impl Zero {
+    fn new(device: Device, len: usize) -> Result<Self> {
+        Ok(Self {
+            y_device: Buffer::zeros(device, len)?,
+        })
+    }
+    pub fn run(&mut self) -> Result<()> {
+        self.y_device.fill(0f32)?;
+        self.y_device.device().wait()?;
+        #[cfg(debug_assertions)]
+        {
+            let y_host = self.y_device.to_vec()?;
+            assert_eq!(y_host, vec![0f32; self.y_device.len()]);
         }
         Ok(())
     }

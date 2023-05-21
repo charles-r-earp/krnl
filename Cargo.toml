@@ -85,7 +85,7 @@ crossbeam-channel = { version = "0.5.8", optional = true }
 [features]
 default = ["device"]
 # Enables device functionality. Not supported on the web.
-device = ["dep:vulkano", "dep:ash", "dep:dashmap", "dep:rspirv", "dep:fxhash", "crossbeam-channel"]
+device = ["dep:vulkano", "dep:ash", "dep:dashmap", "dep:rspirv", "dep:fxhash", "dep:crossbeam-channel"]
 
 [package.metadata.krnlc]
 default-features = false
