@@ -4,13 +4,13 @@ use anyhow::{bail, format_err, Error, Result};
 use cargo_metadata::{Metadata, Package, PackageId};
 use clap::Parser;
 use clap_cargo::{Manifest, Workspace};
-use fxhash::FxHashMap;
+use fxhash::{FxHashMap, FxHashSet};
 use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
 use semver::{Version, VersionReq};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use spirv_builder::{MetadataPrintout, SpirvBuilder, SpirvMetadata};
 use std::{
-    path::PathBuf,
+    path::{Path, PathBuf},
     process::{Command, Stdio},
     str::FromStr,
 };
@@ -605,13 +605,15 @@ extern crate krnl_core;
         }
     }
     let crate_name_ident = crate_name.replace('-', "_");
+    let kernels_dir = device_crate_dir.join("kernels");
+    std::fs::create_dir_all(&kernels_dir)?;
     let modules = {
         // run spirv-builder
         let mut builder = SpirvBuilder::new(&device_crate_dir, "spirv-unknown-vulkan1.2")
             .spirv_metadata(SpirvMetadata::NameVariables)
             .print_metadata(MetadataPrintout::None)
             .deny_warnings(true);
-        // .extra_arg("--no-spirv-opt");
+
         if non_semantic_info {
             builder = builder.extension("SPV_KHR_non_semantic_info");
         }
@@ -634,15 +636,25 @@ extern crate krnl_core;
         let spirv_path = output.module.unwrap_single();
         let spirv_module = rspirv::dr::load_bytes(std::fs::read(spirv_path)?)
             .map_err(|e| Error::msg(e.to_string()))?;
-        let start = std::time::Instant::now();
+        let entry_fns: FxHashSet<u32> = spirv_module
+            .entry_points
+            .iter()
+            .map(|inst| inst.operands[1].unwrap_id_ref())
+            .collect();
         let kernels: Vec<_> = spirv_module
             .entry_points
             .par_iter()
             .map(|entry_point| {
-                kernel_post_process(&crate_name_ident, entry_point, &spirv_module, &module_datas)
+                kernel_post_process(
+                    &kernels_dir,
+                    &crate_name_ident,
+                    entry_point,
+                    &spirv_module,
+                    &entry_fns,
+                    &module_datas,
+                )
             })
             .collect();
-        println!("kernel_post_process: {:?}", start.elapsed());
         let mut modules =
             FxHashMap::<String, FxHashMap<String, KernelDesc>>::with_capacity_and_hasher(
                 module_datas.len(),
@@ -670,9 +682,11 @@ extern crate krnl_core;
 }
 
 fn kernel_post_process(
+    kernels_dir: &Path,
     crate_name_ident: &str,
     entry_point: &rspirv::dr::Instruction,
     spirv_module: &rspirv::dr::Module,
+    entry_fns: &FxHashSet<u32>,
     module_datas: &FxHashMap<String, ModuleData>,
 ) -> Result<(String, (String, KernelDesc))> {
     use rspirv::{
@@ -682,24 +696,30 @@ fn kernel_post_process(
     };
     let entry_id = entry_point.operands[1].unwrap_id_ref();
     let entry_name = entry_point.operands[2].unwrap_literal_string().to_owned();
-    let start = std::time::Instant::now();
-    println!("{entry_name}: started");
     let execution_mode = spirv_module
         .execution_modes
         .iter()
         .find(|inst| inst.operands.first().unwrap().unwrap_id_ref() == entry_id)
         .unwrap();
+    let functions = spirv_module
+        .functions
+        .iter()
+        .filter(|f| {
+            let id = f.def.as_ref().unwrap().result_id.unwrap();
+            id == entry_id || !entry_fns.contains(&id)
+        })
+        .cloned()
+        .collect();
     let (module_name_with_hash, kernel_name) = entry_name.split_once("::").unwrap();
     let module_data = module_datas.get(module_name_with_hash).unwrap();
     let spirv_module = Module {
         entry_points: vec![entry_point.clone()],
         execution_modes: vec![execution_mode.clone()],
+        functions,
         ..spirv_module.clone()
     };
     let spirv = spirv_module.assemble();
-    println!("{entry_name}: opt");
     let spirv = spirv_opt(&spirv, SpirvOptKind::DeadCodeElimination)?;
-    println!("{entry_name}: opt done in {:?}", start.elapsed());
     let mut spirv_module = rspirv::dr::load_words(&spirv).map_err(|e| Error::msg(e.to_string()))?;
     let module_path = &module_data.path;
     let mut kernel_desc: KernelDesc = {
@@ -995,21 +1015,31 @@ fn kernel_post_process(
             _ => true,
         }
     });
+    //unroll_loops(&mut spirv_module);
     let spirv = spirv_module.assemble();
-    println!("{entry_name}: opt2");
-    kernel_desc.spirv = spirv_opt(&spirv, SpirvOptKind::Performance)?;
+    let spirv = spirv_opt(&spirv, SpirvOptKind::Performance)?;
+    {
+        let path = kernels_dir.join(kernel_desc.name.replace("::", "__"));
+        let string = serde_json::to_string_pretty(&kernel_desc)?;
+        std::fs::write(path.with_extension("json"), string.as_bytes())?;
+        std::fs::write(
+            path.with_extension("spv"),
+            bytemuck::cast_slice(spirv.as_slice()),
+        )?;
+    }
+    kernel_desc.spirv = spirv;
     let kernel_name_with_hash = format!(
         "{}_{}",
         kernel_name.rsplit("::").next().unwrap(),
         kernel_desc.hash
     );
-    println!("{entry_name}: finished in {:?}", start.elapsed());
     Ok((
         module_name_with_hash.to_string(),
         (kernel_name_with_hash, kernel_desc),
     ))
 }
 
+#[derive(Clone, Copy, Debug)]
 enum SpirvOptKind {
     DeadCodeElimination,
     Performance,
@@ -1017,41 +1047,73 @@ enum SpirvOptKind {
 
 fn spirv_opt(spirv: &[u32], kind: SpirvOptKind) -> Result<Vec<u32>> {
     use spirv_tools::{
-        assembler::{Assembler, DisassembleOptions},
         opt::{Optimizer, Passes},
         val::Validator,
         TargetEnv,
     };
     let target_env = TargetEnv::Vulkan_1_2;
-    let assembler = spirv_tools::assembler::create(Some(target_env));
     let validator = spirv_tools::val::create(Some(target_env));
-    /*let dump_asm = || {
-        let options = DisassembleOptions {
-            color: true,
-            indent: true,
-            use_friendly_names: true,
-            ..Default::default()
-        };
-        let asm = assembler.disassemble(&spirv, options).unwrap().unwrap();
-        eprintln!("{asm}");
-    };*/
-    validator.validate(&spirv, None).map_err(|e| {
-        //dump_asm();
-        e
-    })?;
+    validator.validate(&spirv, None)?;
     let mut optimizer = spirv_tools::opt::create(Some(target_env));
     match kind {
         SpirvOptKind::DeadCodeElimination => {
-            let passes = [Passes::EliminateDeadFunctions, Passes::CompactIds];
+            let passes = {
+                use Passes::*;
+                [
+                    EliminateDeadFunctions,
+                    DeadVariableElimination,
+                    EliminateDeadConstant,
+                    CombineAccessChains,
+                    //CFGCleanup,
+                    CompactIds,
+                ]
+            };
             for pass in passes {
                 optimizer.register_pass(pass);
             }
-            optimizer.register_size_passes();
         }
         SpirvOptKind::Performance => {
+            /*let passes = {
+                use Passes::*;
+                [
+                    DeadBranchElim,
+                    MergeReturn,
+                    PrivateToLocal,
+                    LocalMultiStoreElim,
+                    ConditionalConstantPropagation,
+                    DeadBranchElim,
+                    Simplification,
+                    LocalSingleStoreElim,
+                    IfConversion,
+                    Simplification,
+                    AggressiveDCE,
+                    DeadBranchElim,
+                    BlockMerge,
+                    LocalAccessChainConvert,
+                    LocalSingleBlockLoadStoreElim,
+                    AggressiveDCE,
+                    CopyPropagateArrays,
+                    VectorDCE,
+                    DeadInsertElim,
+                    EliminateDeadMembers,
+                    LocalSingleStoreElim,
+                    BlockMerge,
+                    LocalMultiStoreElim,
+                    RedundancyElimination,
+                    Simplification,
+                    AggressiveDCE,
+                    CFGCleanup,
+                    CompactIds,
+                ]
+            };
+            for pass in passes {
+                optimizer.register_pass(pass);
+            }*/
             optimizer.register_performance_passes();
+            //optimizer.register_pass(Passes::LoopPeeling);
         }
     }
+    //optimizer.register_performance_passes();
     let spirv = optimizer
         .optimize(&spirv, &mut |_| (), None)?
         .as_words()
@@ -1169,6 +1231,25 @@ fn add_spec_constant_ops(module: &mut rspirv::dr::Module) {
         }
     }
 }
+/*
+fn unroll_loops(module: &mut rspirv::dr::Module) {
+    use rspirv::{
+        dr::Operand,
+        spirv::{LoopControl, Op},
+    };
+    for func in module.functions.iter_mut() {
+        for block in func.blocks.iter_mut() {
+            for inst in block.instructions.iter_mut() {
+                if inst.class.opcode == Op::LoopMerge {
+                    let loop_control = inst.operands[2].unwrap_loop_control();
+                    if loop_control == LoopControl::NONE {
+                        inst.operands[2] = Operand::LoopControl(LoopControl::UNROLL);
+                    }
+                }
+            }
+        }
+    }
+}*/
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum ScalarType {

@@ -509,7 +509,7 @@ impl<'de> Deserialize<'de> for ScalarBufferRepr {
                 if let Some(buffer) = seq.next_element_seed(visitor)? {
                     Ok(buffer)
                 } else {
-                    return Err(A::Error::custom("expected sequence"));
+                    Err(A::Error::custom("expected sequence"))
                 }
             }
         }
@@ -1375,7 +1375,14 @@ impl<T: Scalar> BufferRepr<T> {
     }
     unsafe fn uninit(device: Device, len: usize) -> Result<Self> {
         match device.inner() {
-            DeviceInner::Host => Ok(Self::from_vec(vec![T::zero(); len])),
+            DeviceInner::Host => {
+                let mut vec = Vec::with_capacity(len);
+                #[allow(clippy::uninit_vec)]
+                unsafe {
+                    vec.set_len(len);
+                }
+                Ok(Self::from_vec(vec))
+            }
             #[cfg(feature = "device")]
             DeviceInner::Device(device) => {
                 let width = size_of::<T>();

@@ -489,6 +489,7 @@ version = "0.0.3-alpha"
 dependencies = [
  "anyhow",
  "bincode2",
+ "bytemuck",
  "cargo_metadata",
  "clap",
  "clap-cargo",
@@ -501,6 +502,7 @@ dependencies = [
  "rustversion",
  "semver",
  "serde",
+ "serde_json",
  "spirv-builder",
  "spirv-tools",
  "symlink",

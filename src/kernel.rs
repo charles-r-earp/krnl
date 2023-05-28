@@ -431,6 +431,28 @@ impl KernelDesc {
         use rspirv::spirv::{Decoration, Op};
         let mut module = rspirv::dr::load_words(&self.spirv).unwrap();
         let mut spec_ids = HashMap::<u32, u32>::with_capacity(spec_consts.len());
+        let mut spec_string = String::new();
+        use std::fmt::Write;
+        for (desc, spec) in self.spec_descs.iter().zip(spec_consts) {
+            if !spec_string.is_empty() {
+                spec_string.push_str(", ");
+            }
+            let n = desc.name.as_str();
+            match spec {
+                ScalarElem::U32(x) => {
+                    write!(&mut spec_string, "{n}={x}")?;
+                }
+                ScalarElem::I32(x) => {
+                    write!(&mut spec_string, "{n}={x}")?;
+                }
+                _ => todo!(),
+            }
+        }
+        let name = if !spec_string.is_empty() {
+            format!("{}<{spec_string}>", self.name)
+        } else {
+            self.name.clone()
+        };
         for inst in module.annotations.iter() {
             if inst.class.opcode == Op::Decorate {
                 if let [Operand::IdRef(id), Operand::Decoration(Decoration::SpecId), Operand::LiteralInt32(spec_id)] =
@@ -462,8 +484,38 @@ impl KernelDesc {
                 }
             }
         }
+        module.debug_names.clear();
         let spirv = module.assemble();
+        /*let spirv = {
+            use spirv_tools::{
+                opt::{Optimizer, Passes},
+                TargetEnv,
+            };
+            let target_env = TargetEnv::Vulkan_1_2;
+            let mut optimizer = spirv_tools::opt::create(Some(target_env));
+            let passes = [
+                Passes::FreezeSpecConstantValue,
+                Passes::FoldSpecConstantOpAndComposite,
+            ];
+            for pass in passes {
+                optimizer.register_pass(pass);
+            }
+            optimizer.register_performance_passes();
+            let spirv = optimizer
+                .optimize(&spirv, &mut |_| (), None)?
+                .as_words()
+                .to_vec();
+            let kernels_dir = std::path::PathBuf::from(std::env::var("KERNELS_DIR").unwrap());
+            std::fs::write(
+                kernels_dir
+                    .join(name.replace([':', ',', ' ', '<', '>', '='], "_"))
+                    .with_extension("spv"),
+                bytemuck::cast_slice(spirv.as_slice()),
+            )?;
+            spirv
+        };*/
         Ok(Self {
+            name,
             spirv,
             spec_descs: Vec::new(),
             threads,

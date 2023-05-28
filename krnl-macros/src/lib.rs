@@ -933,7 +933,7 @@ impl KernelMeta {
             })
             .collect();
         let spec_args: Punctuated<_, Comma> = self.spec_args().into_iter().collect();
-        let group_barrier = if self.arg_metas.iter().any(|arg| arg.kind.is_global()) {
+        let group_barrier = if self.arg_metas.iter().any(|arg| arg.kind.is_group()) {
             quote! {
                 unsafe {
                      ::krnl_core::spirv_std::arch::workgroup_memory_barrier();

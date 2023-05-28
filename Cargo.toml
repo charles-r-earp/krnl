@@ -73,6 +73,7 @@ dashmap = { version = "5.3.4", optional = true }
 rspirv = { workspace = true, optional = true }
 fxhash = { workspace = true, optional = true }
 serde_bytes = "0.11.9"
+#spirv-tools = { version = "0.9.0", default-features = false, features = ["use-installed-tools"], optional = true }
 
 #[target."cfg(any(target_os = \"ios\", target_os = \"macos\"))".dependencies]
 #ash-molten = { version = "0.13.1", features = ["external"], optional = true }

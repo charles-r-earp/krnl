@@ -111,15 +111,16 @@ fn main() -> Result<()> {
 #![forbid(unsafe_op_in_unsafe_fn)]
 #![warn(missing_docs)]
 
-#[allow(missing_docs)]
+/// anyhow
 pub extern crate anyhow;
-#[allow(missing_docs)]
+/// krnl-core
 pub extern crate krnl_core;
-#[allow(missing_docs)]
+/// krnl-macros
 pub extern crate krnl_macros as macros;
 #[doc(hidden)]
 pub extern crate once_cell;
 
+/// half
 pub use krnl_core::half;
 
 #[doc(inline)]
