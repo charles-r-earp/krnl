@@ -19,7 +19,7 @@ use std::{
     time::{Duration, Instant},
 };
 use vulkano::{
-    buffer::{Buffer, BufferCreateInfo, BufferError, BufferUsage, Subbuffer},
+    buffer::{Buffer, BufferCreateInfo, BufferUsage, Subbuffer},
     command_buffer::{
         pool::{CommandBufferAllocateInfo, CommandPool, CommandPoolCreateInfo},
         sys::{CommandBufferBeginInfo, UnsafeCommandBuffer, UnsafeCommandBufferBuilder},
@@ -208,7 +208,7 @@ impl DeviceEngine for Engine {
             GenericMemoryAllocatorCreateInfo {
                 block_sizes: &[
                     (0, 64_000_000),
-                    (DeviceBuffer::MAX_SIZE as _, DeviceBuffer::MAX_SIZE as _),
+                    (DeviceBuffer::MAX_SIZE as _, DeviceBuffer::MAX_SIZE as _),  
                 ],
                 dedicated_allocation: false,
                 ..Default::default()
@@ -739,19 +739,57 @@ impl DeviceEngineBuffer for DeviceBuffer {
             let buffer_info = BufferCreateInfo {
                 sharing,
                 usage,
+                size: len.try_into().unwrap(),
                 ..Default::default()
             };
             let allocation_info = AllocationCreateInfo {
                 usage: MemoryUsage::DeviceOnly,
                 ..Default::default()
             };
-            match Buffer::new_slice(
+            use vulkano::{buffer::sys::RawBuffer, memory::{DeviceAlignment, allocator::{MemoryAllocator, AllocationType}}};
+            let raw_buffer = RawBuffer::new(
+                engine.device.clone(),
+                buffer_info,
+            )?;
+            let align = DeviceAlignment::new(DeviceBuffer::ALIGN.try_into().unwrap()).unwrap();
+            let mut requirements = raw_buffer.memory_requirements().clone();
+            requirements.layout = requirements.layout.align_to(align).unwrap();
+            requirements.prefers_dedicated_allocation = false;
+            let memory_alloc = engine.memory_allocator.allocate(
+                requirements,
+                AllocationType::Unknown,
+                allocation_info,
+                None,
+            ).map_err(|e| {
+                if let AllocationCreationError::VulkanError(
+                        VulkanError::OutOfDeviceMemory
+                    ) = e {
+                    Error::new(OutOfDeviceMemory(engine.id())).context(e)
+                } else {
+                    e.into()
+                }
+            })?;
+            debug_assert!(!memory_alloc.is_root());
+            let buffer = raw_buffer.bind_memory(memory_alloc).map_err(|(e, _, _)| e)?;
+            Some(Subbuffer::new(Arc::new(buffer)))
+            /*match Buffer::new_slice(
                 &engine.memory_allocator,
                 buffer_info,
                 allocation_info,
                 len.try_into().unwrap(),
             ) {
-                Ok(inner) => Some(inner),
+                Ok(inner) => { 
+                    use vulkano::buffer::BufferMemory;
+                    let buffer = inner.buffer();
+                    let alloc = match buffer.memory() {
+                        BufferMemory::Normal(x) => x,
+                        _ => todo!(),
+                    };
+                    if alloc.is_root() {
+                        panic!("{:?}", (alloc.size(), alloc.device_memory().memory_type_index()));
+                    }
+                    Some(inner)
+                },
                 Err(
                     e @ BufferError::AllocError(AllocationCreationError::VulkanError(
                         VulkanError::OutOfDeviceMemory,
@@ -760,7 +798,7 @@ impl DeviceEngineBuffer for DeviceBuffer {
                 Err(e) => {
                     return Err(e.into());
                 }
-            }
+            }*/
         } else {
             None
         };
