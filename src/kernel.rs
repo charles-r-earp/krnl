@@ -823,9 +823,7 @@ pub mod __private {
                     debug_assert!(!slice_desc.mutable || slice.mutable());
                     let slice_name = &slice_desc.name;
                     if slice.len() == 0 {
-                        bail!(
-                            "Kernel `{kernel_name}`.`{slice_name}` is empty!"
-                        );
+                        bail!("Kernel `{kernel_name}`.`{slice_name}` is empty!");
                     }
                     let buffer = if let Some(buffer) = slice.device_buffer() {
                         buffer

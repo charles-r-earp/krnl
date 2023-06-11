@@ -210,7 +210,7 @@ impl DeviceEngine for Engine {
             frame_sender.send(frame).unwrap();
         }
         let memory_allocator = Arc::new(StandardMemoryAllocator::new(
-            device.clone(),
+            device,
             GenericMemoryAllocatorCreateInfo {
                 block_sizes: &[
                     (0, 64_000_000),
@@ -562,7 +562,7 @@ impl DeviceEngineBuffer for DeviceBuffer {
             let device = engine.queue.device();
             let raw_buffer = RawBuffer::new(device.clone(), buffer_info)?;
             let align = DeviceAlignment::new(DeviceBuffer::ALIGN.try_into().unwrap()).unwrap();
-            let mut requirements = raw_buffer.memory_requirements().clone();
+            let mut requirements = *raw_buffer.memory_requirements();
             requirements.layout = requirements.layout.align_to(align).unwrap();
             requirements.prefers_dedicated_allocation = false;
             engine.poll()?;
@@ -652,7 +652,7 @@ impl DeviceEngineBuffer for DeviceBuffer {
             unsafe {
                 wait_semaphore(device, &engine.semaphore, host_buffer.epoch)?;
             }
-            host_buffer_slice.write().unwrap().copy_from_slice(&chunk);
+            host_buffer_slice.write().unwrap().copy_from_slice(chunk);
             let mut frame = engine
                 .frame_receiver
                 .recv()
@@ -671,7 +671,7 @@ impl DeviceEngineBuffer for DeviceBuffer {
             queue.with(|guard| -> Result<()> {
                 let epoch = engine.epoch.load(Ordering::SeqCst);
                 unsafe {
-                    queue_submit(&queue, guard, &command_buffer, &engine.semaphore, epoch)?;
+                    queue_submit(queue, guard, &command_buffer, &engine.semaphore, epoch)?;
                 }
                 let epoch = epoch + 1;
                 engine.epoch.store(epoch, Ordering::SeqCst);
@@ -750,7 +750,7 @@ impl DeviceEngineBuffer for DeviceBuffer {
                 queue.with(|guard| -> Result<()> {
                     let epoch = engine.epoch.load(Ordering::SeqCst);
                     unsafe {
-                        queue_submit(&queue, guard, &command_buffer, &engine.semaphore, epoch)?;
+                        queue_submit(queue, guard, &command_buffer, &engine.semaphore, epoch)?;
                     }
                     let epoch = epoch + 1;
                     engine.epoch.store(epoch, Ordering::SeqCst);
@@ -872,7 +872,7 @@ impl DeviceEngineBuffer for DeviceBuffer {
                 queue1.with(|guard| -> Result<()> {
                     let epoch = engine1.epoch.load(Ordering::SeqCst);
                     unsafe {
-                        queue_submit(&queue1, guard, &command_buffer, &engine1.semaphore, epoch)?;
+                        queue_submit(queue1, guard, &command_buffer, &engine1.semaphore, epoch)?;
                     }
                     let epoch = epoch + 1;
                     engine1.epoch.store(epoch, Ordering::SeqCst);
@@ -933,7 +933,7 @@ impl DeviceEngineBuffer for DeviceBuffer {
                 queue2.with(|guard| -> Result<()> {
                     let epoch = engine2.epoch.load(Ordering::SeqCst);
                     unsafe {
-                        queue_submit(&queue2, guard, &command_buffer, &engine2.semaphore, epoch)?;
+                        queue_submit(queue2, guard, &command_buffer, &engine2.semaphore, epoch)?;
                     }
                     let epoch = epoch + 1;
                     engine2.epoch.store(epoch, Ordering::SeqCst);
@@ -1277,7 +1277,7 @@ impl DeviceEngineKernel for Kernel {
             let mut builder = unsafe { frame.command_buffer_builder()? };
             let compute_pipeline = &self.compute_pipeline;
             unsafe {
-                builder.bind_pipeline_compute(&compute_pipeline);
+                builder.bind_pipeline_compute(compute_pipeline);
             }
             let pipeline_layout = compute_pipeline.layout();
             if !buffers.is_empty() {
@@ -1342,7 +1342,7 @@ impl DeviceEngineKernel for Kernel {
         queue.with(|guard| -> Result<()> {
             let epoch = engine.epoch.load(Ordering::SeqCst);
             unsafe {
-                queue_submit(&queue, guard, &command_buffer, &engine.semaphore, epoch)?;
+                queue_submit(queue, guard, &command_buffer, &engine.semaphore, epoch)?;
             }
             let epoch = epoch + 1;
             engine.epoch.store(epoch, Ordering::SeqCst);
