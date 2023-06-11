@@ -38,22 +38,22 @@
 	</style>
 	<circle r="1e5" class="poloto_background"/>
 	<g id="poloto_plot0" class="poloto_plot poloto_imgs poloto_histo poloto0 poloto_fill">
-		<rect x="150.00" y="330.00" width="486.3610787059714" height="20"/>
-		<rect x="150.00" y="270.00" width="487.3225549409808" height="20"/>
-		<rect x="150.00" y="210.00" width="450.6523986137033" height="20"/>
+		<rect x="150.00" y="330.00" width="477.65392481358344" height="20"/>
+		<rect x="150.00" y="270.00" width="478.792202571604" height="20"/>
+		<rect x="150.00" y="210.00" width="307.7282751077418" height="20"/>
 		<rect x="150.00" y="150.00" width="500" height="20"/>
 	</g>
 	<g id="poloto_plot1" class="poloto_plot poloto_imgs poloto_histo poloto1 poloto_fill">
-		<rect x="150.00" y="330.00" width="478.2389303691036" height="20"/>
-		<rect x="150.00" y="270.00" width="484.3141983934006" height="20"/>
-		<rect x="150.00" y="210.00" width="279.6819387727502" height="20"/>
-		<rect x="150.00" y="150.00" width="467.61730770679355" height="20"/>
+		<rect x="150.00" y="330.00" width="470.0399751375945" height="20"/>
+		<rect x="150.00" y="270.00" width="476.3572864830651" height="20"/>
+		<rect x="150.00" y="210.00" width="100.86046531683505" height="20"/>
+		<rect x="150.00" y="150.00" width="493.89248167956885" height="20"/>
 	</g>
 	<g id="poloto_plot2" class="poloto_plot poloto_imgs poloto_histo poloto2 poloto_fill">
-		<rect x="150.00" y="330.00" width="419.68181168580884" height="20"/>
-		<rect x="150.00" y="270.00" width="460.50160702654296" height="20"/>
-		<rect x="150.00" y="210.00" width="75.40148423178778" height="20"/>
-		<rect x="150.00" y="150.00" width="368.56329677717383" height="20"/>
+		<rect x="150.00" y="330.00" width="411.28786181214014" height="20"/>
+		<rect x="150.00" y="270.00" width="451.33476014314374" height="20"/>
+		<rect x="150.00" y="210.00" width="14.924421323900845" height="20"/>
+		<rect x="150.00" y="150.00" width="429.13908305468624" height="20"/>
 	</g>
 	<g class="poloto_legend poloto_imgs poloto_bars poloto0 poloto_fill"><rect x="680" y="76.25" width="50" height="7.5" rx="5" ry="5"/></g>
 	<g class="poloto_legend poloto_imgs poloto_bars poloto1 poloto_fill"><rect x="680" y="126.25" width="50" height="7.5" rx="5" ry="5"/></g>
@@ -78,20 +78,20 @@
 	</g>
 	<text class="poloto_text poloto_ticks poloto_x">
 		<tspan x="150.00" y="430.00">0</tspan>
-		<tspan x="243.72" y="430.00">10</tspan>
-		<tspan x="337.44" y="430.00">20</tspan>
-		<tspan x="431.16" y="430.00">30</tspan>
-		<tspan x="524.88" y="430.00">40</tspan>
-		<tspan x="618.60" y="430.00">50</tspan>
+		<tspan x="241.74" y="430.00">10</tspan>
+		<tspan x="333.49" y="430.00">20</tspan>
+		<tspan x="425.23" y="430.00">30</tspan>
+		<tspan x="516.97" y="430.00">40</tspan>
+		<tspan x="608.72" y="430.00">50</tspan>
 	</text>
 	<g class="poloto_imgs poloto_ticks poloto_x">
 		<line x1="150.00" x2="150.00" y1="400.00" y2="405.00"/>
-		<line x1="243.72" x2="243.72" y1="400.00" y2="405.00"/>
-		<line x1="337.44" x2="337.44" y1="400.00" y2="405.00"/>
-		<line x1="431.16" x2="431.16" y1="400.00" y2="405.00"/>
-		<line x1="524.88" x2="524.88" y1="400.00" y2="405.00"/>
-		<line x1="618.60" x2="618.60" y1="400.00" y2="405.00"/>
+		<line x1="241.74" x2="241.74" y1="400.00" y2="405.00"/>
+		<line x1="333.49" x2="333.49" y1="400.00" y2="405.00"/>
+		<line x1="425.23" x2="425.23" y1="400.00" y2="405.00"/>
+		<line x1="516.97" x2="516.97" y1="400.00" y2="405.00"/>
+		<line x1="608.72" x2="608.72" y1="400.00" y2="405.00"/>
 	</g>
-	<path class="poloto_imgs poloto_ticks poloto_x" style="stroke-dasharray:9.37201166015625;stroke-dashoffset:-0;" d=" M 150.00 400.00 L 650.00 400.00"/>
+	<path class="poloto_imgs poloto_ticks poloto_x" style="stroke-dasharray:9.174316376065342;stroke-dashoffset:-0;" d=" M 150.00 400.00 L 650.00 400.00"/>
 	<path class="poloto_imgs poloto_ticks poloto_y" d=" M 150.00 400.00 L 150.00 100.00"/>
 </svg>

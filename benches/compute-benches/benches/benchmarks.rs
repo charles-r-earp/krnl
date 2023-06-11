@@ -31,7 +31,7 @@ pub fn criterion_benchmark(c: &mut Criterion) {
             0
         };
         println!("testing cuda device {cuda_device_index}");
-        device_index
+        cuda_device_index
     } else {
         0
     };

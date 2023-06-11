@@ -221,8 +221,8 @@ fn buffer_transfer(device: Device, device2: Device) {
             .into_vec()
             .unwrap();
         if x != y.as_slice() {
-            for (x, y) in x.iter().zip(y) {
-                assert_eq!(&y, x);
+            for (i, (x, y)) in x.iter().zip(y).enumerate() {
+                assert_eq!(&y, x, "i: {i}, n: {n}");
             }
         }
     }

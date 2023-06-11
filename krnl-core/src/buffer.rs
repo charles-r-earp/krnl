@@ -47,7 +47,7 @@ impl<T, const N: usize> IndexUncheckedMutExt<T> for [T; N] {
         let mut output = MaybeUninit::uninit();
         unsafe {
             asm!(
-                "%val_ptr = OpAccessChain _ {array_ptr} {index}",
+                "%val_ptr = OpInBoundsAccessChain _ {array_ptr} {index}",
                 "OpStore {output} %val_ptr",
                 array_ptr = in(reg) self,
                 index = in(reg) index,
