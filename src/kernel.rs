@@ -861,7 +861,10 @@ pub mod __private {
                     bail!("Kernel `{kernel_name}` global_threads or groups not provided!");
                 };
 
-                unsafe { self.inner.dispatch(groups, &buffers, push_bytes) }
+                unsafe {
+                    self.inner.dispatch(groups, &buffers, push_bytes)?;
+                }
+                Ok(())
             }
             #[cfg(not(feature = "device"))]
             {

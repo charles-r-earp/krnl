@@ -313,7 +313,7 @@ fn new_semaphore(device: &Arc<Device>) -> Result<Semaphore> {
 
 unsafe fn queue_submit(
     queue: &Queue,
-    _guard: QueueGuard,
+    _guard: &mut QueueGuard,
     command_buffer: &UnsafeCommandBuffer,
     semaphore: &Semaphore,
     epoch: u64,
@@ -668,10 +668,10 @@ impl DeviceEngineBuffer for DeviceBuffer {
                 ));
                 builder.build()?
             };
-            queue.with(|guard| -> Result<()> {
+            queue.with(|mut guard| -> Result<()> {
                 let epoch = engine.epoch.load(Ordering::SeqCst);
                 unsafe {
-                    queue_submit(queue, guard, &command_buffer, &engine.semaphore, epoch)?;
+                    queue_submit(queue, &mut guard, &command_buffer, &engine.semaphore, epoch)?;
                 }
                 let epoch = epoch + 1;
                 engine.epoch.store(epoch, Ordering::SeqCst);
@@ -729,6 +729,10 @@ impl DeviceEngineBuffer for DeviceBuffer {
             let prev_host_copy = host_copy.take();
             if !chunk.is_empty() {
                 let mut host_buffer = engine.host_buffer_receiver.recv().unwrap();
+                queue.with(|mut x| x.wait_idle()).unwrap();
+                unsafe {
+                    wait_semaphore(device, &engine.semaphore, host_buffer.epoch)?;
+                }
                 let mut frame = engine
                     .frame_receiver
                     .recv()
@@ -747,10 +751,10 @@ impl DeviceEngineBuffer for DeviceBuffer {
                     ));
                     builder.build()?
                 };
-                queue.with(|guard| -> Result<()> {
+                queue.with(|mut guard| -> Result<()> {
                     let epoch = engine.epoch.load(Ordering::SeqCst);
                     unsafe {
-                        queue_submit(queue, guard, &command_buffer, &engine.semaphore, epoch)?;
+                        queue_submit(queue, &mut guard, &command_buffer, &engine.semaphore, epoch)?;
                     }
                     let epoch = epoch + 1;
                     engine.epoch.store(epoch, Ordering::SeqCst);
@@ -869,10 +873,16 @@ impl DeviceEngineBuffer for DeviceBuffer {
                     ));
                     builder.build()?
                 };
-                queue1.with(|guard| -> Result<()> {
+                queue1.with(|mut guard| -> Result<()> {
                     let epoch = engine1.epoch.load(Ordering::SeqCst);
                     unsafe {
-                        queue_submit(queue1, guard, &command_buffer, &engine1.semaphore, epoch)?;
+                        queue_submit(
+                            queue1,
+                            &mut guard,
+                            &command_buffer,
+                            &engine1.semaphore,
+                            epoch,
+                        )?;
                     }
                     let epoch = epoch + 1;
                     engine1.epoch.store(epoch, Ordering::SeqCst);
@@ -930,10 +940,16 @@ impl DeviceEngineBuffer for DeviceBuffer {
                     ));
                     builder.build()?
                 };
-                queue2.with(|guard| -> Result<()> {
+                queue2.with(|mut guard| -> Result<()> {
                     let epoch = engine2.epoch.load(Ordering::SeqCst);
                     unsafe {
-                        queue_submit(queue2, guard, &command_buffer, &engine2.semaphore, epoch)?;
+                        queue_submit(
+                            queue2,
+                            &mut guard,
+                            &command_buffer,
+                            &engine2.semaphore,
+                            epoch,
+                        )?;
                     }
                     let epoch = epoch + 1;
                     engine2.epoch.store(epoch, Ordering::SeqCst);
@@ -959,138 +975,6 @@ impl DeviceEngineBuffer for DeviceBuffer {
         engine1.poll()?;
         engine2.poll()?;
         Ok(())
-        /*
-        if self.len == 0 {
-            return Ok(());
-        }
-        let output = dst;
-        let buffer1 = self.inner.as_ref().unwrap();
-        let engine1 = &self.engine;
-        let buffer2 = output.inner.as_ref().unwrap();
-        let engine2 = &output.engine;
-        let prev_future = self.future.read();
-        if self.host_visible() {
-            engine1.wait_for_future(&prev_future)?;
-            let buffer1 = buffer1.clone().slice(
-                DeviceSize::try_from(self.offset).unwrap()
-                    ..DeviceSize::try_from(self.offset + self.len()).unwrap(),
-            );
-            let mapped1 = buffer1.read()?;
-            if dst.host_visible() {
-                let buffer2 = buffer2.clone().slice(
-                    DeviceSize::try_from(dst.offset).unwrap()
-                        ..DeviceSize::try_from(dst.offset + dst.len()).unwrap(),
-                );
-                let mut mapped2 = buffer2.write()?;
-                mapped2.copy_from_slice(&mapped1[..output.len()]);
-            } else {
-                output.upload(&mapped1)?;
-            }
-            return Ok(());
-        } else if output.host_visible() {
-            let buffer2 = buffer2.clone().slice(
-                DeviceSize::try_from(dst.offset).unwrap()
-                    ..DeviceSize::try_from(dst.offset + dst.len()).unwrap(),
-            );
-            let mut mapped2 = buffer2.write()?;
-            self.download(&mut mapped2)?;
-            return Ok(());
-        }
-        let mut prev_future = Some(prev_future.clone());
-        let mut offset1 = self.offset;
-        let mut offset2 = 0;
-
-        struct HostCopy<'a> {
-            size: usize,
-            download_worker: &'a Worker,
-            upload_worker: &'a Worker,
-            submit: Arc<AtomicBool>,
-            future: WorkerFuture,
-        }
-
-        impl HostCopy<'_> {
-            fn finish(self) -> Result<WorkerFuture, ()> {
-                self.download_worker.wait()?;
-                let src = self
-                    .download_worker
-                    .host_buffer
-                    .as_ref()
-                    .unwrap()
-                    .read()
-                    .unwrap();
-                self.upload_worker
-                    .host_buffer
-                    .as_ref()
-                    .unwrap()
-                    .write()
-                    .unwrap()[..self.size]
-                    .copy_from_slice(&src[..self.size]);
-                self.submit.store(true, Ordering::SeqCst);
-                Ok(self.future)
-            }
-        }
-
-        let (_transfer1, workers1) = engine1.transfer_workers();
-        let mut workers1 = workers1.into_iter().cycle();
-        let (_transfer2, workers2) = engine2.transfer_workers();
-        let mut workers2 = workers2.into_iter().cycle();
-        let mut host_copy = None;
-        while offset2 < output.len() {
-            let download_worker = workers1.next().unwrap();
-            let upload_worker = workers2.next().unwrap();
-            let chunk_size = output
-                .len()
-                .checked_sub(offset2)
-                .unwrap()
-                .min(Self::HOST_BUFFER_SIZE);
-            let src = buffer1.clone().slice(
-                DeviceSize::try_from(offset1).unwrap()
-                    ..DeviceSize::try_from(offset1 + chunk_size).unwrap(),
-            );
-            let dst = buffer2.clone().slice(
-                DeviceSize::try_from(offset2).unwrap()
-                    ..DeviceSize::try_from(offset2 + chunk_size).unwrap(),
-            );
-            offset1 += chunk_size;
-            offset2 += chunk_size;
-            let submit = Arc::new(AtomicBool::default());
-            let op = Op::Download {
-                src,
-                submit: submit.clone(),
-            };
-            download_worker
-                .send(op)
-                .map_err(|_| DeviceLost(engine1.id()))?;
-            if let Some(future) = prev_future.take() {
-                engine1.wait_for_future(&future)?;
-            }
-            submit.store(true, Ordering::SeqCst);
-            let submit = Arc::new(AtomicBool::default());
-            let op = Op::Upload {
-                dst,
-                submit: submit.clone(),
-            };
-            let future = upload_worker
-                .send(op)
-                .map_err(|_| DeviceLost(engine2.id()))?;
-            let host_copy = host_copy.replace(HostCopy {
-                size: chunk_size,
-                download_worker,
-                upload_worker,
-                submit,
-                future,
-            });
-            if let Some(host_copy) = host_copy {
-                host_copy.finish().map_err(|_| DeviceLost(engine1.id()))?;
-            }
-        }
-        if let Some(host_copy) = host_copy {
-            let future = host_copy.finish().map_err(|_| DeviceLost(engine1.id()))?;
-            let mut future_guard = output.future.write();
-            engine2.wait_for_future(&future_guard)?;
-            *future_guard = future;
-        }
-        Ok(())*/
     }
     fn offset(&self) -> usize {
         self.offset
@@ -1339,10 +1223,10 @@ impl DeviceEngineKernel for Kernel {
             }
             builder.build()?
         };
-        queue.with(|guard| -> Result<()> {
+        queue.with(|mut guard| -> Result<()> {
             let epoch = engine.epoch.load(Ordering::SeqCst);
             unsafe {
-                queue_submit(queue, guard, &command_buffer, &engine.semaphore, epoch)?;
+                queue_submit(queue, &mut guard, &command_buffer, &engine.semaphore, epoch)?;
             }
             let epoch = epoch + 1;
             engine.epoch.store(epoch, Ordering::SeqCst);
@@ -1366,78 +1250,6 @@ impl DeviceEngineKernel for Kernel {
         })?;
         engine.poll()?;
         Ok(())
-        /*
-        let engine = &self.engine;
-        let mut futures: Vec<_> = buffers
-            .iter()
-            .map(|x| x.future.clone())
-            .zip(self.desc.slice_descs.iter().map(|x| x.mutable))
-            .collect();
-        futures.sort_by_key(|(x, _)| Arc::as_ptr(x) as usize);
-        let future_guards: Vec<_> = futures
-            .iter()
-            .map(|(x, mutable)| {
-                if *mutable {
-                    WorkerFutureGuard::UpgradableRead(x.upgradable_read())
-                } else {
-                    WorkerFutureGuard::Read(x.read())
-                }
-            })
-            .collect();
-        let buffers = buffers
-            .iter()
-            .map(|x| x.inner.as_ref().unwrap().clone())
-            .collect();
-        let submit = Arc::new(AtomicBool::default());
-        let op = Op::Compute {
-            compute_pipeline: self.compute_pipeline.clone(),
-            buffers,
-            push_consts,
-            groups,
-            submit: submit.clone(),
-        };
-        let compute = engine.compute.lock();
-        let workers = if engine.workers.len() == 1 {
-            engine.workers.as_slice()
-        } else {
-            engine.workers.get(..engine.workers.len() - 1).unwrap()
-        };
-        let worker = 'outer: loop {
-            for max_workers in [1, 2] {
-                for [worker1, worker2] in workers {
-                    let ready1 = worker1.ready();
-                    let ready2 = worker2.ready();
-                    if ready1 && ready2 {
-                        break 'outer worker1;
-                    } else if max_workers == 2 {
-                        if ready1 {
-                            break 'outer worker1;
-                        } else if ready2 {
-                            break 'outer worker2;
-                        }
-                    }
-                }
-            }
-        };
-        let future = worker.send(op).map_err(|_| DeviceLost(engine.id()))?;
-        std::mem::drop(compute);
-        for guard in future_guards.iter() {
-            while !guard.ready() {
-                if engine.exited.load(Ordering::SeqCst) {
-                    return Err(DeviceLost(engine.id()).into());
-                }
-            }
-        }
-        submit.store(true, Ordering::SeqCst);
-        for guard in future_guards {
-            match guard {
-                WorkerFutureGuard::UpgradableRead(x) => {
-                    *RwLockUpgradableReadGuard::upgrade(x) = future.clone();
-                }
-                WorkerFutureGuard::Read(_) => (),
-            }
-        }
-        Ok(())*/
     }
     fn desc(&self) -> &Arc<KernelDesc> {
         &self.desc
