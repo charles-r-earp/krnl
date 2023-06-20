@@ -20,9 +20,11 @@ krnl = { path = ".", default-features = false }
 serde = { version = "1.0.143", default-features = false, features = ["derive"] }
 dry = "0.1.1"
 paste = "1.0.7"
+bytemuck = "1.13.1"
 derive_more = { version = "0.99.11", default-features = false }
 anyhow = "1.0.60"
-half = { version = "2.1.0", default-features = false, features = ["num-traits", "serde"] }
+glam = { version = "0.22.0", default-features = false }
+half = { version = "2.1.0", default-features = false, features = ["num-traits"] }
 num-traits = { version = "0.2.14", default-features = false }
 thiserror = "1.0.31"
 bincode2 = "2.0.1"
@@ -66,7 +68,7 @@ derive_more = { workspace = true, features = ["unwrap", "deref", "deref_mut"] }
 thiserror.workspace = true
 parking_lot = "0.12.1"
 once_cell = { version = "1.13.0", default-features = false, features = ["std", "alloc"] }
-bytemuck = { version = "1.11.0", default-features = false }
+bytemuck.workspace = true
 bincode2.workspace = true
 flate2.workspace = true
 dashmap = { version = "5.3.4", optional = true }
