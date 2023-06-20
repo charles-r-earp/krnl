@@ -2592,7 +2592,14 @@ mod tests {
     #[test]
     fn buffer_serde_tokens() {
         let input = vec![1u32, 2, 3, 4];
-        let items: &[u64] = bytemuck::cast_slice(input.as_slice());
+        let items: Vec<u64> = input
+            .chunks(2)
+            .map(|chunk| {
+                let mut item = 0u64;
+                bytemuck::bytes_of_mut(&mut item).copy_from_slice(bytemuck::cast_slice(chunk));
+                item.to_be()
+            })
+            .collect();
         let buffer = Buffer::from_vec(input.clone());
         let tokens = [
             Token::TupleStruct {
@@ -2602,8 +2609,8 @@ mod tests {
             Token::Str("U32"),
             Token::U64(4),
             Token::Seq { len: Some(2) },
-            Token::U64(items[0].to_be()),
-            Token::U64(items[1].to_be()),
+            Token::U64(items[0]),
+            Token::U64(items[1]),
             Token::SeqEnd,
             Token::TupleStructEnd,
         ];
