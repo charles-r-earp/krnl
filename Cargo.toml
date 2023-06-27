@@ -24,7 +24,7 @@ bytemuck = "1.13.1"
 derive_more = { version = "0.99.11", default-features = false }
 anyhow = "1.0.60"
 glam = { version = "0.22.0", default-features = false }
-half = { version = "2.1.0", default-features = false, features = ["num-traits"] }
+half = { version = "=2.1.0", default-features = false, features = ["num-traits"] }
 num-traits = { version = "0.2.14", default-features = false }
 thiserror = "1.0.31"
 bincode2 = "2.0.1"
