@@ -1,7 +1,7 @@
 use super::{
     error::{DeviceIndexOutOfRange, DeviceUnavailable, OutOfDeviceMemory},
     DeviceEngine, DeviceEngineBuffer, DeviceEngineKernel, DeviceId, DeviceInfo, DeviceLost,
-    DeviceOptions, Features, KernelDesc, KernelKey,
+    DeviceOptions, Features, KernelDesc, KernelKey, SliceDesc,
 };
 
 use anyhow::{Error, Result};
@@ -13,7 +13,7 @@ use std::{
     mem::MaybeUninit,
     ops::Range,
     sync::{
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
         Arc,
     },
 };
@@ -81,48 +81,98 @@ fn vulkan_library() -> Result<Arc<VulkanLibrary>, LoadingError> {
 
 pub struct Engine {
     info: Arc<DeviceInfo>,
-    semaphore: Semaphore,
+    semaphore: Arc<Semaphore>,
     epoch: AtomicU64,
-    frame_sender: Sender<Frame>,
-    frame_receiver: Receiver<Frame>,
+    pending: Arc<AtomicU64>,
+    frame_outer: Mutex<FrameOuter>,
     host_buffer_sender: Sender<HostBuffer>,
     host_buffer_receiver: Receiver<HostBuffer>,
-    pending_buffers: Mutex<Option<PendingBuffers>>,
-    pending_buffers_sender: Sender<PendingBuffers>,
-    pending_buffers_receiver: Receiver<PendingBuffers>,
     kernels: DashMap<KernelKey, KernelInner>,
     memory_allocator: Arc<StandardMemoryAllocator>,
     queue: Arc<Queue>,
+    engine_exited: Arc<AtomicBool>,
+    worker_exited: Arc<AtomicBool>,
     _instance: Arc<Instance>,
 }
 
 impl Engine {
-    fn poll(&self) -> Result<(), DeviceLost> {
-        if let Some(mut pending_buffers_guard) = self.pending_buffers.try_lock() {
-            let epoch = unsafe {
-                semaphore_value(self.queue.device(), &self.semaphore)
-                    .map_err(|_| DeviceLost(self.id()))?
-            };
-            for mut pending_buffers in pending_buffers_guard
-                .take()
-                .into_iter()
-                .chain(self.pending_buffers_receiver.try_iter())
-            {
-                if pending_buffers.epoch <= epoch {
-                    pending_buffers.buffers.clear();
-                } else {
-                    pending_buffers_guard.replace(pending_buffers);
+    unsafe fn transfer(
+        &self,
+        src: Subbuffer<[u8]>,
+        dst: Subbuffer<[u8]>,
+        host_buffer: &mut HostBuffer,
+        dst_device_buffer: Option<&DeviceBuffer>,
+    ) -> Result<()> {
+        let mut frame_outer = self.frame_outer.lock();
+        unsafe { frame_outer.transfer(&self.epoch, src, dst, host_buffer, dst_device_buffer) }
+    }
+    unsafe fn compute(
+        &self,
+        pipeline: &Arc<ComputePipeline>,
+        groups: [u32; 3],
+        buffers: &[Arc<DeviceBuffer>],
+        slice_descs: &[SliceDesc],
+        push_consts: &[u8],
+    ) -> Result<()> {
+        let mut frame_outer = self.frame_outer.lock();
+        let new_descriptors: u32 = buffers.len().try_into().unwrap();
+        if frame_outer.kernels >= Frame::MAX_KERNELS
+            || frame_outer.descriptors + new_descriptors > Frame::MAX_DESCRIPTORS
+        {
+            loop {
+                if frame_outer.empty.load(Ordering::SeqCst) {
                     break;
                 }
+                if self.worker_exited.load(Ordering::SeqCst) {
+                    return Err(DeviceLost(self.id()).into());
+                }
+                std::hint::spin_loop();
             }
         }
+        unsafe {
+            frame_outer.compute(
+                &self.epoch,
+                pipeline,
+                groups,
+                buffers,
+                slice_descs,
+                push_consts,
+            )
+        }
+    }
+    fn wait_pending(&self, epoch: u64) -> Result<(), DeviceLost> {
+        while self.pending.load(Ordering::SeqCst) < epoch {
+            if self.worker_exited.load(Ordering::SeqCst) {
+                return Err(DeviceLost(self.id()).into());
+            }
+            std::hint::spin_loop();
+        }
         Ok(())
+    }
+    fn wait_epoch(&self, epoch: u64) -> Result<(), DeviceLost> {
+        loop {
+            let result = unsafe { wait_semaphore(self.queue.device(), &self.semaphore, epoch) };
+            match result {
+                ash::vk::Result::SUCCESS => return Ok(()),
+                ash::vk::Result::TIMEOUT => (),
+                _ => return Err(DeviceLost(self.id())),
+            }
+            if self.worker_exited.load(Ordering::SeqCst) {
+                return Err(DeviceLost(self.id()));
+            }
+            std::hint::spin_loop();
+        }
     }
 }
 
 impl Drop for Engine {
     fn drop(&mut self) {
-        let _ = self.queue.with(|mut x| x.wait_idle());
+        self.engine_exited.store(true, Ordering::SeqCst);
+        while !self.worker_exited.load(Ordering::SeqCst) {}
+        let result = self.queue.with(|mut x| x.wait_idle());
+        if !std::thread::panicking() {
+            result.unwrap();
+        }
     }
 }
 
@@ -146,7 +196,6 @@ impl DeviceEngine for Engine {
         let name = physical_device.properties().device_name.clone();
         let optimal_device_extensions = vulkano::device::DeviceExtensions {
             khr_vulkan_memory_model: true,
-            khr_push_descriptor: true,
             ..vulkano::device::DeviceExtensions::empty()
         };
         let device_extensions = physical_device
@@ -154,7 +203,6 @@ impl DeviceEngine for Engine {
             .intersection(&optimal_device_extensions);
         let optimal_device_features = vulkano::device::Features {
             vulkan_memory_model: true,
-            descriptor_buffer_push_descriptors: true,
             timeline_semaphore: true,
             shader_int8: optimal_features.shader_int8,
             shader_int16: optimal_features.shader_int16,
@@ -203,12 +251,6 @@ impl DeviceEngine for Engine {
             },
         )?;
         let queue = queues.next().unwrap();
-        let semaphore = new_semaphore(&device)?;
-        let (frame_sender, frame_receiver) = crossbeam_channel::bounded::<Frame>(3);
-        for _ in 0..3 {
-            let frame = Frame::new(queue.clone())?;
-            frame_sender.send(frame).unwrap();
-        }
         let memory_allocator = Arc::new(StandardMemoryAllocator::new(
             device,
             GenericMemoryAllocatorCreateInfo {
@@ -244,8 +286,6 @@ impl DeviceEngine for Engine {
                 })
                 .unwrap();
         }
-        let pending_buffers = Mutex::new(None);
-        let (pending_buffers_sender, pending_buffers_receiver) = crossbeam_channel::unbounded();
         let kernels = DashMap::default();
         let info = Arc::new(DeviceInfo {
             index,
@@ -254,20 +294,29 @@ impl DeviceEngine for Engine {
             transfer_queues: 0,
             features,
         });
+        let mut worker = Worker::new(queue.clone())?;
+        let semaphore = worker.semaphore.clone();
         let epoch = AtomicU64::default();
+        let pending = worker.pending.clone();
+        let frame_outer = Mutex::new(FrameOuter::new(
+            worker.ready_frame.clone(),
+            worker.empty.clone(),
+        ));
+        let engine_exited = worker.engine_exited.clone();
+        let worker_exited = worker.worker_exited.clone();
+        std::thread::spawn(move || worker.run());
         Ok(Arc::new(Self {
             info,
             semaphore,
             epoch,
-            frame_sender,
-            frame_receiver,
+            pending,
+            frame_outer,
             host_buffer_sender,
             host_buffer_receiver,
-            pending_buffers,
-            pending_buffers_sender,
-            pending_buffers_receiver,
             kernels,
             memory_allocator,
+            engine_exited,
+            worker_exited,
             queue,
             _instance: instance,
         }))
@@ -281,10 +330,8 @@ impl DeviceEngine for Engine {
         &self.info
     }
     fn wait(&self) -> Result<(), DeviceLost> {
-        let value = self.epoch.load(Ordering::SeqCst);
-        unsafe { wait_semaphore(self.queue.device(), &self.semaphore, value) }
-            .map_err(|_| DeviceLost(self.id()))?;
-        self.poll()
+        let epoch = self.epoch.load(Ordering::SeqCst);
+        self.wait_epoch(epoch)
     }
 }
 
@@ -311,6 +358,7 @@ fn new_semaphore(device: &Arc<Device>) -> Result<Semaphore> {
     }
 }
 
+/*
 unsafe fn queue_submit(
     queue: &Queue,
     _guard: &mut QueueGuard,
@@ -319,18 +367,47 @@ unsafe fn queue_submit(
     epoch: u64,
 ) -> Result<(), ash::vk::Result> {
     let command_buffers = &[command_buffer.handle()];
-    let wait_semaphore_values = &[epoch];
+    //let wait_semaphore_values = &[epoch];
     let signal_semaphore_values = &[epoch + 1];
     let mut semaphore_submit_info = ash::vk::TimelineSemaphoreSubmitInfo::builder()
-        .wait_semaphore_values(wait_semaphore_values)
+        //.wait_semaphore_values(wait_semaphore_values)
         .signal_semaphore_values(signal_semaphore_values);
-    let wait_semaphores = &[semaphore.handle()];
+    //let wait_semaphores = &[semaphore.handle()];
     let signal_semaphores = &[semaphore.handle()];
-    let wait_dst_stage_mask = &[ash::vk::PipelineStageFlags::ALL_COMMANDS];
+    //let wait_dst_stage_mask = &[ash::vk::PipelineStageFlags::ALL_COMMANDS];
     let submit_info = ash::vk::SubmitInfo::builder()
         .command_buffers(command_buffers)
-        .wait_semaphores(wait_semaphores)
-        .wait_dst_stage_mask(wait_dst_stage_mask)
+        //.wait_semaphores(wait_semaphores)
+        //.wait_dst_stage_mask(wait_dst_stage_mask)
+        .signal_semaphores(signal_semaphores)
+        .push_next(&mut semaphore_submit_info);
+    let device = queue.device();
+    unsafe {
+        (device.fns().v1_0.queue_submit)(
+            queue.handle(),
+            1,
+            [submit_info].as_ptr() as _,
+            ash::vk::Fence::null(),
+        )
+        .result()?;
+    }
+    Ok(())
+}*/
+
+unsafe fn queue_submit(
+    queue: &Queue,
+    _guard: &mut QueueGuard,
+    command_buffer: &UnsafeCommandBuffer,
+    semaphore: &Semaphore,
+    epoch: u64,
+) -> Result<(), ash::vk::Result> {
+    let command_buffers = &[command_buffer.handle()];
+    let signal_semaphore_values = &[epoch];
+    let mut semaphore_submit_info = ash::vk::TimelineSemaphoreSubmitInfo::builder()
+        .signal_semaphore_values(signal_semaphore_values);
+    let signal_semaphores = &[semaphore.handle()];
+    let submit_info = ash::vk::SubmitInfo::builder()
+        .command_buffers(command_buffers)
         .signal_semaphores(signal_semaphores)
         .push_next(&mut semaphore_submit_info);
     let device = queue.device();
@@ -346,6 +423,7 @@ unsafe fn queue_submit(
     Ok(())
 }
 
+/*
 unsafe fn semaphore_value(device: &Device, semaphore: &Semaphore) -> Result<u64, ash::vk::Result> {
     let mut value = 0;
     unsafe {
@@ -357,27 +435,15 @@ unsafe fn semaphore_value(device: &Device, semaphore: &Semaphore) -> Result<u64,
         .result_with_success(value)
     }
 }
+*/
 
-unsafe fn wait_semaphore(
-    device: &Device,
-    semaphore: &Semaphore,
-    value: u64,
-) -> Result<(), ash::vk::Result> {
+unsafe fn wait_semaphore(device: &Device, semaphore: &Semaphore, value: u64) -> ash::vk::Result {
     let semaphores = &[semaphore.handle()];
     let values = &[value];
     let semaphore_wait_info = ash::vk::SemaphoreWaitInfo::builder()
         .semaphores(semaphores)
         .values(values);
-    loop {
-        let result = unsafe {
-            (device.fns().v1_2.wait_semaphores)(device.handle(), &*semaphore_wait_info, 0)
-        };
-        match result {
-            ash::vk::Result::SUCCESS => return Ok(()),
-            ash::vk::Result::TIMEOUT => continue,
-            _ => return result.result(),
-        }
-    }
+    unsafe { (device.fns().v1_2.wait_semaphores)(device.handle(), &*semaphore_wait_info, 0) }
 }
 
 struct HostBuffer {
@@ -395,20 +461,71 @@ impl Drop for HostBuffer {
     }
 }
 
-struct PendingBuffers {
-    buffers: Vec<Subbuffer<[u8]>>,
-    queue: Arc<Queue>,
-    epoch: u64,
+struct FrameOuter {
+    frame: Arc<Mutex<Frame>>,
+    empty: Arc<AtomicBool>,
+    kernels: u32,
+    descriptors: u32,
 }
 
-impl Drop for PendingBuffers {
-    fn drop(&mut self) {
-        if !self.buffers.is_empty() {
-            let result = self.queue.with(|mut x| x.wait_idle());
-            if !std::thread::panicking() {
-                result.unwrap();
-            }
+impl FrameOuter {
+    fn new(frame: Arc<Mutex<Frame>>, empty: Arc<AtomicBool>) -> Self {
+        Self {
+            frame,
+            empty,
+            kernels: 0,
+            descriptors: 0,
         }
+    }
+    unsafe fn transfer(
+        &mut self,
+        epoch: &AtomicU64,
+        src: Subbuffer<[u8]>,
+        dst: Subbuffer<[u8]>,
+        host_buffer: &mut HostBuffer,
+        dst_device_buffer: Option<&DeviceBuffer>,
+    ) -> Result<()> {
+        let mut frame = self.frame.lock();
+        if frame.command_buffer_builder.is_none() {
+            self.kernels = 0;
+            self.descriptors = 0;
+            unsafe {
+                frame.begin()?;
+            }
+            epoch.store(frame.epoch, Ordering::SeqCst);
+            self.empty.store(false, Ordering::SeqCst);
+        }
+        unsafe {
+            frame.transfer(src, dst, host_buffer, dst_device_buffer);
+        }
+        Ok(())
+    }
+    unsafe fn compute(
+        &mut self,
+        epoch: &AtomicU64,
+        pipeline: &Arc<ComputePipeline>,
+        groups: [u32; 3],
+        buffers: &[Arc<DeviceBuffer>],
+        slice_descs: &[SliceDesc],
+        push_consts: &[u8],
+    ) -> Result<()> {
+        let new_descriptors: u32 = buffers.len().try_into().unwrap();
+        let mut frame = self.frame.lock();
+        if frame.command_buffer_builder.is_none() {
+            self.kernels = 0;
+            self.descriptors = 0;
+            unsafe {
+                frame.begin()?;
+            }
+            epoch.store(frame.epoch, Ordering::SeqCst);
+            self.empty.store(false, Ordering::SeqCst);
+        }
+        unsafe {
+            frame.compute(pipeline, groups, buffers, slice_descs, push_consts);
+        }
+        self.kernels += 1;
+        self.descriptors += new_descriptors;
+        Ok(())
     }
 }
 
@@ -416,11 +533,15 @@ struct Frame {
     queue: Arc<Queue>,
     _command_pool: CommandPool,
     command_pool_alloc: CommandPoolAlloc,
-    descriptor_pool: Option<DescriptorPool>,
+    command_buffer_builder: Option<UnsafeCommandBufferBuilder>,
+    descriptor_pool: DescriptorPool,
+    buffers: Vec<Subbuffer<[u8]>>,
     epoch: u64,
 }
 
 impl Frame {
+    const MAX_KERNELS: u32 = 4;
+    const MAX_DESCRIPTORS: u32 = 32;
     fn new(queue: Arc<Queue>) -> Result<Self> {
         let device = queue.device();
         let command_pool = CommandPool::new(
@@ -441,28 +562,30 @@ impl Frame {
             .unwrap()
             .next()
             .unwrap();
-        let descriptor_pool = if !device.enabled_features().descriptor_buffer_push_descriptors {
-            Some(DescriptorPool::new(
-                device.clone(),
-                DescriptorPoolCreateInfo {
-                    max_sets: 1,
-                    pool_sizes: [(DescriptorType::StorageBuffer, 8)].into_iter().collect(),
-                    ..Default::default()
-                },
-            )?)
-        } else {
-            None
-        };
+        let command_buffer_builder = None;
+        let descriptor_pool = DescriptorPool::new(
+            device.clone(),
+            DescriptorPoolCreateInfo {
+                max_sets: Self::MAX_DESCRIPTORS,
+                pool_sizes: [(DescriptorType::StorageBuffer, Self::MAX_DESCRIPTORS)]
+                    .into_iter()
+                    .collect(),
+                ..Default::default()
+            },
+        )?;
+        let buffers = Vec::new();
         let epoch = 0;
         Ok(Self {
             queue,
             _command_pool: command_pool,
             command_pool_alloc,
+            command_buffer_builder,
             descriptor_pool,
+            buffers,
             epoch,
         })
     }
-    unsafe fn command_buffer_builder(&mut self) -> Result<UnsafeCommandBufferBuilder> {
+    unsafe fn begin(&mut self) -> Result<()> {
         let device = self.queue.device();
         unsafe {
             (device.fns().v1_0.reset_command_buffer)(
@@ -470,17 +593,100 @@ impl Frame {
                 Default::default(),
             )
             .result()?;
+            self.descriptor_pool.reset()?;
         }
-        unsafe {
+        self.command_buffer_builder.replace(unsafe {
             UnsafeCommandBufferBuilder::new(
                 &self.command_pool_alloc,
                 CommandBufferBeginInfo {
                     usage: CommandBufferUsage::OneTimeSubmit,
                     ..Default::default()
                 },
-            )
-            .map_err(Into::into)
+            )?
+        });
+        Ok(())
+    }
+    unsafe fn transfer(
+        &mut self,
+        src: Subbuffer<[u8]>,
+        dst: Subbuffer<[u8]>,
+        host_buffer: &mut HostBuffer,
+        dst_device_buffer: Option<&DeviceBuffer>,
+    ) {
+        let builder = self.command_buffer_builder.as_mut().unwrap();
+        unsafe {
+            builder.copy_buffer(&CopyBufferInfo::buffers(src.clone(), dst.clone()));
         }
+        self.buffers.extend_from_slice(&[src, dst]);
+        host_buffer.epoch = self.epoch;
+        if let Some(dst_device_buffer) = dst_device_buffer {
+            dst_device_buffer.epoch.store(self.epoch, Ordering::SeqCst);
+        }
+    }
+    unsafe fn compute(
+        &mut self,
+        pipeline: &Arc<ComputePipeline>,
+        groups: [u32; 3],
+        buffers: &[Arc<DeviceBuffer>],
+        slice_descs: &[crate::kernel::SliceDesc],
+        push_consts: &[u8],
+    ) {
+        let builder = self.command_buffer_builder.as_mut().unwrap();
+        unsafe {
+            builder.bind_pipeline_compute(pipeline);
+        }
+        let pipeline_layout = pipeline.layout();
+        if !buffers.is_empty() {
+            let descriptor_set_layout = pipeline_layout.set_layouts().first().unwrap();
+            let write_descriptor_set = WriteDescriptorSet::buffer_array(
+                0,
+                0,
+                buffers.iter().map(|x| x.inner.as_ref().unwrap().clone()),
+            );
+            unsafe {
+                let mut descriptor_set = self
+                    .descriptor_pool
+                    .allocate_descriptor_sets([DescriptorSetAllocateInfo {
+                        layout: descriptor_set_layout,
+                        variable_descriptor_count: 0,
+                    }])
+                    .unwrap()
+                    .next()
+                    .unwrap();
+                descriptor_set.write(descriptor_set_layout, [&write_descriptor_set]);
+                builder.bind_descriptor_sets(
+                    PipelineBindPoint::Compute,
+                    pipeline_layout,
+                    0,
+                    &[descriptor_set],
+                    [],
+                );
+            }
+        }
+        if !push_consts.is_empty() {
+            unsafe {
+                builder.push_constants(
+                    pipeline_layout,
+                    ShaderStages::COMPUTE,
+                    0,
+                    push_consts.len() as u32,
+                    push_consts,
+                );
+            }
+        }
+        unsafe {
+            builder.dispatch(groups);
+        }
+        self.buffers
+            .extend(buffers.iter().map(|x| x.inner.as_ref().unwrap().clone()));
+        for (buffer, slice_desc) in buffers.iter().zip(slice_descs) {
+            if slice_desc.mutable {
+                buffer.epoch.store(self.epoch, Ordering::SeqCst);
+            }
+        }
+    }
+    unsafe fn finish(&mut self) {
+        self.buffers.clear();
     }
 }
 
@@ -490,6 +696,100 @@ impl Drop for Frame {
         if !std::thread::panicking() {
             result.unwrap();
         }
+    }
+}
+
+struct Worker {
+    queue: Arc<Queue>,
+    semaphore: Arc<Semaphore>,
+    empty: Arc<AtomicBool>,
+    pending: Arc<AtomicU64>,
+    ready_frame: Arc<Mutex<Frame>>,
+    pending_frame: Frame,
+    engine_exited: Arc<AtomicBool>,
+    worker_exited: Arc<AtomicBool>,
+}
+
+impl Worker {
+    fn new(queue: Arc<Queue>) -> Result<Self> {
+        let semaphore = Arc::new(new_semaphore(queue.device())?);
+        let empty = Arc::new(AtomicBool::new(true));
+        let pending = Arc::new(AtomicU64::default());
+        let mut ready_frame = Frame::new(queue.clone())?;
+        ready_frame.epoch = 1;
+        let ready_frame = Arc::new(Mutex::new(ready_frame));
+        let pending_frame = Frame::new(queue.clone())?;
+        let engine_exited = Arc::new(AtomicBool::default());
+        let worker_exited = Arc::new(AtomicBool::default());
+        Ok(Self {
+            queue,
+            semaphore,
+            empty,
+            pending,
+            ready_frame,
+            pending_frame,
+            engine_exited,
+            worker_exited,
+        })
+    }
+    fn run(&mut self) {
+        loop {
+            while self.empty.load(Ordering::SeqCst) {
+                if self.engine_exited.load(Ordering::SeqCst) {
+                    return;
+                }
+                std::hint::spin_loop();
+            }
+            {
+                let mut ready_frame = self.ready_frame.lock();
+                self.pending_frame.epoch = ready_frame.epoch + 1;
+                self.empty.store(true, Ordering::SeqCst);
+                std::mem::swap(&mut *ready_frame, &mut self.pending_frame);
+            }
+            self.pending
+                .store(self.pending_frame.epoch, Ordering::SeqCst);
+            let command_buffer = self
+                .pending_frame
+                .command_buffer_builder
+                .take()
+                .unwrap()
+                .build()
+                .unwrap();
+            self.queue.with(|mut guard| unsafe {
+                queue_submit(
+                    &self.queue,
+                    &mut guard,
+                    &command_buffer,
+                    &self.semaphore,
+                    self.pending_frame.epoch,
+                )
+                .unwrap();
+            });
+            loop {
+                let result = unsafe {
+                    wait_semaphore(
+                        self.queue.device(),
+                        &self.semaphore,
+                        self.pending_frame.epoch,
+                    )
+                };
+                match result {
+                    ash::vk::Result::SUCCESS => break,
+                    ash::vk::Result::TIMEOUT => std::hint::spin_loop(),
+                    _ => result.result().unwrap(),
+                }
+            }
+            unsafe {
+                self.pending_frame.finish();
+            }
+        }
+    }
+}
+
+impl Drop for Worker {
+    fn drop(&mut self) {
+        let _ = self.queue.with(|mut guard| guard.wait_idle());
+        self.worker_exited.store(true, Ordering::SeqCst);
     }
 }
 
@@ -565,7 +865,6 @@ impl DeviceEngineBuffer for DeviceBuffer {
             let mut requirements = *raw_buffer.memory_requirements();
             requirements.layout = requirements.layout.align_to(align).unwrap();
             requirements.prefers_dedicated_allocation = false;
-            engine.poll()?;
             let memory_alloc = engine
                 .memory_allocator
                 .allocate(requirements, AllocationType::Unknown, allocation_info, None)
@@ -633,13 +932,9 @@ impl DeviceEngineBuffer for DeviceBuffer {
             return Ok(());
         };
         let engine = &self.engine;
-        let queue = &engine.queue;
-        let device = queue.device();
         let buffer_epoch = self.epoch.load(Ordering::SeqCst);
         if self.host_visible() {
-            unsafe {
-                wait_semaphore(device, &engine.semaphore, buffer_epoch)?;
-            }
+            engine.wait_epoch(buffer_epoch)?;
             buffer.write().unwrap().copy_from_slice(data);
             return Ok(());
         }
@@ -648,51 +943,16 @@ impl DeviceEngineBuffer for DeviceBuffer {
             let mut host_buffer = engine.host_buffer_receiver.recv().unwrap();
             let size = chunk.len() as u64;
             let buffer_slice = buffer.clone().slice(offset..offset + size);
-            let host_buffer_slice = host_buffer.inner.clone().slice(0..size);
+            let host_slice = host_buffer.inner.clone().slice(0..size);
+            engine.wait_epoch(host_buffer.epoch)?;
+            host_slice.write().unwrap().copy_from_slice(chunk);
+            engine.wait_pending(buffer_epoch)?;
             unsafe {
-                wait_semaphore(device, &engine.semaphore, host_buffer.epoch)?;
+                engine.transfer(host_slice, buffer_slice, &mut host_buffer, Some(self))?;
             }
-            host_buffer_slice.write().unwrap().copy_from_slice(chunk);
-            let mut frame = engine
-                .frame_receiver
-                .recv()
-                .map_err(|_| DeviceLost(engine.id()))?;
-            unsafe {
-                wait_semaphore(device, &engine.semaphore, frame.epoch)?;
-            }
-            let command_buffer = unsafe {
-                let mut builder = frame.command_buffer_builder()?;
-                builder.copy_buffer(&CopyBufferInfo::buffers(
-                    host_buffer_slice.clone(),
-                    buffer_slice.clone(),
-                ));
-                builder.build()?
-            };
-            queue.with(|mut guard| -> Result<()> {
-                let epoch = engine.epoch.load(Ordering::SeqCst);
-                unsafe {
-                    queue_submit(queue, &mut guard, &command_buffer, &engine.semaphore, epoch)?;
-                }
-                let epoch = epoch + 1;
-                engine.epoch.store(epoch, Ordering::SeqCst);
-                frame.epoch = epoch;
-                engine
-                    .pending_buffers_sender
-                    .send(PendingBuffers {
-                        buffers: vec![buffer_slice],
-                        queue: queue.clone(),
-                        epoch,
-                    })
-                    .unwrap();
-                host_buffer.epoch = epoch;
-                engine.host_buffer_sender.send(host_buffer).unwrap();
-                engine.frame_sender.send(frame).unwrap();
-                self.epoch.store(epoch, Ordering::SeqCst);
-                Ok(())
-            })?;
+            engine.host_buffer_sender.send(host_buffer).unwrap();
             offset += size;
         }
-        self.engine.poll()?;
         Ok(())
     }
     fn download(&self, data: &mut [u8]) -> Result<()> {
@@ -708,13 +968,9 @@ impl DeviceEngineBuffer for DeviceBuffer {
             return Ok(());
         };
         let engine = &self.engine;
-        let queue = &engine.queue;
-        let device = queue.device();
         let buffer_epoch = self.epoch.load(Ordering::SeqCst);
         if self.host_visible() {
-            unsafe {
-                wait_semaphore(device, &engine.semaphore, buffer_epoch)?;
-            }
+            engine.wait_epoch(buffer_epoch)?;
             data.copy_from_slice(&buffer.read().unwrap());
             return Ok(());
         }
@@ -729,48 +985,14 @@ impl DeviceEngineBuffer for DeviceBuffer {
             let prev_host_copy = host_copy.take();
             if !chunk.is_empty() {
                 let mut host_buffer = engine.host_buffer_receiver.recv().unwrap();
-                queue.with(|mut x| x.wait_idle()).unwrap();
-                unsafe {
-                    wait_semaphore(device, &engine.semaphore, host_buffer.epoch)?;
-                }
-                let mut frame = engine
-                    .frame_receiver
-                    .recv()
-                    .map_err(|_| DeviceLost(engine.id()))?;
+                engine.wait_epoch(host_buffer.epoch)?;
                 let size = chunk.len() as u64;
                 let buffer_slice = buffer.clone().slice(offset..offset + size);
                 let host_slice = host_buffer.inner.clone().slice(0..size);
+                engine.wait_pending(buffer_epoch)?;
                 unsafe {
-                    wait_semaphore(device, &engine.semaphore, frame.epoch)?;
+                    engine.transfer(buffer_slice, host_slice.clone(), &mut host_buffer, None)?;
                 }
-                let command_buffer = unsafe {
-                    let mut builder = frame.command_buffer_builder()?;
-                    builder.copy_buffer(&CopyBufferInfo::buffers(
-                        buffer_slice.clone(),
-                        host_slice.clone(),
-                    ));
-                    builder.build()?
-                };
-                queue.with(|mut guard| -> Result<()> {
-                    let epoch = engine.epoch.load(Ordering::SeqCst);
-                    unsafe {
-                        queue_submit(queue, &mut guard, &command_buffer, &engine.semaphore, epoch)?;
-                    }
-                    let epoch = epoch + 1;
-                    engine.epoch.store(epoch, Ordering::SeqCst);
-                    frame.epoch = epoch;
-                    engine
-                        .pending_buffers_sender
-                        .send(PendingBuffers {
-                            buffers: vec![buffer_slice],
-                            queue: queue.clone(),
-                            epoch,
-                        })
-                        .unwrap();
-                    engine.frame_sender.send(frame).unwrap();
-                    host_buffer.epoch = epoch;
-                    Ok(())
-                })?;
                 host_copy.replace(HostCopy {
                     chunk,
                     host_buffer,
@@ -784,14 +1006,11 @@ impl DeviceEngineBuffer for DeviceBuffer {
                     host_buffer,
                     host_slice,
                 } = prev_host_copy;
-                unsafe {
-                    wait_semaphore(device, &engine.semaphore, host_buffer.epoch)?;
-                }
+                engine.wait_epoch(host_buffer.epoch)?;
                 chunk.copy_from_slice(&host_slice.read().unwrap());
                 engine.host_buffer_sender.send(host_buffer).unwrap();
             }
         }
-        self.engine.poll()?;
         Ok(())
     }
     fn transfer(&self, dst: &Self) -> Result<()> {
@@ -812,32 +1031,22 @@ impl DeviceEngineBuffer for DeviceBuffer {
                 return Ok(());
             };
         let engine1 = &self.engine;
-        let queue1 = &engine1.queue;
-        let device1 = queue1.device();
         let buffer1_epoch = self.epoch.load(Ordering::SeqCst);
         let engine2 = &dst.engine;
-        let queue2 = &engine2.queue;
-        let device2 = queue2.device();
         let buffer2_epoch = dst.epoch.load(Ordering::SeqCst);
         if self.host_visible() && dst.host_visible() {
-            unsafe {
-                wait_semaphore(device1, &engine1.semaphore, buffer1_epoch)?;
-                wait_semaphore(device2, &engine2.semaphore, buffer2_epoch)?;
-            }
+            engine1.wait_epoch(buffer1_epoch)?;
+            engine2.wait_epoch(buffer2_epoch)?;
             buffer2
                 .write()
                 .unwrap()
                 .copy_from_slice(&buffer1.read().unwrap());
             return Ok(());
         } else if self.host_visible() {
-            unsafe {
-                wait_semaphore(device1, &engine1.semaphore, buffer1_epoch)?;
-            }
+            engine1.wait_epoch(buffer1_epoch)?;
             return dst.upload(&buffer1.read().unwrap());
         } else if dst.host_visible() {
-            unsafe {
-                wait_semaphore(device2, &engine2.semaphore, buffer2_epoch)?;
-            }
+            engine2.wait_epoch(buffer2_epoch)?;
             return self.download(&mut buffer2.write().unwrap());
         }
         struct HostCopy {
@@ -856,49 +1065,18 @@ impl DeviceEngineBuffer for DeviceBuffer {
             let prev_host_copy = host_copy.take();
             if size > 0 {
                 let mut host_buffer1 = engine1.host_buffer_receiver.recv().unwrap();
-                let mut frame1 = engine1
-                    .frame_receiver
-                    .recv()
-                    .map_err(|_| DeviceLost(engine1.id()))?;
                 let buffer_slice1 = buffer1.clone().slice(offset..offset + size);
                 let host_slice1 = host_buffer1.inner.clone().slice(0..size);
+                engine1.wait_epoch(host_buffer1.epoch)?;
+                engine1.wait_pending(buffer1_epoch)?;
                 unsafe {
-                    wait_semaphore(device1, &engine1.semaphore, frame1.epoch)?;
-                }
-                let command_buffer = unsafe {
-                    let mut builder = frame1.command_buffer_builder()?;
-                    builder.copy_buffer(&CopyBufferInfo::buffers(
-                        buffer_slice1.clone(),
+                    engine1.transfer(
+                        buffer_slice1,
                         host_slice1.clone(),
-                    ));
-                    builder.build()?
-                };
-                queue1.with(|mut guard| -> Result<()> {
-                    let epoch = engine1.epoch.load(Ordering::SeqCst);
-                    unsafe {
-                        queue_submit(
-                            queue1,
-                            &mut guard,
-                            &command_buffer,
-                            &engine1.semaphore,
-                            epoch,
-                        )?;
-                    }
-                    let epoch = epoch + 1;
-                    engine1.epoch.store(epoch, Ordering::SeqCst);
-                    frame1.epoch = epoch;
-                    engine1
-                        .pending_buffers_sender
-                        .send(PendingBuffers {
-                            buffers: vec![buffer_slice1],
-                            queue: queue1.clone(),
-                            epoch,
-                        })
-                        .unwrap();
-                    engine1.frame_sender.send(frame1).unwrap();
-                    host_buffer1.epoch = epoch;
-                    Ok(())
-                })?;
+                        &mut host_buffer1,
+                        None,
+                    )?;
+                }
                 let buffer_slice2 = buffer2.clone().slice(offset..offset + size);
                 host_copy.replace(HostCopy {
                     host_buffer1,
@@ -916,64 +1094,22 @@ impl DeviceEngineBuffer for DeviceBuffer {
                 let size = buffer_slice2.size();
                 let mut host_buffer2 = engine2.host_buffer_receiver.recv().unwrap();
                 let host_slice2 = host_buffer2.inner.clone().slice(0..size);
-                unsafe {
-                    wait_semaphore(device1, &engine1.semaphore, host_buffer1.epoch)?;
-                    wait_semaphore(device2, &engine2.semaphore, host_buffer2.epoch)?;
-                }
+                engine1.wait_epoch(host_buffer1.epoch)?;
+                engine2.wait_epoch(host_buffer2.epoch)?;
                 host_slice2
                     .write()
                     .unwrap()
                     .copy_from_slice(&host_slice1.read().unwrap());
                 engine1.host_buffer_sender.send(host_buffer1).unwrap();
-                let mut frame2 = engine2
-                    .frame_receiver
-                    .recv()
-                    .map_err(|_| DeviceLost(engine2.id()))?;
+                engine2.wait_pending(buffer2_epoch)?;
                 unsafe {
-                    wait_semaphore(device2, &engine2.semaphore, frame2.epoch)?;
+                    engine2.transfer(host_slice2, buffer_slice2, &mut host_buffer2, Some(dst))?;
                 }
-                let command_buffer = unsafe {
-                    let mut builder = frame2.command_buffer_builder()?;
-                    builder.copy_buffer(&CopyBufferInfo::buffers(
-                        host_slice2.clone(),
-                        buffer_slice2.clone(),
-                    ));
-                    builder.build()?
-                };
-                queue2.with(|mut guard| -> Result<()> {
-                    let epoch = engine2.epoch.load(Ordering::SeqCst);
-                    unsafe {
-                        queue_submit(
-                            queue2,
-                            &mut guard,
-                            &command_buffer,
-                            &engine2.semaphore,
-                            epoch,
-                        )?;
-                    }
-                    let epoch = epoch + 1;
-                    engine2.epoch.store(epoch, Ordering::SeqCst);
-                    frame2.epoch = epoch;
-                    engine2
-                        .pending_buffers_sender
-                        .send(PendingBuffers {
-                            buffers: vec![buffer_slice2],
-                            queue: queue2.clone(),
-                            epoch,
-                        })
-                        .unwrap();
-                    engine2.frame_sender.send(frame2).unwrap();
-                    host_buffer2.epoch = epoch;
-                    dst.epoch.store(epoch, Ordering::SeqCst);
-                    Ok(())
-                })?;
                 engine2.host_buffer_sender.send(host_buffer2).unwrap();
             } else if size == 0 {
                 break;
             }
         }
-        engine1.poll()?;
-        engine2.poll()?;
         Ok(())
     }
     fn offset(&self) -> usize {
@@ -1151,19 +1287,39 @@ impl DeviceEngineKernel for Kernel {
         push_consts: Vec<u8>,
     ) -> Result<()> {
         let engine = &self.engine;
-        let queue = &engine.queue;
-        let device = queue.device();
-        let mut frame = engine.frame_receiver.recv().unwrap();
-        unsafe {
-            wait_semaphore(device, &engine.semaphore, frame.epoch)?;
+        if let Some(epoch) = buffers.iter().map(|x| x.epoch.load(Ordering::SeqCst)).max() {
+            engine.wait_pending(epoch)?;
         }
-        let command_buffer = {
-            let mut builder = unsafe { frame.command_buffer_builder()? };
-            let compute_pipeline = &self.compute_pipeline;
+        unsafe {
+            engine.compute(
+                &self.compute_pipeline,
+                groups,
+                buffers,
+                &self.desc.slice_descs,
+                &push_consts,
+            )
+        }
+        /*
+        let mut frame_outer = engine.frame_outer.lock();
+        unsafe {
+            frame_outer.compute(
+                engine.id(),
+                &engine.worker_exited,
+                &self.compute_pipeline,
+                groups,
+                buffers,
+                &self.desc.slice_descs,
+                &push_consts,
+            )
+        }*/
+        //let pipeline = &self.compute_pipeline;
+        //let descriptors = buffers.len() as u32;
+        /*engine.encode_with_descriptors(descriptors, |frame| {
+            let builder = frame.command_buffer_builder.as_mut().unwrap();
             unsafe {
-                builder.bind_pipeline_compute(compute_pipeline);
+                builder.bind_pipeline_compute(pipeline);
             }
-            let pipeline_layout = compute_pipeline.layout();
+            let pipeline_layout = pipeline.layout();
             if !buffers.is_empty() {
                 let descriptor_set_layout = pipeline_layout.set_layouts().first().unwrap();
                 let write_descriptor_set = WriteDescriptorSet::buffer_array(
@@ -1171,40 +1327,24 @@ impl DeviceEngineKernel for Kernel {
                     0,
                     buffers.iter().map(|x| x.inner.as_ref().unwrap().clone()),
                 );
-                if descriptor_set_layout.push_descriptor() {
-                    unsafe {
-                        builder.push_descriptor_set(
-                            PipelineBindPoint::Compute,
-                            pipeline_layout,
-                            0,
-                            &[write_descriptor_set],
-                        );
-                    }
-                } else {
-                    let descriptor_pool = frame.descriptor_pool.as_ref().unwrap();
-                    let mut descriptor_set = unsafe {
-                        descriptor_pool.reset()?;
-                        descriptor_pool
-                            .allocate_descriptor_sets([DescriptorSetAllocateInfo {
-                                layout: descriptor_set_layout,
-                                variable_descriptor_count: 0,
-                            }])
-                            .unwrap()
-                            .next()
-                            .unwrap()
-                    };
-                    unsafe {
-                        descriptor_set.write(descriptor_set_layout, [&write_descriptor_set]);
-                    }
-                    unsafe {
-                        builder.bind_descriptor_sets(
-                            PipelineBindPoint::Compute,
-                            pipeline_layout,
-                            0,
-                            &[descriptor_set],
-                            [],
-                        );
-                    }
+                unsafe {
+                    let mut descriptor_set = frame
+                        .descriptor_pool
+                        .allocate_descriptor_sets([DescriptorSetAllocateInfo {
+                            layout: descriptor_set_layout,
+                            variable_descriptor_count: 0,
+                        }])
+                        .unwrap()
+                        .next()
+                        .unwrap();
+                    descriptor_set.write(descriptor_set_layout, [&write_descriptor_set]);
+                    builder.bind_descriptor_sets(
+                        PipelineBindPoint::Compute,
+                        pipeline_layout,
+                        0,
+                        &[descriptor_set],
+                        [],
+                    );
                 }
             }
             if !push_consts.is_empty() {
@@ -1221,35 +1361,16 @@ impl DeviceEngineKernel for Kernel {
             unsafe {
                 builder.dispatch(groups);
             }
-            builder.build()?
-        };
-        queue.with(|mut guard| -> Result<()> {
-            let epoch = engine.epoch.load(Ordering::SeqCst);
-            unsafe {
-                queue_submit(queue, &mut guard, &command_buffer, &engine.semaphore, epoch)?;
+            for (buffer, slice_desc) in buffers.iter().zip(self.desc.slice_descs.iter()) {
+                if slice_desc.mutable {
+                    buffer.epoch.store(frame.epoch, Ordering::SeqCst);
+                }
             }
-            let epoch = epoch + 1;
-            engine.epoch.store(epoch, Ordering::SeqCst);
-            frame.epoch = epoch;
-            engine
-                .pending_buffers_sender
-                .send(PendingBuffers {
-                    buffers: buffers
-                        .iter()
-                        .map(|x| x.inner.as_ref().unwrap().clone())
-                        .collect(),
-                    queue: queue.clone(),
-                    epoch,
-                })
-                .unwrap();
-            engine.frame_sender.send(frame).unwrap();
-            for buffer in buffers.iter() {
-                buffer.epoch.store(epoch, Ordering::SeqCst);
-            }
-            Ok(())
-        })?;
-        engine.poll()?;
-        Ok(())
+            frame
+                .buffers
+                .extend(buffers.iter().map(|x| x.inner.as_ref().unwrap().clone()));
+        })?;*/
+        //Ok(())
     }
     fn desc(&self) -> &Arc<KernelDesc> {
         &self.desc

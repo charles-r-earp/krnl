@@ -29,7 +29,7 @@ One kernel can be queued while another is executing on that queue.
 */
 
 #[cfg(feature = "device")]
-use crate::kernel::{KernelDesc, KernelKey};
+use crate::kernel::{KernelDesc, KernelKey, SliceDesc};
 use anyhow::Result;
 use serde::Deserialize;
 #[cfg(feature = "device")]
