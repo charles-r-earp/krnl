@@ -1,6 +1,15 @@
+#[doc(hidden)]
 #[cfg(target_arch = "spirv")]
-use glam::{UVec2, UVec3, Vec3Swizzles};
+pub mod __private {
+    #[repr(simd)]
+    pub struct UVec3 {
+        pub x: u32,
+        pub y: u32,
+        pub z: u32,
+    }
+}
 
+/*
 #[doc(hidden)]
 #[cfg(target_arch = "spirv")]
 pub mod __private {
@@ -162,28 +171,22 @@ pub mod __private {
             }
         }
     }
+}*/
+
+pub struct Kernel {
+    pub global_threads: u32,
+    pub global_id: u32,
+    pub groups: u32,
+    pub group_id: u32,
+    pub subgroups: u32,
+    pub subgroup_id: u32,
+    pub subgroup_threads: u32,
+    pub subgroup_thread_id: u32,
+    pub threads: u32,
+    pub thread_id: u32,
 }
 
-/// Kernels can be 1, 2, or 3 dimensional.
-///
-/// The dimension `D` is either [`u32`], [`UVec2`](glam::UVec2), or [`UVec3`](glam::UVec2).
-/// This corresponds to x, y, and z dimensions, where z is the outer dimension and x is the fastest changing dimension.
-pub struct Kernel<D> {
-    global_threads: D,
-    global_id: D,
-    global_index: u32,
-    groups: D,
-    group_id: D,
-    group_index: u32,
-    subgroups: u32,
-    subgroup_id: u32,
-    subgroup_threads: u32,
-    subgroup_thread_id: u32,
-    threads: D,
-    thread_id: D,
-    thread_index: u32,
-}
-
+/*
 impl<D: Copy> Kernel<D> {
     /// The number of global threads.
     ///
@@ -256,29 +259,25 @@ impl<D: Copy> Kernel<D> {
     pub fn thread_index(&self) -> u32 {
         self.thread_index
     }
+}*/
+
+pub struct ItemKernel {
+    pub item_id: u32,
+    pub items: u32,
 }
 
-/// Item kernels are 1 dimensional, with `D` as [`u32`].
-pub struct ItemKernel<D> {
-    item_id: D,
-    item_index: u32,
-    items: D,
-}
-
+/*
 impl<D: Copy> ItemKernel<D> {
     /// The id of the item.
     /// See [`.item_index()`](ItemKernel::item_index).
-    pub fn item_id(&self) -> D {
+    pub fn item_id(&self) -> u32 {
         self.item_id
-    }
-    /// The index of the item, from 0 .. [`.items()`](ItemKernel::items).
-    pub fn item_index(&self) -> u32 {
-        self.item_index
     }
     /// The number of items.
     ///
     /// This will be the minimum length of buffers with `#[item]`.
-    pub fn items(&self) -> D {
+    pub fn items(&self) -> u32 {
         self.items
     }
 }
+*/

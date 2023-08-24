@@ -2564,7 +2564,7 @@ mod kernels {
 
     macro_for!($T in [u8, u16, u32, u64]  {
        paste! {
-           #[kernel(threads(128))]
+           #[kernel]
            pub fn [<fill_ $T>](x: $T, #[item] y: &mut $T) {
                *y = x;
            }
@@ -2574,7 +2574,7 @@ mod kernels {
     macro_for!($X in [u8, i8, u16, i16, f16, bf16, u32, i32, f32, u64, i64, f64] {
         macro_for!($Y in [u8, i8, u16, i16, f16, bf16, u32, i32, f32, u64, i64, f64] {
             paste! {
-                #[kernel(threads(128))]
+                #[kernel]
                 pub fn [<cast_ $X _ $Y>](#[item] x: $X, #[item] y: &mut $Y) {
                     *y = Default::default();
                     *y = x.cast();

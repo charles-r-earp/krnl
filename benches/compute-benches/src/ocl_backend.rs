@@ -116,6 +116,15 @@ impl OclBackend {
             y_host: vec![0f32; x.len()],
         })
     }
+    pub fn zero(&self, n: usize) -> Result<Zero> {
+        let pro_que = self.pro_que.clone();
+        let y_device = Buffer::builder()
+            .queue(pro_que.queue().clone())
+            .len(n)
+            .flags(MemFlags::READ_WRITE | MemFlags::HOST_NO_ACCESS)
+            .build()?;
+        Ok(Zero { pro_que, y_device })
+    }
     pub fn saxpy(&self, x: &[f32], alpha: f32, y: &[f32]) -> Result<Saxpy> {
         assert_eq!(x.len(), y.len());
         let queue = self.pro_que.queue();
@@ -196,6 +205,38 @@ impl Download {
     }
 }
 
+pub struct Zero {
+    pro_que: ProQue,
+    y_device: Buffer<f32>,
+}
+
+impl Zero {
+    pub fn run(&mut self) -> Result<()> {
+        let n = self.y_device.len() as u32;
+        let lws = 256;
+        let wgs = n / lws + u32::from(n % lws != 0);
+        let kernel = self
+            .pro_que
+            .kernel_builder("fill")
+            .arg(n)
+            .arg(0f32)
+            .arg(&self.y_device)
+            .global_work_size(wgs * lws)
+            .local_work_size(lws)
+            .build()?;
+        unsafe {
+            kernel.enq()?;
+        }
+        self.pro_que.finish()?;
+        #[cfg(debug_assertions)]
+        {
+            let y_host = self.y_device.to_vec()?;
+            assert_eq!(y_host, vec![0f32; self.y_device.len()]);
+        }
+        Ok(())
+    }
+}
+
 pub struct Saxpy {
     pro_que: ProQue,
     x_device: Buffer<f32>,
@@ -242,6 +283,12 @@ impl Saxpy {
 }
 
 static KERNELS: &str = r#"
+kernel void fill(uint n, float x, global float* const y) {
+    uint idx = get_global_id(0);
+    if (idx < n) {
+        y[idx] = x;
+    }
+}
 kernel void saxpy(uint n, global float* const x, float alpha, global float* __restrict__ y) {
     uint idx = get_global_id(0);
     if (idx < n) {

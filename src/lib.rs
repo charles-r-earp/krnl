@@ -61,13 +61,13 @@ mod kernels {
     }
 
     // Item kernels for iterator patterns.
-    #[kernel(threads(256))]
+    #[kernel]
     pub fn saxpy(#[item] x: f32, alpha: f32, #[item] y: &mut f32) {
         saxpy_impl(x, alpha, y);
     }
 
     // General purpose kernels like CUDA / OpenCL.
-    #[kernel(threads(256))]
+    #[kernel]
     pub fn saxpy_global(#[global] x: Slice<f32>, alpha: f32, #[global] y: UnsafeSlice<f32>) {
         use krnl_core::buffer::UnsafeIndex;
         let mut index = kernel.global_index() as usize;

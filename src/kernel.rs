@@ -51,12 +51,14 @@ mod kernels {
     use krnl_core::buffer::{UnsafeSlice, UnsafeIndex};
 
     pub unsafe fn fill_ones_impl(index: usize, y: UnsafeSlice<u32>) {
-        unsafe {
-            *y.unsafe_index_mut(index) = 1;
+        if index < y.len() {
+            unsafe {
+                *y.unsafe_index_mut(index) = 1;
+            }
         }
     }
 
-    #[kernel(threads(256) /* per group. More on that later. */)]
+    #[kernel]
     pub fn fill_ones(#[global] y: UnsafeSlice<u32>) {
         let index = kernel.global_index() as usize;
         unsafe {
@@ -76,6 +78,9 @@ pub fn fill_ones(device: Device, len: usize) -> Result<Buffer<u32>> {
         });
     } else {
         kernels::fill_ones::builder()?
+            // optionally set threads per group
+            // chooses a reasonable default if not provided
+            .with_threads(128)
             .build(y.device())?
             .with_global_threads(y.len().try_into().unwrap())
             .dispatch(y.as_slice_mut())?;
@@ -101,7 +106,7 @@ mod kernels {
         *y = 1;
     }
 
-    #[kernel(threads(256))]
+    #[kernel]
     pub fn fill_ones(#[item] y: &mut u32) {
         fill_ones_impl(y);
     }
@@ -206,7 +211,7 @@ use dry::macro_for;
 use paste::paste;
 macro_for!($T in [i32, u32, f32] {
     paste! {
-        #[kernel(threads(128))]
+        #[kernel]
         fn [<add_ $T>](
             #[item] a: $T,
             #[item] b: $T,
@@ -223,22 +228,19 @@ macro_for!($T in [i32, u32, f32] {
 
 
 # Groups
-Kernels are dispatched in groups of threads (CUDA thread blocks). The threads provided to `#[kernel(threads(..))]`
-sets the number of threads per group. This can be 1, 2, or 3 dimensional, corresponding to [`u32`], [`UVec2`](krnl_core::glam::UVec2),
-and [`UVec3`](krnl_core::glam::UVec3). These are x, y, and z dimensions, where z is the outer dimension, and x
-is the fastest changing dimension. Thus 1 dimensional kernels have y and z equal to 1.
+Kernels are dispatched in groups of threads (CUDA thread blocks). The threads provided to `.with_threads(..)`
+sets the number of threads per group, which will default to a reasonable value based on the device if not 
+provided.
 
 For simple kernels, threads can be arbitrary, typically 128, 256, or 512. This can be tuned for optimal performance.
 Note that the device may impose limits on the maximum thread dimensions.
 
-Threads can be [specialized](#specialization).
-
 Item kernels can infer the global_threads by the sizes of the item arguments. This is functionally equivalent
-to `iter().zip()`.
+to `iter().zip()`, where the number of items is the minimum of the lengths of the buffers.
 
 Note that `global_threads = groups * threads`. When provided to `.with_global_threads()` prior to dispatch, global_threads
-are rounded up to the next multiple of threads. Because of this, it is typical to check that the global_index is
-in bounds as implemented above.
+are rounded up to the next multiple of threads. Because of this, it is typical to check that the global_id is
+in bounds as implemented above in `fill_ones_impl`.
 
 Kernels can declare group shared memory:
 ```no_run
@@ -248,13 +250,13 @@ Kernels can declare group shared memory:
 # mod kernels {
 # use krnl::krnl_core;
 # use krnl_core::macros::kernel;
-#[kernel(threads(64))]
+#[kernel]
 fn group_sum(
     #[global] x: Slice<f32>,
     #[group] x_group: UnsafeSlice<f32, 64>,
     #[global] y: UnsafeSlice<f32>,
 ) {
-    use krnl_core::{buffer::UnsafeIndex, spirv_std::arch::workgroup_memory_barrier};
+    use krnl_core::{buffer::UnsafeIndex, spirv_std::arch::workgroup_memory_barrier_with_group_sync as group_barrier};
 
     let global_id = kernel.global_id() as usize;
     let group_id = kernel.group_id() as usize;
@@ -262,8 +264,8 @@ fn group_sum(
     unsafe {
         x_group.unsafe_index_mut(thread_id) = x[global_id];
         // Barriers are used to synchronize access to group memory.
-        // This call must be reached by all threads in the group!
-        workgroup_memory_barrier();
+        // This call must be reached by all active threads in the group!
+        group_barrier();
     }
     if thread_id == 0 {
         for i in 0 .. kernel.threads() as usize {
@@ -278,11 +280,12 @@ fn group_sum(
 Group memory is zeroed.
 
 # Subgroups
-Thread groups are composed of subgroups of threads (CUDA warps). Typical [`.subgroup_threads()`](krnl_core::kernel::Kernel::subgroup_threads) are:
-- 32: NVIDIA, Intel
+Thread groups are composed of subgroups of threads (CUDA warps). The number of threads per subgroup is at 
+most 128. Typical values are:
+- 32: NVIDIA
 - 64: AMD
 
-Note that it must be at least 1 and typically is not greater than 128.
+Note that it must be at least 1 and not greater than 128.
 
 # Features
 Kernels implicitly declare [`Features`](device::Features) based on types and or operations used.
@@ -292,8 +295,8 @@ error.
 See [`DeviceInfo::features`](device::DeviceInfo::features).
 
 # Specialization
-SpecConstants are constants that are set when the kernel is compiled. Threads and the length
-of group buffers can be specialized:
+SpecConstants are constants that are set when the kernel is compiled via `.specialize(..)`.
+
 ```no_run
 # use krnl::{macros::module, anyhow::Result, device::Device};
 # #[module]
@@ -301,7 +304,7 @@ of group buffers can be specialized:
 # mod kernels {
 # use krnl::krnl_core;
 # use krnl_core::macros::kernel;
-#[kernel(threads(N))]
+#[kernel]
 pub fn group_sum<const N: u32>(
     #[global] x: Slice<f32>,
     #[group] x_group: UnsafeSlice<f32, { 2 * N as usize }>,
@@ -312,11 +315,13 @@ pub fn group_sum<const N: u32>(
 # }
 # fn foo(device: Device) -> Result<()> {
 # use kernels::group_sum;
-let kernel = group_sum::builder()?.specialize(128)?.build(device)?;
+let kernel = group_sum::builder()?
+    .with_threads(128)
+    .specialize(128)?
+    .build(device)?;
 # todo!()
 # }
 ```
-Specialization will return an [`Err`] if a thread dimension is 0.
 
 # Panics
 Panics will abort the thread, but this will not be caught from the host. You can use [debug_printf](#debug_printf) to ensure a
@@ -324,11 +329,7 @@ certain code path is not reached.
 
 # debug_printf
 The [debug_printf](krnl_core::spirv_std::macros::debug_printfln) and [debug_printfln](krnl_core::spirv_std::macros::debug_printfln)
-macros can be used to write to stdout. This requires the SPV_KHR_non_semantic_info extension. Use the `--non-semantic-info`
-option to [**krnlc**](#compiling) to enable this extension. You can use `#[cfg(target_feature = "ext:SPV_KHR_non_semantic_info")]` for
-conditional compilation.
-
-Non semantic info is not enabled by default because it will significantly increase binary size.
+macros can be used to write to stdout. 
 
 [`Slice`](krnl_core::buffer::Slice) and [`UnsafeSlice`](krnl_core::buffer::UnsafeSlice) will write out the panic message in
 addition to aborting the thread if an index is out of bounds.
@@ -391,6 +392,8 @@ use crate::{
 };
 use anyhow::{bail, Result};
 #[cfg(feature = "device")]
+use dry::macro_wrap;
+#[cfg(feature = "device")]
 use rspirv::{binary::Assemble, dr::Operand};
 use serde::Deserialize;
 use std::sync::Arc;
@@ -404,7 +407,8 @@ pub(crate) struct KernelDesc {
     hash: u64,
     pub(crate) spirv: Vec<u32>,
     features: Features,
-    pub(crate) threads: Vec<u32>,
+    #[serde(skip)]
+    pub(crate) threads: u32,
     safe: bool,
     spec_descs: Vec<SpecDesc>,
     pub(crate) slice_descs: Vec<SliceDesc>,
@@ -427,26 +431,23 @@ impl KernelDesc {
         size += self.slice_descs.len() * 2 * 4;
         size.try_into().unwrap()
     }
-    fn specialize(&self, threads: Vec<u32>, spec_consts: &[ScalarElem]) -> Result<Self> {
+    fn specialize(&self, threads: u32, spec_consts: &[ScalarElem], debug_printf: bool) -> Result<Self> {
         use rspirv::spirv::{Decoration, Op};
         let mut module = rspirv::dr::load_words(&self.spirv).unwrap();
         let mut spec_ids = HashMap::<u32, u32>::with_capacity(spec_consts.len());
-        let mut spec_string = String::new();
+        let mut spec_string = format!("threads={threads}");
         use std::fmt::Write;
         for (desc, spec) in self.spec_descs.iter().zip(spec_consts) {
             if !spec_string.is_empty() {
                 spec_string.push_str(", ");
             }
             let n = desc.name.as_str();
-            match spec {
-                ScalarElem::U32(x) => {
-                    write!(&mut spec_string, "{n}={x}")?;
-                }
-                ScalarElem::I32(x) => {
-                    write!(&mut spec_string, "{n}={x}")?;
-                }
-                _ => todo!(),
-            }
+            macro_wrap!(match spec {
+                macro_for!($T in [U8, I8, U16, I16, F16, BF16, U32, I32, F32, U64, I64, F64] {
+                    ScalarElem::$T(x) => write!(&mut spec_string, "{n}={x}").unwrap(),
+                })
+                _ => unreachable!("{spec:?}"),
+            });
         }
         let name = if !spec_string.is_empty() {
             format!("{}<{spec_string}>", self.name)
@@ -465,26 +466,39 @@ impl KernelDesc {
         for inst in module.types_global_values.iter_mut() {
             if inst.class.opcode == Op::SpecConstant {
                 if let Some(result_id) = inst.result_id {
-                    if let Some(spec_id) = spec_ids.get(&result_id) {
-                        if let Some(value) = spec_consts.get(*spec_id as usize) {
-                            match inst.operands.as_mut_slice() {
-                                [Operand::LiteralInt32(a)] => {
-                                    bytemuck::bytes_of_mut(a).copy_from_slice(value.as_bytes());
-                                }
-                                [Operand::LiteralInt32(a), Operand::LiteralInt32(b)] => {
-                                    bytemuck::bytes_of_mut(a)
-                                        .copy_from_slice(&value.as_bytes()[..8]);
-                                    bytemuck::bytes_of_mut(b)
-                                        .copy_from_slice(&value.as_bytes()[9..]);
-                                }
-                                _ => unreachable!("{:?}", inst.operands),
+                    if let Some(spec_id) = spec_ids.get(&result_id).copied().map(|x| x as usize) {
+                        let value = if let Some(value) = spec_consts.get(spec_id).copied() {
+                            value
+                        } else if spec_id == spec_consts.len() {
+                            ScalarElem::U32(threads)
+                        } else {
+                            unreachable!("{inst:?}")
+                        };
+                        match inst.operands.as_mut_slice() {
+                            [Operand::LiteralInt32(a)] => {
+                                bytemuck::bytes_of_mut(a).copy_from_slice(value.as_bytes());
                             }
+                            [Operand::LiteralInt32(a), Operand::LiteralInt32(b)] => {
+                                bytemuck::bytes_of_mut(a)
+                                    .copy_from_slice(&value.as_bytes()[..8]);
+                                bytemuck::bytes_of_mut(b)
+                                    .copy_from_slice(&value.as_bytes()[9..]);
+                            }
+                            _ => unreachable!("{:?}", inst.operands),
                         }
                     }
                 }
             }
         }
         module.debug_names.clear();
+        /*module.debug_string_source.clear();
+        module.debug_module_processed.clear();
+        if !cfg!(debug_assertions) {
+            strip_non_semantic(&mut module);
+        }*/
+        if !debug_printf {
+            strip_debug_printf(&mut module);
+        }
         let spirv = module.assemble();
         /*let spirv = {
             use spirv_tools::{
@@ -524,13 +538,51 @@ impl KernelDesc {
     }
 }
 
+#[cfg(feature = "device")]
+fn strip_debug_printf(module: &mut rspirv::dr::Module) {
+    use std::collections::HashSet;
+    use rspirv::spirv::Op;
+    module.extensions.retain(|inst| {
+        if inst.operands.first().unwrap().unwrap_literal_string() == "SPV_KHR_non_semantic_info" {
+            false 
+        } else {
+            true
+        }
+    });
+    let mut ext_insts = HashSet::new();
+    module.ext_inst_imports.retain(|inst| {
+        if inst.operands.first().unwrap().unwrap_literal_string().starts_with("NonSemantic.DebugPrintf") {
+            ext_insts.insert(inst.result_id.unwrap());
+            false
+        } else {
+            true
+        }
+    });
+    module.debug_string_source.clear();
+    if ext_insts.is_empty() {
+        return;
+    }
+    for func in module.functions.iter_mut() {
+        for block in func.blocks.iter_mut() {
+            block.instructions.retain(|inst| {
+                if inst.class.opcode == Op::ExtInst {
+                    let id = inst.operands.first().unwrap().unwrap_id_ref();
+                    if ext_insts.contains(&id) {
+                        return false;
+                    }
+                }
+                true
+            })
+        }
+    }
+}
+
 #[cfg_attr(not(feature = "device"), allow(dead_code))]
 #[derive(Clone, Deserialize, Debug)]
 struct SpecDesc {
     #[allow(unused)]
     name: String,
     scalar_type: ScalarType,
-    thread_dim: Option<usize>,
 }
 
 #[cfg_attr(not(feature = "device"), allow(dead_code))]
@@ -576,20 +628,24 @@ pub mod __private {
         id: usize,
         desc: Arc<KernelDesc>,
         spec_consts: Vec<ScalarElem>,
-        threads: [u32; 3],
+        threads: Option<u32>,
     }
 
     impl KernelBuilder {
         pub fn from_bytes(bytes: &'static [u8]) -> Result<Self> {
             let desc: Arc<KernelDesc> = Arc::new(bincode2::deserialize(bytes)?);
-            let mut threads = [1, 1, 1];
-            threads[..desc.threads.len()].copy_from_slice(&desc.threads);
             Ok(Self {
                 id: bytes.as_ptr() as usize,
                 desc,
                 spec_consts: Vec::new(),
-                threads,
+                threads: None,
             })
+        }
+        pub fn with_threads(self, threads: u32) -> Self {
+            Self {
+                threads: Some(threads),
+                ..self
+            }
         }
         pub fn specialize(mut self, spec_consts: &[ScalarElem]) -> Result<Self> {
             assert_eq!(spec_consts.len(), self.desc.spec_descs.len());
@@ -597,16 +653,6 @@ pub mod __private {
                 spec_consts.iter().copied().zip(self.desc.spec_descs.iter())
             {
                 assert_eq!(spec_const.scalar_type(), spec_desc.scalar_type);
-                if let Some(dim) = spec_desc.thread_dim {
-                    if let ScalarElem::U32(value) = spec_const {
-                        if value == 0 {
-                            bail!("threads.{} cannot be zero!", ["x", "y", "z"][dim],);
-                        }
-                        self.threads[dim] = value;
-                    } else {
-                        unreachable!()
-                    }
-                }
             }
             self.spec_consts.clear();
             self.spec_consts.extend_from_slice(spec_consts);
@@ -693,9 +739,12 @@ pub mod __private {
                     if !device_features.contains(&features) {
                         bail!("Kernel {name} requires {features:?}, {device:?} has {device_features:?}!");
                     }
-                    let spec_bytes = if !self.desc.spec_descs.is_empty() {
-                        if self.spec_consts.is_empty() {
-                            bail!("Kernel `{name}` must be specialized!");
+                    let threads = self.threads.unwrap_or(device.info().default_threads());
+                    let spec_bytes = {
+                        if !self.desc.spec_descs.is_empty() {
+                            if self.spec_consts.is_empty() {
+                                bail!("Kernel `{name}` must be specialized!");
+                            }
                         }
                         debug_assert_eq!(self.spec_consts.len(), desc.spec_descs.len());
                         #[cfg(debug_assertions)]
@@ -710,27 +759,20 @@ pub mod __private {
                             .iter()
                             .flat_map(|x| x.as_bytes())
                             .copied()
+                            .chain(threads.to_ne_bytes())
                             .collect()
-                    } else {
-                        Vec::new()
                     };
                     let key = KernelKey {
                         id: self.id,
                         spec_bytes,
                     };
-                    let inner = if !desc.spec_descs.is_empty() {
-                        RawKernel::cached(device.clone(), key, || {
-                            desc.specialize(
-                                self.threads[..self.desc.threads.len()].to_vec(),
-                                &self.spec_consts,
-                            )
-                            .map(Arc::new)
-                        })?
-                    } else {
-                        RawKernel::cached(device.clone(), key, || Ok(desc.clone()))?
-                    };
+                    let debug_printf = device.info().debug_printf();
+                    let inner = RawKernel::cached(device.clone(), key, || {
+                        desc.specialize(threads, &self.spec_consts, debug_printf).map(Arc::new)
+                    })?;
                     Ok(Kernel {
                         inner,
+                        threads,
                         groups: None,
                     })
                 }
@@ -742,35 +784,22 @@ pub mod __private {
     pub struct Kernel {
         #[cfg(feature = "device")]
         inner: RawKernel,
+        threads: u32,
         #[cfg(feature = "device")]
-        groups: Option<[u32; 3]>,
-    }
-
-    #[cfg(feature = "device")]
-    fn global_threads_to_groups(global_threads: &[u32], threads: &[u32]) -> [u32; 3] {
-        debug_assert_eq!(global_threads.len(), threads.len());
-        let mut groups = [1; 3];
-        for (gt, (g, t)) in global_threads
-            .iter()
-            .copied()
-            .zip(groups.iter_mut().zip(threads.iter().copied()))
-        {
-            *g = gt / t + u32::from(gt % t != 0);
-        }
-        groups
+        groups: Option<u32>,
     }
 
     impl Kernel {
-        pub fn with_global_threads(
-            #[cfg_attr(not(feature = "device"), allow(unused_mut))] mut self,
-            global_threads: &[u32],
-        ) -> Self {
+        pub fn threads(&self) -> u32 {
+            self.threads
+        }
+        pub fn with_global_threads(self, global_threads: u32) -> Self {
             #[cfg(feature = "device")]
             {
                 let desc = &self.inner.desc();
-                let groups = global_threads_to_groups(global_threads, &desc.threads);
-                self.groups.replace(groups);
-                self
+                let threads = desc.threads;
+                let groups = global_threads / threads + u32::from(global_threads % threads != 0);
+                self.with_groups(groups)
             }
             #[cfg(not(feature = "device"))]
             {
@@ -778,17 +807,13 @@ pub mod __private {
                 unreachable!()
             }
         }
-        pub fn with_groups(
-            #[cfg_attr(not(feature = "device"), allow(unused_mut))] mut self,
-            groups: &[u32],
-        ) -> Self {
+        pub fn with_groups(self, groups: u32) -> Self {
             #[cfg(feature = "device")]
             {
-                debug_assert_eq!(groups.len(), self.inner.desc().threads.len());
-                let mut new_groups = [1; 3];
-                new_groups[..groups.len()].copy_from_slice(groups);
-                self.groups.replace(new_groups);
-                self
+                Self {
+                    groups: Some(groups),
+                    ..self
+                }
             }
             #[cfg(not(feature = "device"))]
             {
@@ -806,7 +831,7 @@ pub mod __private {
                 let desc = &self.inner.desc();
                 let kernel_name = &desc.name;
                 let mut buffers = Vec::with_capacity(desc.slice_descs.len());
-                let mut items: Option<usize> = None;
+                let mut items: Option<u32> = None;
                 let device = self.inner.device();
                 let mut push_bytes = Vec::with_capacity(desc.push_consts_range() as usize);
                 debug_assert_eq!(push_consts.len(), desc.push_descs.len());
@@ -839,9 +864,9 @@ pub mod __private {
                     buffers.push(buffer.clone());
                     if slice_desc.item {
                         items.replace(if let Some(items) = items {
-                            items.min(slice.len())
+                            items.min(slice.len() as u32)
                         } else {
-                            slice.len()
+                            slice.len() as u32
                         });
                     }
                     let width = slice_desc.scalar_type.size();
@@ -850,17 +875,20 @@ pub mod __private {
                     push_bytes.extend_from_slice(&offset.to_u32().unwrap().to_ne_bytes());
                     push_bytes.extend_from_slice(&len.to_u32().unwrap().to_ne_bytes());
                 }
+                let info = self.inner.device().info().clone();
+                let max_groups = info.max_groups();
                 let groups = if let Some(groups) = self.groups {
+                    if groups > max_groups {
+                        bail!("Kernel `{kernel_name}` groups {groups} is greater than max_groups {max_groups}!");
+                    }
                     groups
                 } else if let Some(items) = items {
-                    if desc.threads.iter().skip(1).any(|t| *t > 1) {
-                        bail!("Kernel `{kernel_name}` cannot infer global_threads if threads.y > 1 or threads.z > 1, threads = {threads:?}!", threads = desc.threads);
-                    }
-                    global_threads_to_groups(&[items as u32], &[desc.threads[0]])
+                    let threads = self.threads;
+                    let groups = items / threads + u32::from(items % threads != 0);
+                    groups.min(max_groups)
                 } else {
                     bail!("Kernel `{kernel_name}` global_threads or groups not provided!");
                 };
-
                 unsafe {
                     self.inner.dispatch(groups, &buffers, push_bytes)?;
                 }
@@ -872,16 +900,6 @@ pub mod __private {
                 unreachable!()
             }
         }
-        /*pub fn threads(&self) -> &[u32] {
-            #[cfg(feature = "device")]
-            {
-                return self.inner.desc().threads.as_ref();
-            }
-            #[cfg(not(feature = "device"))]
-            {
-                unreachable!()
-            }
-        }*/
         pub fn features(&self) -> Features {
             #[cfg(feature = "device")]
             {

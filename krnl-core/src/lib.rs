@@ -5,11 +5,13 @@ Shared core library for [**krnl**](https://docs.rs/krnl).
 
 */
 
-#![cfg_attr(target_arch = "spirv", no_std, feature(asm_experimental_arch))]
+#![cfg_attr(
+    target_arch = "spirv",
+    no_std,
+    feature(asm_experimental_arch, repr_simd)
+)]
 #![forbid(unsafe_op_in_unsafe_fn)]
 
-/// glam
-pub extern crate glam;
 /// half
 pub extern crate half;
 /// krnl-macros

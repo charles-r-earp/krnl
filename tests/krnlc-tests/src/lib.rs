@@ -15,42 +15,18 @@ pub mod kernels {
     };
     use paste::paste;
 
-    #[kernel(threads(X))]
-    fn spec_threads_1d<const X: u32>() {}
+    #[kernel]
+    fn specs<const X: u32, const Y: f32>() {}
 
     #[cfg(test)]
     #[test]
-    fn test_spec_threads_1d() {
-        spec_threads_1d::builder().unwrap().specialize(10).unwrap();
-    }
-
-    #[kernel(threads(X, Y))]
-    fn spec_threads_2d<const X: u32, const Y: u32>() {}
-
-    #[cfg(test)]
-    #[test]
-    fn test_spec_threads_2d() {
-        spec_threads_2d::builder()
-            .unwrap()
-            .specialize(5, 11)
-            .unwrap();
-    }
-
-    #[kernel(threads(X, Y, Z))]
-    fn spec_threads_3d<const X: u32, const Y: u32, const Z: u32>() {}
-
-    #[cfg(test)]
-    #[test]
-    fn test_spec_threads_3d() {
-        spec_threads_3d::builder()
-            .unwrap()
-            .specialize(17, 21, 6)
-            .unwrap();
+    fn test_specs() {
+        specs::builder().unwrap().specialize(10u32, 1.5f32).unwrap();
     }
 
     macro_for!($A in [u8, i8, u16, i16, f16, bf16, u32, i32, f32, u64, i64, f64] {
         paste! {
-            #[kernel(threads(256))]
+            #[kernel]
             fn [<basic_ $A>]<const A: $A>(
                 #[item] a: &mut $A,
                 a_push: $A
@@ -72,7 +48,7 @@ pub mod kernels {
         ($($k:ident(|$n:ident| $e:expr)),* $(,)?) => {
             $(
                 paste! {
-                    #[kernel(threads(1))]
+                    #[kernel]
                     unsafe fn [<group_$k>]<const N: u32>(
                         #[global] x: Slice<f32>,
                         #[group] x_group: UnsafeSlice<f32, { let $n = N; $e }>,
@@ -111,7 +87,7 @@ macro_for!($T in [u8, i8, u16, i16, f16, bf16, u32, i32, f32, u64, i64, f64] {
                 use krnl::krnl_core;
                 use krnl_core::macros::kernel;
 
-                #[kernel(threads(1))]
+                #[kernel]
                 pub fn foo() {}
 
                 #[cfg(test)]

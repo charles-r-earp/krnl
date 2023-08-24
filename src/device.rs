@@ -181,7 +181,7 @@ trait DeviceEngineKernel: Sized {
     ) -> Result<Arc<Self>>;
     unsafe fn dispatch(
         &self,
-        groups: [u32; 3],
+        groups: u32,
         buffers: &[Arc<Self::DeviceBuffer>],
         push_consts: Vec<u8>,
     ) -> Result<()>;
@@ -538,15 +538,34 @@ impl Features {
 pub struct DeviceInfo {
     index: usize,
     name: String,
-    compute_queues: usize,
-    transfer_queues: usize,
+    device_id: u32,
+    vendor_id: u32,
+    max_groups: u32,
+    subgroup_threads: u32,
     features: Features,
+    debug_printf: bool,
 }
 
 impl DeviceInfo {
+    /// Max groups.
+    pub fn max_groups(&self) -> u32 {
+        self.max_groups
+    }
+    /// Subgroup threads.
+    pub fn subgroup_threads(&self) -> u32 {
+        self.subgroup_threads
+    }
     /// Device features.
     pub fn features(&self) -> Features {
         self.features
+    }
+    /// Default threads.
+    pub fn default_threads(&self) -> u32 {
+        256
+    }
+    #[allow(dead_code)]
+    pub(crate) fn debug_printf(&self) -> bool {
+        self.debug_printf
     }
 }
 
@@ -569,7 +588,7 @@ impl RawKernel {
     }
     pub(crate) unsafe fn dispatch(
         &self,
-        groups: [u32; 3],
+        groups: u32,
         buffers: &[DeviceBuffer],
         push_consts: Vec<u8>,
     ) -> Result<()> {

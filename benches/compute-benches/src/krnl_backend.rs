@@ -144,7 +144,7 @@ pub struct Saxpy {
 impl Saxpy {
     pub fn run(&mut self) -> Result<()> {
         kernels::saxpy::builder()?
-            .specialize(128)?
+            .with_threads(256)
             .build(self.device.clone())?
             .dispatch(
                 self.x_device.as_slice(),
@@ -167,8 +167,8 @@ mod kernels {
     use krnl::krnl_core;
     use krnl_core::macros::kernel;
 
-    #[kernel(threads(TS))]
-    pub fn saxpy<const TS: u32>(#[item] x: f32, alpha: f32, #[item] y: &mut f32) {
+    #[kernel]
+    pub fn saxpy(#[item] x: f32, alpha: f32, #[item] y: &mut f32) {
         *y += alpha * x;
     }
 }

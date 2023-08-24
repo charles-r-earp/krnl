@@ -1,5 +1,5 @@
 [workspace]
-members = ["benches/*", "tests/*", "xtask"]
+members = ["benches/*", "tests/*"]
 
 [workspace.package]
 version = "0.0.3-alpha"
@@ -23,7 +23,6 @@ paste = "1.0.7"
 bytemuck = "1.13.1"
 derive_more = { version = "0.99.11", default-features = false }
 anyhow = "1.0.60"
-glam = { version = "0.22.0", default-features = false }
 half = { version = "=2.1.0", default-features = false, features = ["num-traits"] }
 num-traits = { version = "0.2.14", default-features = false }
 thiserror = "1.0.31"
@@ -75,7 +74,6 @@ dashmap = { version = "5.3.4", optional = true }
 rspirv = { workspace = true, optional = true }
 fxhash = { workspace = true, optional = true }
 serde_bytes = "0.11.9"
-#spirv-tools = { version = "0.9.0", default-features = false, features = ["use-installed-tools"], optional = true }
 
 #[target."cfg(any(target_os = \"ios\", target_os = \"macos\"))".dependencies]
 #ash-molten = { version = "0.13.1", features = ["external"], optional = true }

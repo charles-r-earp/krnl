@@ -5,7 +5,7 @@ use super::{
 };
 
 use anyhow::{Error, Result};
-use ash::vk::Handle;
+use ash::vk::{Handle};
 use crossbeam_channel::{Receiver, Sender};
 use dashmap::DashMap;
 use parking_lot::Mutex;
@@ -32,7 +32,7 @@ use vulkano::{
     device::{
         Device, DeviceCreateInfo, DeviceOwned, Queue, QueueCreateInfo, QueueFlags, QueueGuard,
     },
-    instance::{Instance, InstanceCreateInfo, Version},
+    instance::{Instance, InstanceCreateInfo, Version, debug::{DebugUtilsMessengerCreateInfo, DebugUtilsMessageSeverity, DebugUtilsMessageType}, InstanceExtensions},
     library::{LoadingError, VulkanLibrary},
     memory::allocator::{
         AllocationCreateInfo, GenericMemoryAllocatorCreateInfo, MemoryUsage,
@@ -109,7 +109,7 @@ impl Engine {
     unsafe fn compute(
         &self,
         pipeline: &Arc<ComputePipeline>,
-        groups: [u32; 3],
+        groups: u32,
         buffers: &[Arc<DeviceBuffer>],
         slice_descs: &[SliceDesc],
         push_consts: &[u8],
@@ -185,7 +185,36 @@ impl DeviceEngine for Engine {
             optimal_features,
         } = options;
         let library = vulkan_library().map_err(|e| Error::new(DeviceUnavailable).context(e))?;
-        let instance = Instance::new(library, InstanceCreateInfo::application_from_cargo_toml())?;
+        /*let layers = library.layer_properties().unwrap().map(|x| {
+            (x.name().to_string(), x.description().to_string())
+        }).collect::<Vec<_>>();
+        dbg!(layers);*/
+        //let instance = Instance::new(library, InstanceCreateInfo::application_from_cargo_toml())?;
+        let debug_printf = Arc::new(AtomicBool::default());
+        let debug_printf2 = debug_printf.clone();
+        let debug_create_info = DebugUtilsMessengerCreateInfo { 
+            message_severity: DebugUtilsMessageSeverity::INFO,
+            message_type: DebugUtilsMessageType::VALIDATION,
+            ..DebugUtilsMessengerCreateInfo::user_callback(Arc::new(move |msg| {
+                if debug_printf2.load(Ordering::SeqCst) {
+                    return;
+                }
+                if msg.layer_prefix == Some("UNASSIGNED-khronos-validation-createinstance-status-message") &&
+                    msg.description.contains("Khronos Validation Layer Active:")
+                    && msg.description.contains("Current Enables: VK_VALIDATION_FEATURE_ENABLE_DEBUG_PRINTF_EXT.") {
+                    debug_printf2.store(true, Ordering::SeqCst);
+                }
+            }))
+        };
+        let instance_create_info = InstanceCreateInfo { 
+            enabled_extensions: InstanceExtensions {
+                ext_debug_utils: true,
+                .. Default::default()
+            },
+            ..InstanceCreateInfo::application_from_cargo_toml()
+        };
+        let instance = unsafe { Instance::with_debug_utils_messengers(library, instance_create_info, [debug_create_info])? };
+        let debug_printf = debug_printf.load(Ordering::SeqCst);
         let mut physical_devices = instance.enumerate_physical_devices()?;
         let devices = physical_devices.len();
         let physical_device = if let Some(physical_device) = physical_devices.nth(index) {
@@ -252,7 +281,7 @@ impl DeviceEngine for Engine {
         )?;
         let queue = queues.next().unwrap();
         let memory_allocator = Arc::new(StandardMemoryAllocator::new(
-            device,
+            device.clone(),
             GenericMemoryAllocatorCreateInfo {
                 block_sizes: &[
                     (0, 64_000_000),
@@ -287,12 +316,16 @@ impl DeviceEngine for Engine {
                 .unwrap();
         }
         let kernels = DashMap::default();
+        let properties = device.physical_device().properties();
         let info = Arc::new(DeviceInfo {
             index,
             name,
-            compute_queues: 1,
-            transfer_queues: 0,
+            device_id: properties.device_id,
+            vendor_id: properties.vendor_id,
+            max_groups: properties.max_compute_work_group_count[0],
+            subgroup_threads: properties.subgroup_size.unwrap(),
             features,
+            debug_printf,
         });
         let mut worker = Worker::new(queue.clone())?;
         let semaphore = worker.semaphore.clone();
@@ -504,7 +537,7 @@ impl FrameOuter {
         &mut self,
         epoch: &AtomicU64,
         pipeline: &Arc<ComputePipeline>,
-        groups: [u32; 3],
+        groups: u32,
         buffers: &[Arc<DeviceBuffer>],
         slice_descs: &[SliceDesc],
         push_consts: &[u8],
@@ -626,7 +659,7 @@ impl Frame {
     unsafe fn compute(
         &mut self,
         pipeline: &Arc<ComputePipeline>,
-        groups: [u32; 3],
+        groups: u32,
         buffers: &[Arc<DeviceBuffer>],
         slice_descs: &[crate::kernel::SliceDesc],
         push_consts: &[u8],
@@ -675,7 +708,7 @@ impl Frame {
             }
         }
         unsafe {
-            builder.dispatch(groups);
+            builder.dispatch([groups, 1, 1]);
         }
         self.buffers
             .extend(buffers.iter().map(|x| x.inner.as_ref().unwrap().clone()));
@@ -1282,7 +1315,7 @@ impl DeviceEngineKernel for Kernel {
     }
     unsafe fn dispatch(
         &self,
-        groups: [u32; 3],
+        groups: u32,
         buffers: &[Arc<Self::DeviceBuffer>],
         push_consts: Vec<u8>,
     ) -> Result<()> {

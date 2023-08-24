@@ -25,6 +25,7 @@ use syn::{
 
 type Result<T, E = Error> = std::result::Result<T, E>;
 
+/*
 #[derive(Parse, Debug)]
 struct InsideParen<T> {
     #[allow(unused)]
@@ -32,7 +33,7 @@ struct InsideParen<T> {
     paren: Paren,
     #[inside(paren)]
     value: T,
-}
+}*/
 
 #[derive(Parse, Debug)]
 struct InsideBracket<T> {
@@ -217,94 +218,14 @@ impl ToTokens for ModuleItem {
 
 #[proc_macro_attribute]
 pub fn kernel(attr: TokenStream, item: TokenStream) -> TokenStream {
-    match kernel_impl(attr.into(), item.into()) {
+    if !attr.is_empty() {
+        return Error::new_spanned(&TokenStream2::from(attr), "unexpected tokens")
+            .into_compile_error()
+            .into();
+    }
+    match kernel_impl(item.into()) {
         Ok(tokens) => tokens.into(),
         Err(e) => e.into_compile_error().into(),
-    }
-}
-
-#[derive(Parse, Debug)]
-struct KernelAttr {
-    #[call(Punctuated::parse_terminated)]
-    args: Punctuated<KernelAttrArg, Comma>,
-}
-
-impl KernelAttr {
-    fn meta(&self) -> Result<KernelAttrMeta> {
-        let mut meta = KernelAttrMeta::default();
-        for arg in self.args.iter() {
-            if let Some(threads) = arg.threads.as_ref() {
-                let threads = &threads.value.inner;
-                if !meta.threads.is_empty() {
-                    return Err(Error::new_spanned(
-                        &arg.ident,
-                        "`threads` already specified",
-                    ));
-                }
-                if threads.len() > 3 {
-                    return Err(Error::new_spanned(
-                        &arg.ident,
-                        "expected 1, 2, or 3 dimensional `threads`",
-                    ));
-                }
-                for dim in threads.iter() {
-                    let dim = if let Some(lit) = dim.lit.as_ref() {
-                        if let Ok(dim) = lit.base10_parse() {
-                            dim
-                        } else {
-                            return Err(Error::new_spanned(lit, "expected u32"));
-                        }
-                    } else {
-                        1
-                    };
-                    meta.threads.push(dim);
-                }
-                meta.thread_dims = threads.clone();
-            } else {
-                return Err(Error::new_spanned(&arg.ident, "unknown arg"));
-            }
-        }
-        if meta.threads.is_empty() {
-            return Err(Error::new(Span2::call_site(), "expected `threads`"));
-        }
-        Ok(meta)
-    }
-}
-
-#[derive(Default, Debug)]
-struct KernelAttrMeta {
-    thread_dims: Punctuated<KernelThreadDim, Comma>,
-    threads: Vec<u32>,
-}
-
-#[derive(Parse, Debug)]
-struct KernelAttrArg {
-    ident: Ident,
-    #[parse_if(ident == "threads")]
-    threads: Option<InsideParen<KrnlAttrThreads>>,
-}
-
-#[derive(Parse, Debug)]
-struct KrnlAttrThreads {
-    #[call(Punctuated::parse_separated_nonempty)]
-    inner: Punctuated<KernelThreadDim, Comma>,
-}
-
-#[derive(Parse, Clone, Debug)]
-struct KernelThreadDim {
-    #[peek(Ident)]
-    ident: Option<Ident>,
-    #[parse_if(ident.is_none())]
-    lit: Option<LitInt>,
-}
-
-impl ToTokens for KernelThreadDim {
-    fn to_tokens(&self, tokens: &mut TokenStream2) {
-        if let Some(ident) = self.ident.as_ref() {
-            ident.to_tokens(tokens);
-        } else if let Some(lit) = self.lit.as_ref() {
-            lit.to_tokens(tokens);
-        }
     }
 }
 
@@ -330,9 +251,8 @@ struct KernelItem {
 }
 
 impl KernelItem {
-    fn meta(&self, attr_meta: KernelAttrMeta) -> Result<KernelMeta> {
+    fn meta(&self) -> Result<KernelMeta> {
         let mut meta = KernelMeta {
-            attr_meta,
             spec_metas: Vec::new(),
             unsafe_token: self.unsafe_token,
             ident: self.ident.clone(),
@@ -373,12 +293,6 @@ impl KernelItem {
                     .push((arg.ident.clone(), len.clone()));
             }
             meta.arg_metas.push(arg_meta);
-        }
-        if meta.itemwise && meta.attr_meta.thread_dims.len() > 1 {
-            return Err(Error::new_spanned(
-                &meta.attr_meta.thread_dims,
-                "`item` kernels are 1 dimensional",
-            ));
         }
         Ok(meta)
     }
@@ -650,12 +564,12 @@ impl KernelArgMeta {
                     quote! {
                         unsafe {
                             use ::krnl_core::buffer::UnsafeIndex;
-                            #ident.unsafe_index_mut(__krnl_item_index as usize)
+                            #ident.unsafe_index_mut(__krnl_item_id as usize)
                         }
                     }
                 } else {
                     quote! {
-                        #ident[__krnl_item_index as usize]
+                        #ident[__krnl_item_id as usize]
                     }
                 }
             }
@@ -792,7 +706,6 @@ impl ToTokens for KernelArrayLength {
 
 #[derive(Debug)]
 struct KernelMeta {
-    attr_meta: KernelAttrMeta,
     spec_metas: Vec<KernelSpecMeta>,
     ident: Ident,
     unsafe_token: Option<Unsafe>,
@@ -807,22 +720,13 @@ impl KernelMeta {
         let mut kernel_desc = KernelDesc {
             name: self.ident.to_string(),
             safe: self.unsafe_token.is_none(),
-            threads: self.attr_meta.threads.clone(),
             ..KernelDesc::default()
         };
         kernel_desc.hash = fxhash::hash64(&self.block.to_token_stream().to_string());
         for spec in self.spec_metas.iter() {
-            let thread_dim = self.attr_meta.thread_dims.iter().position(|dim| {
-                if let Some(ident) = dim.ident.as_ref() {
-                    ident == &spec.ident
-                } else {
-                    false
-                }
-            });
             kernel_desc.spec_descs.push(SpecDesc {
                 name: spec.ident.to_string(),
                 scalar_type: spec.ty.scalar_type,
-                thread_dim,
             })
         }
         for arg_meta in self.arg_metas.iter() {
@@ -869,33 +773,30 @@ impl KernelMeta {
             .chain(arrays)
             .collect()
     }
-    fn compute_threads(&self) -> Punctuated<LitInt, Comma> {
+    /*fn compute_threads(&self) -> Punctuated<LitInt, Comma> {
         self.attr_meta
             .threads
             .iter()
             .map(|dim| LitInt::new(&dim.to_string(), Span2::call_site()))
             .collect()
-    }
-    fn threads(&self) -> Punctuated<TokenStream2, Comma> {
-        self.attr_meta
-            .thread_dims
-            .iter()
-            .map(|dim| dim.to_token_stream())
-            .collect()
-    }
-    fn threads3(&self) -> Punctuated<TokenStream2, Comma> {
-        self.threads()
-            .into_iter()
-            .chain([
-                quote! {
-                    1
-                },
-                quote! {
-                    1
-                },
-            ])
-            .take(3)
-            .collect()
+    }*/
+    fn threads(&self) -> TokenStream2 {
+        let id = self.spec_metas.len();
+        let spec_id_string = format!("OpDecorate %spec SpecId {}", id);
+        quote! {
+            #[allow(non_snake_case)]
+            let __krnl_threads: u32 = unsafe {
+                let mut spec = Default::default();
+                ::core::arch::asm! {
+                    "%uint = OpTypeInt 32 0",
+                    "%spec = OpSpecConstant %uint 1",
+                    #spec_id_string,
+                    "OpStore {spec} %spec",
+                    spec = in(reg) &mut spec,
+                }
+                spec
+            };
+        }
     }
     fn declare_specs(&self) -> TokenStream2 {
         self.spec_metas
@@ -973,8 +874,8 @@ impl KernelMeta {
                 let group_init = quote! {
                     {
                         use ::krnl_core::spirv_std::arch::IndexUnchecked;
-                        let mut __krnl_i = kernel.thread_index() as usize;
-                        let __krnl_group_stride = (__krnl_threads.x * __krnl_threads.y * __krnl_threads.z) as usize;
+                        let mut __krnl_i = kernel.thread_id as usize;
+                        let __krnl_group_stride = __krnl_threads as usize;
                         if __krnl_i < __krnl_group_stride { // <- Needed for some reason? or else zeroing fails
                             while __krnl_i < #len {
                                 unsafe {
@@ -1274,7 +1175,6 @@ struct KernelDesc {
     hash: u64,
     spirv: Vec<u32>,
     features: Features,
-    threads: Vec<u32>,
     safe: bool,
     spec_descs: Vec<SpecDesc>,
     slice_descs: Vec<SliceDesc>,
@@ -1352,7 +1252,6 @@ struct Features {
 struct SpecDesc {
     name: String,
     scalar_type: ScalarType,
-    thread_dim: Option<usize>,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -1369,21 +1268,20 @@ struct PushDesc {
     scalar_type: ScalarType,
 }
 
-fn kernel_impl(attr_tokens: TokenStream2, item_tokens: TokenStream2) -> Result<TokenStream2> {
-    let attr: KernelAttr = syn::parse2(attr_tokens.clone())?;
+fn kernel_impl(item_tokens: TokenStream2) -> Result<TokenStream2> {
     let item: KernelItem = syn::parse2(item_tokens.clone())?;
-    let kernel_meta = item.meta(attr.meta()?)?;
+    let kernel_meta = item.meta()?;
     let kernel_desc = kernel_meta.desc()?;
     let unsafe_token = kernel_meta.unsafe_token;
     let ident = &kernel_meta.ident;
-    let dimensionality = kernel_desc.threads.len();
     let device_tokens = {
         let kernel_data = format_ident!("{}", kernel_desc.encode()?);
         let block = &kernel_meta.block;
-        let compute_threads = kernel_meta.compute_threads();
+        //let compute_threads = kernel_meta.compute_threads();
         let compute_def_args = kernel_meta.compute_def_args();
         let declare_specs = kernel_meta.declare_specs();
-        let threads3 = kernel_meta.threads3();
+        let declare_threads = kernel_meta.threads();
+        //let threads3 = kernel_meta.threads3();
         let items = kernel_meta.device_items();
         let device_arrays = kernel_meta.device_arrays();
         let device_slices = kernel_meta.device_slices();
@@ -1391,15 +1289,6 @@ fn kernel_impl(attr_tokens: TokenStream2, item_tokens: TokenStream2) -> Result<T
         let device_fn_call_args = kernel_meta.device_fn_call_args();
         let push_consts_ident = format_ident!("__krnl_{ident}PushConsts");
         let push_const_fields = kernel_desc.push_const_fields();
-        let kernel_dim = if dimensionality == 1 {
-            quote! { u32 }
-        } else if dimensionality == 2 {
-            quote! {
-                ::krnl_core::glam::UVec2
-            }
-        } else {
-            quote! { ::krnl_core::glam::UVec3 }
-        };
         let push_struct_tokens = quote! {
             #[cfg(target_arch = "spirv")]
             #[automatically_derived]
@@ -1419,31 +1308,30 @@ fn kernel_impl(attr_tokens: TokenStream2, item_tokens: TokenStream2) -> Result<T
         if kernel_meta.itemwise {
             device_fn_call = quote! {
                 let __krnl_items = #items;
-                let mut __krnl_item_index = kernel.global_index();
-                while __krnl_item_index < __krnl_items {
+                let mut __krnl_item_id = kernel.global_id;
+                while __krnl_item_id < __krnl_items {
                     {
-                        let kernel = ::krnl_core::kernel::ItemKernel::from(::krnl_core::kernel::__private::ItemKernelArgs {
-                            item_index: __krnl_item_index,
-                            item_id: __krnl_item_index,
+                        let kernel = ::krnl_core::kernel::ItemKernel {
+                            item_id: __krnl_item_id,
                             items: __krnl_items,
-                        });
+                        };
                         #device_fn_call
                     }
-                    __krnl_item_index += kernel.global_threads();
+                    __krnl_item_id += kernel.global_threads;
                 }
             };
         }
         let kernel_type = if kernel_meta.itemwise {
-            quote! { ItemKernel<u32> }
+            quote! { ItemKernel }
         } else {
             quote! {
-                Kernel<#kernel_dim>
+                Kernel
             }
         };
         quote! {
             #push_struct_tokens
             #[cfg(target_arch = "spirv")]
-            #[::krnl_core::spirv_std::spirv(compute(threads(#compute_threads)))]
+            #[::krnl_core::spirv_std::spirv(compute(threads(1)))]
             #[allow(unused)]
             pub fn #ident(
                 #[allow(unused)]
@@ -1451,13 +1339,13 @@ fn kernel_impl(attr_tokens: TokenStream2, item_tokens: TokenStream2) -> Result<T
                 __krnl_push_consts: &#push_consts_ident,
                 #[allow(unused)]
                 #[spirv(global_invocation_id)]
-                __krnl_global_id: ::krnl_core::glam::UVec3,
+                __krnl_global_id: ::krnl_core::kernel::__private::UVec3,
                 #[allow(unused)]
                 #[spirv(num_workgroups)]
-                __krnl_groups: ::krnl_core::glam::UVec3,
+                __krnl_groups: ::krnl_core::kernel::__private::UVec3,
                 #[allow(unused)]
                 #[spirv(workgroup_id)]
-                __krnl_group_id: ::krnl_core::glam::UVec3,
+                __krnl_group_id: ::krnl_core::kernel::__private::UVec3,
                 #[allow(unused)]
                 #[spirv(num_subgroups)]
                 __krnl_subgroups: u32,
@@ -1472,7 +1360,7 @@ fn kernel_impl(attr_tokens: TokenStream2, item_tokens: TokenStream2) -> Result<T
                 __krnl_subgroup_thread_id: u32,
                 #[allow(unused)]
                 #[spirv(local_invocation_id)]
-                __krnl_thread_id: ::krnl_core::glam::UVec3,
+                __krnl_thread_id: ::krnl_core::kernel::__private::UVec3,
                 #[allow(unused)]
                 #[spirv(storage_buffer, descriptor_set = 1, binding = 0)]
                 #kernel_data: &mut [u32],
@@ -1490,17 +1378,19 @@ fn kernel_impl(attr_tokens: TokenStream2, item_tokens: TokenStream2) -> Result<T
                         *__krnl_kernel_data.index_unchecked_mut(0) = 1;
                     }
                     #declare_specs
-                    let __krnl_threads = ::krnl_core::glam::UVec3::new(#threads3);
-                    let mut kernel = ::krnl_core::kernel::Kernel::<#kernel_dim>::from(::krnl_core::kernel::__private::KernelArgs {
-                        groups: __krnl_groups,
-                        group_id: __krnl_group_id,
+                    #declare_threads
+                    let mut kernel = ::krnl_core::kernel::Kernel {
+                        global_threads: __krnl_groups.x * __krnl_threads,
+                        global_id: __krnl_global_id.x,
+                        groups: __krnl_groups.x,
+                        group_id: __krnl_group_id.x,
                         subgroups: __krnl_subgroups,
                         subgroup_id: __krnl_subgroup_id,
                         subgroup_threads: __krnl_subgroup_threads,
                         subgroup_thread_id: __krnl_subgroup_thread_id,
                         threads: __krnl_threads,
-                        thread_id: __krnl_thread_id,
-                    });
+                        thread_id: __krnl_thread_id.x,
+                    };
                     #device_arrays
                     #device_slices
                     #device_fn_call
@@ -1508,32 +1398,12 @@ fn kernel_impl(attr_tokens: TokenStream2, item_tokens: TokenStream2) -> Result<T
             }
         }
     };
+    /*if ident.to_string() == "foo" {
+        let string = prettyplease::unparse(&syn::parse2(device_tokens.clone()).unwrap());
+        eprintln!("{string}");
+        panic!();
+    }*/
     let host_tokens = {
-        let kernel_dim = if dimensionality == 1 {
-            quote! { u32 }
-        } else if dimensionality == 2 {
-            quote! {
-                UVec2
-            }
-        } else {
-            quote! { UVec3 }
-        };
-        let to_array_ext = if dimensionality == 1 {
-            quote! {
-                #[doc(hidden)]
-                trait ToArrayExt {
-                    fn to_array(&self) -> [u32; 1];
-                }
-                #[doc(hidden)]
-                impl ToArrayExt for u32 {
-                    fn to_array(&self) -> [u32; 1] {
-                        [*self]
-                    }
-                }
-            }
-        } else {
-            TokenStream2::new()
-        };
         let check_spec_args = kernel_meta.check_spec_args();
         let check_buffer_args = kernel_meta.check_buffer_args();
         let check_push_args = kernel_desc.check_push_args();
@@ -1564,7 +1434,7 @@ fn kernel_impl(attr_tokens: TokenStream2, item_tokens: TokenStream2) -> Result<T
         };
         let input_docs = {
             let input_tokens_string = prettyplease::unparse(&syn::parse2(quote! {
-                #[kernel(#attr_tokens)]
+                #[kernel]
                 #item_tokens
             })?);
             let input_doc_string = format!("```\n{input_tokens_string}\n```");
@@ -1596,7 +1466,7 @@ fn kernel_impl(attr_tokens: TokenStream2, item_tokens: TokenStream2) -> Result<T
                 __krnl_module_arg!(use crate as __krnl);
                 use __krnl::{
                     anyhow::{self, Result},
-                    krnl_core::{half::{f16, bf16}, glam::{UVec2, UVec3}},
+                    krnl_core::half::{f16, bf16},
                     buffer::{Slice, SliceMut},
                     device::Device,
                     scalar::ScalarType,
@@ -1647,6 +1517,13 @@ fn kernel_impl(attr_tokens: TokenStream2, item_tokens: TokenStream2) -> Result<T
                 }
 
                 impl KernelBuilder {
+                    /// Threads.
+                    pub fn with_threads(self, threads: u32) -> Self {
+                        Self {
+                            inner: self.inner.with_threads(threads),
+                            .. self
+                        }
+                    }
                     #kernel_builder_specialize_fn
                     pub fn build(&self, device: Device) -> Result<Kernel> {
                         let inner = self.inner.build(device)?;
@@ -1661,18 +1538,22 @@ fn kernel_impl(attr_tokens: TokenStream2, item_tokens: TokenStream2) -> Result<T
                 }
 
                 impl Kernel {
+                    /// Threads.
+                    pub fn threads(&self) -> u32 {
+                        self.inner.threads()
+                    }
                     /// Global threads to dispatch.
                     ///
                     /// Implicitly declares groups by rounding up to the next multiple of threads.
-                    pub fn with_global_threads(mut self, global_threads: #kernel_dim) -> Self {
-                        self.inner = self.inner.with_global_threads(&global_threads.to_array());
+                    pub fn with_global_threads(mut self, global_threads: u32) -> Self {
+                        self.inner = self.inner.with_global_threads(global_threads);
                         self
                     }
                     /// Groups to dispatch.
                     ///
                     /// For item kernels, if not provided, is inferred based on item arguments.
-                    pub fn with_groups(mut self, groups: #kernel_dim) -> Self {
-                        self.inner = self.inner.with_groups(&groups.to_array());
+                    pub fn with_groups(mut self, groups: u32) -> Self {
+                        self.inner = self.inner.with_groups(groups);
                         self
                     }
                     /// Dispatches the kernel.
@@ -1691,8 +1572,6 @@ fn kernel_impl(attr_tokens: TokenStream2, item_tokens: TokenStream2) -> Result<T
                         unsafe { self.inner.dispatch(&[#dispatch_slice_args], &[#(#dispatch_push_args.into()),*]) }
                     }
                 }
-
-                #to_array_ext
             }
         }
     };

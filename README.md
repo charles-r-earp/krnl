@@ -42,16 +42,16 @@ mod kernels {
     }
 
     // Item kernels for iterator patterns.
-    #[kernel(threads(256))]
+    #[kernel]
     pub fn saxpy(#[item] x: f32, alpha: f32, #[item] y: &mut f32) {
         saxpy_impl(x, alpha, y);
     }
 
     // General purpose kernels like CUDA / OpenCL.
-    #[kernel(threads(256))]
+    #[kernel]
     pub fn saxpy_global(#[global] x: Slice<f32>, alpha: f32, #[global] y: UnsafeSlice<f32>) {
         use krnl_core::buffer::UnsafeIndex;
-        let mut index = kernel.global_index() as usize;
+        let mut index = kernel.global_id() as usize;
         while index < x.len().min(y.len()) {
             saxpy_impl(x[index], alpha, unsafe { y.unsafe_index_mut(index) });
             index += kernel.global_threads() as usize;
@@ -67,6 +67,7 @@ fn saxpy(x: Slice<f32>, alpha: f32, mut y: SliceMut<f32>) -> Result<()> {
         return Ok(());
     } 
     kernels::saxpy::builder()?
+        .with_threads(256)
         .build(y.device())?
         .dispatch(x, alpha, y) 
 }
@@ -87,12 +88,46 @@ fn main() -> Result<()> {
 
 # Performance 
 *NVIDIA GeForce GTX 1060 with Max-Q Design*
-## Copying from Host to Device
-![Upload](benches/compute-benches/charts/nv_gtx1060/upload.svg)
-## Copying from Device to Host
-![Download](benches/compute-benches/charts/nv_gtx1060/download.svg)
-## Compute
-![Saxpy](benches/compute-benches/charts/nv_gtx1060/saxpy.svg)
+
+## alloc
+
+|                  | `krnl`                    | `cuda`                             | `ocl`                             |
+|:-----------------|:--------------------------|:-----------------------------------|:--------------------------------- |
+| **`1,000,000`**  | `319.07 ns` (✅ **1.00x**) | `112.83 us` (❌ *353.62x slower*)   | `486.10 ns` (❌ *1.52x slower*)    |
+| **`10,000,000`** | `318.22 ns` (✅ **1.00x**) | `1.11 ms` (❌ *3494.06x slower*)    | `493.02 ns` (❌ *1.55x slower*)    |
+| **`64,000,000`** | `318.40 ns` (✅ **1.00x**) | `6.31 ms` (❌ *19803.98x slower*)   | `493.07 ns` (❌ *1.55x slower*)    |
+
+## upload
+
+|                  | `krnl`                    | `cuda`                           | `ocl`                             |
+|:-----------------|:--------------------------|:---------------------------------|:--------------------------------- |
+| **`1,000,000`**  | `339.76 us` (✅ **1.00x**) | `363.93 us` (✅ **1.07x slower**) | `789.44 us` (❌ *2.32x slower*)    |
+| **`10,000,000`** | `4.90 ms` (✅ **1.00x**)   | `3.81 ms` (✅ **1.29x faster**)   | `8.84 ms` (❌ *1.80x slower*)      |
+| **`64,000,000`** | `25.92 ms` (✅ **1.00x**)  | `24.58 ms` (✅ **1.05x faster**)  | `56.74 ms` (❌ *2.19x slower*)     |
+
+## download
+
+|                  | `krnl`                    | `cuda`                           | `ocl`                             |
+|:-----------------|:--------------------------|:---------------------------------|:--------------------------------- |
+| **`1,000,000`**  | `593.88 us` (✅ **1.00x**) | `461.01 us` (✅ **1.29x faster**) | `20.12 ms` (❌ *33.88x slower*)    |
+| **`10,000,000`** | `5.66 ms` (✅ **1.00x**)   | `4.07 ms` (✅ **1.39x faster**)   | `20.13 ms` (❌ *3.55x slower*)     |
+| **`64,000,000`** | `29.50 ms` (✅ **1.00x**)  | `25.71 ms` (✅ **1.15x faster**)  | `37.48 ms` (❌ *1.27x slower*)     |
+
+## zero
+
+|                  | `krnl`                    | `cuda`                           | `ocl`                             |
+|:-----------------|:--------------------------|:---------------------------------|:--------------------------------- |
+| **`1,000,000`**  | `38.49 us` (✅ **1.00x**)  | `25.31 us` (✅ **1.52x faster**)  | `35.16 us` (✅ **1.09x faster**)   |
+| **`10,000,000`** | `254.52 us` (✅ **1.00x**) | `243.01 us` (✅ **1.05x faster**) | `252.41 us` (✅ **1.01x faster**)  |
+| **`64,000,000`** | `1.54 ms` (✅ **1.00x**)   | `1.55 ms` (✅ **1.01x slower**)   | `1.56 ms` (✅ **1.02x slower**)    |
+
+## saxpy
+
+|                  | `krnl`                    | `cuda`                           | `ocl`                             |
+|:-----------------|:--------------------------|:---------------------------------|:--------------------------------- |
+| **`1,000,000`**  | `88.59 us` (✅ **1.00x**)  | `81.25 us` (✅ **1.09x faster**)  | `89.24 us` (✅ **1.01x slower**)   |
+| **`10,000,000`** | `742.25 us` (✅ **1.00x**) | `770.35 us` (✅ **1.04x slower**) | `780.49 us` (✅ **1.05x slower**)  |
+| **`64,000,000`** | `4.68 ms` (✅ **1.00x**)   | `4.91 ms` (✅ **1.05x slower**)   | `4.92 ms` (✅ **1.05x slower**)    |
 
 # Recent Changes 
 See [Releases.md](https://github.com/charles-r-earp/krnl/blob/main/Releases.md)

@@ -31,9 +31,6 @@ struct Cli {
     /// Directory for all generated artifacts
     #[arg(long = "target-dir")]
     target_dir: Option<PathBuf>,
-    /// Enable SPV_KHR_non_semantic_info for debug_printf
-    #[arg(long = "non-semantic-info")]
-    non_semantic_info: bool,
     /// Check mode.
     #[arg(long = "check")]
     check: bool,
@@ -62,7 +59,6 @@ fn main() -> Result<()> {
             &target_dir,
             &krnlc_metadata.dependencies,
             module_datas,
-            cli.non_semantic_info,
             cli.verbose,
         )?;
         cache(package, modules, cli.check)?;
@@ -251,7 +247,7 @@ impl KrnlcMetadata {
                                 dependency.features.clone(),
                             )
                         } else {
-                            // TODO maybe allow depencies not included in host?
+                            // TODO maybe allow dependencies not included in host?
                             bail!("{manifest_path_str:?} [package.metadata.krnlc.dependencies] {dep:?} is not a dependency of {:?}!", package.name);
                         };
                         let mut default_features = None;
@@ -450,7 +446,6 @@ fn compile(
     target_dir: &str,
     dependencies: &str,
     module_datas: FxHashMap<String, ModuleData>,
-    non_semantic_info: bool,
     verbose: bool,
 ) -> Result<FxHashMap<String, FxHashMap<String, KernelDesc>>> {
     use std::{
@@ -612,11 +607,8 @@ extern crate krnl_core;
         let mut builder = SpirvBuilder::new(&device_crate_dir, "spirv-unknown-vulkan1.2")
             .spirv_metadata(SpirvMetadata::NameVariables)
             .print_metadata(MetadataPrintout::None)
-            .deny_warnings(true);
-
-        if non_semantic_info {
-            builder = builder.extension("SPV_KHR_non_semantic_info");
-        }
+            .deny_warnings(true)
+            .extension("SPV_KHR_non_semantic_info");
         let capabilites = {
             use spirv_builder::Capability::*;
             [
@@ -692,7 +684,7 @@ fn kernel_post_process(
     use rspirv::{
         binary::Assemble,
         dr::{Instruction, Module, Operand},
-        spirv::{BuiltIn, Decoration, Op, StorageClass},
+        spirv::{Decoration, BuiltIn, Op, StorageClass},
     };
     let entry_id = entry_point.operands[1].unwrap_id_ref();
     let entry_name = entry_point.operands[2].unwrap_literal_string().to_owned();
@@ -952,30 +944,20 @@ fn kernel_post_process(
         let bytes = hex::decode(kernel_data)?;
         bincode2::deserialize(&bytes)?
     };
-    if kernel_desc
-        .spec_descs
-        .iter()
-        .any(|x| x.thread_dim.is_some())
     {
-        spirv_module.execution_modes.clear();
         let mut builder = rspirv::dr::Builder::new_from_module(std::mem::take(&mut spirv_module));
         let uint = builder.type_int(32, 0);
         let one = builder.constant_u32(uint, 1);
-        let mut threads = [one; 3];
-        for (i, spec_desc) in kernel_desc.spec_descs.iter().enumerate() {
-            if let Some(thread_dim) = spec_desc.thread_dim {
-                let spec = builder.spec_constant_u32(uint, 1);
-                builder.decorate(spec, Decoration::SpecId, [Operand::LiteralInt32(i as u32)]);
-                threads[thread_dim] = spec;
-            }
-        }
-        let uvec3 = builder.type_vector(uint, 3);
-        let threads = builder.spec_constant_composite(uvec3, threads);
+        let threads = builder.spec_constant_u32(uint, 1);
+        let spec_id = kernel_desc.spec_descs.len() as u32;
         builder.decorate(
             threads,
-            Decoration::BuiltIn,
-            [Operand::BuiltIn(BuiltIn::WorkgroupSize)],
+            Decoration::SpecId,
+            [Operand::LiteralInt32(spec_id)],
         );
+        let uvec3 = builder.type_vector(uint, 3);
+        let workgroup_size = builder.spec_constant_composite(uvec3, [threads, one, one]);
+        builder.decorate(workgroup_size, Decoration::BuiltIn, [Operand::BuiltIn(BuiltIn::WorkgroupSize)]);
         spirv_module = builder.module();
     }
     spirv_module.entry_points.first_mut().unwrap().operands[2] =
@@ -1015,6 +997,10 @@ fn kernel_post_process(
             _ => true,
         }
     });
+    /*{
+        use rspirv::binary::Disassemble;
+        eprintln!("{}", spirv_module.disassemble());
+    }*/
     //unroll_loops(&mut spirv_module);
     let spirv = spirv_module.assemble();
     let spirv = spirv_opt(&spirv, SpirvOptKind::Performance)?;
@@ -1376,7 +1362,6 @@ struct KernelDesc {
     hash: u64,
     spirv: Vec<u32>,
     features: Features,
-    threads: Vec<u32>,
     safe: bool,
     spec_descs: Vec<SpecDesc>,
     slice_descs: Vec<SliceDesc>,
@@ -1396,7 +1381,6 @@ pub struct Features {
 struct SpecDesc {
     name: String,
     scalar_type: ScalarType,
-    thread_dim: Option<usize>,
 }
 
 #[derive(Serialize, Deserialize, Debug)]

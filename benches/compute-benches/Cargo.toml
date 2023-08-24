@@ -20,15 +20,10 @@ krnl = { workspace = true, default-features = false }
 ocl = { version = "0.19.4", optional = true }
 qutex = { version = "=0.2.3", optional = true }
 rand = "0.8.5"
-# added upload without alloc
-# this doesn't improve upload perf though
-autograph = { git = "https://github.com/charles-r-earp/autograph", branch = "krnl-bench-ext", optional = true }
-blocker = { version = "0.1.2", features = ["thread_yield"], optional = true }
 
 [features]
 default = ["device"]
 device = ["krnl/device"]
-autograph = ["dep:autograph", "dep:blocker"]
 cuda = ["dep:cust"]
 ocl = ["dep:ocl", "dep:futures", "dep:qutex"]
 
@@ -39,3 +34,6 @@ anyhow.workspace = true
 name = "benchmarks"
 harness = false
 required-features = ["device"]
+
+[dev-dependencies]
+num-format = "0.4.4"
