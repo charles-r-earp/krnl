@@ -335,7 +335,7 @@ impl ScalarData for ScalarBufferRepr {
         ScalarSliceRepr {
             raw: self.raw.slice.clone(),
             scalar_type: self.scalar_type,
-            _m: PhantomData::default(),
+            _m: PhantomData,
         }
     }
     fn get_scalar_slice_mut(&mut self) -> Option<ScalarSliceMutRepr> {
@@ -354,7 +354,7 @@ impl ScalarDataMut for ScalarBufferRepr {
         ScalarSliceMutRepr {
             raw: self.raw.slice.clone(),
             scalar_type: self.scalar_type,
-            _m: PhantomData::default(),
+            _m: PhantomData,
         }
     }
 }
@@ -410,7 +410,7 @@ impl<'a, T: Scalar> From<SliceRepr<'a, T>> for ScalarSliceRepr<'a> {
         Self {
             raw: slice.raw,
             scalar_type: T::scalar_type(),
-            _m: PhantomData::default(),
+            _m: PhantomData,
         }
     }
 }
@@ -420,7 +420,7 @@ impl ScalarData for ScalarSliceRepr<'_> {
         ScalarSliceRepr {
             raw: self.raw.clone(),
             scalar_type: self.scalar_type,
-            _m: PhantomData::default(),
+            _m: PhantomData,
         }
     }
 }
@@ -631,7 +631,7 @@ impl<'a, T: Scalar> From<SliceMutRepr<'a, T>> for ScalarSliceMutRepr<'a> {
         Self {
             raw: slice.raw,
             scalar_type: T::scalar_type(),
-            _m: PhantomData::default(),
+            _m: PhantomData,
         }
     }
 }
@@ -641,7 +641,7 @@ impl ScalarData for ScalarSliceMutRepr<'_> {
         ScalarSliceRepr {
             raw: self.raw.clone(),
             scalar_type: self.scalar_type,
-            _m: PhantomData::default(),
+            _m: PhantomData,
         }
     }
 }
@@ -651,7 +651,7 @@ impl ScalarDataMut for ScalarSliceMutRepr<'_> {
         ScalarSliceMutRepr {
             raw: self.raw.clone(),
             scalar_type: self.scalar_type,
-            _m: PhantomData::default(),
+            _m: PhantomData,
         }
     }
 }
@@ -683,7 +683,7 @@ impl ScalarData for ScalarArcBufferRepr {
         ScalarSliceRepr {
             raw: self.raw.slice.clone(),
             scalar_type: self.scalar_type,
-            _m: PhantomData::default(),
+            _m: PhantomData,
         }
     }
     fn get_scalar_slice_mut(&mut self) -> Option<ScalarSliceMutRepr> {
@@ -691,7 +691,7 @@ impl ScalarData for ScalarArcBufferRepr {
         Some(ScalarSliceMutRepr {
             raw: raw.slice.clone(),
             scalar_type: self.scalar_type,
-            _m: PhantomData::default(),
+            _m: PhantomData,
         })
     }
     fn try_into_scalar_buffer(self) -> Result<ScalarBufferRepr, Self> {
@@ -726,14 +726,14 @@ impl ScalarDataOwned for ScalarArcBufferRepr {
             return Ok(ScalarSliceMutRepr {
                 raw: raw.slice.clone(),
                 scalar_type: self.scalar_type,
-                _m: PhantomData::default(),
+                _m: PhantomData,
             });
         }
         self.raw = Arc::new(self.as_scalar_slice().to_scalar_buffer()?.raw);
         Ok(ScalarSliceMutRepr {
             raw: self.raw.slice.clone(),
             scalar_type: self.scalar_type,
-            _m: PhantomData::default(),
+            _m: PhantomData,
         })
     }
 }
@@ -1191,7 +1191,7 @@ impl<'a, T: Scalar> From<Slice<'a, T>> for ScalarSlice<'a> {
         let data = ScalarSliceRepr {
             raw: slice.data.raw,
             scalar_type: T::scalar_type(),
-            _m: PhantomData::default(),
+            _m: PhantomData,
         };
         Self { data }
     }
@@ -1202,7 +1202,7 @@ impl<'a, T: Scalar> From<SliceMut<'a, T>> for ScalarSliceMut<'a> {
         let data = ScalarSliceMutRepr {
             raw: slice.data.raw,
             scalar_type: T::scalar_type(),
-            _m: PhantomData::default(),
+            _m: PhantomData,
         };
         Self { data }
     }
@@ -1370,7 +1370,7 @@ impl<T: Scalar> BufferRepr<T> {
         };
         Self {
             raw,
-            _m: PhantomData::default(),
+            _m: PhantomData,
         }
     }
     unsafe fn uninit(device: Device, len: usize) -> Result<Self> {
@@ -1441,7 +1441,7 @@ impl<T: Scalar> ScalarData for BufferRepr<T> {
         ScalarSliceRepr {
             raw: self.raw.clone(),
             scalar_type: T::scalar_type(),
-            _m: PhantomData::default(),
+            _m: PhantomData,
         }
     }
 }
@@ -1451,7 +1451,7 @@ impl<T: Scalar> ScalarDataMut for BufferRepr<T> {
         ScalarSliceMutRepr {
             raw: self.raw.clone(),
             scalar_type: T::scalar_type(),
-            _m: PhantomData::default(),
+            _m: PhantomData,
         }
     }
 }
@@ -1461,7 +1461,7 @@ impl<T: Scalar> Data for BufferRepr<T> {
     fn as_slice(&self) -> SliceRepr<Self::Elem> {
         SliceRepr {
             raw: self.raw.slice.clone(),
-            _m: PhantomData::default(),
+            _m: PhantomData,
         }
     }
     fn get_slice_mut(&mut self) -> Option<SliceMutRepr<T>> {
@@ -1479,7 +1479,7 @@ impl<T: Scalar> DataMut for BufferRepr<T> {
     fn as_slice_mut(&mut self) -> SliceMutRepr<Self::Elem> {
         SliceMutRepr {
             raw: self.raw.slice.clone(),
-            _m: PhantomData::default(),
+            _m: PhantomData,
         }
     }
 }
@@ -1523,7 +1523,7 @@ impl<'a, T: Scalar> SliceRepr<'a, T> {
         };
         Self {
             raw,
-            _m: PhantomData::default(),
+            _m: PhantomData,
         }
     }
     fn into_host_slice(self) -> Option<&'a [T]> {
@@ -1556,7 +1556,7 @@ impl<'a, T: Scalar> SliceRepr<'a, T> {
         let raw = self.raw.bitcast(Y::scalar_type())?;
         Ok(SliceRepr {
             raw,
-            _m: PhantomData::default(),
+            _m: PhantomData,
         })
     }
     fn slice(self, range: impl RangeBounds<usize>) -> Option<Self> {
@@ -1572,7 +1572,7 @@ impl<'a, T: Scalar> ScalarData for SliceRepr<'a, T> {
         ScalarSliceRepr {
             raw: self.raw.clone(),
             scalar_type: T::scalar_type(),
-            _m: PhantomData::default(),
+            _m: PhantomData,
         }
     }
 }
@@ -1613,7 +1613,7 @@ impl<'a, T: Scalar> SliceMutRepr<'a, T> {
         };
         Self {
             raw,
-            _m: PhantomData::default(),
+            _m: PhantomData,
         }
     }
     fn into_host_slice_mut(self) -> Option<&'a mut [T]> {
@@ -1669,7 +1669,7 @@ impl<'a, T: Scalar> SliceMutRepr<'a, T> {
         let raw = self.raw.bitcast(Y::scalar_type())?;
         Ok(SliceMutRepr {
             raw,
-            _m: PhantomData::default(),
+            _m: PhantomData,
         })
     }
     fn slice(self, range: impl RangeBounds<usize>) -> Option<Self> {
@@ -1685,7 +1685,7 @@ impl<T: Scalar> ScalarData for SliceMutRepr<'_, T> {
         ScalarSliceRepr {
             raw: self.raw.clone(),
             scalar_type: T::scalar_type(),
-            _m: PhantomData::default(),
+            _m: PhantomData,
         }
     }
 }
@@ -1695,7 +1695,7 @@ impl<T: Scalar> ScalarDataMut for SliceMutRepr<'_, T> {
         ScalarSliceMutRepr {
             raw: self.raw.clone(),
             scalar_type: T::scalar_type(),
-            _m: PhantomData::default(),
+            _m: PhantomData,
         }
     }
 }
@@ -1744,7 +1744,7 @@ impl<T: Scalar> From<BufferRepr<T>> for ArcBufferRepr<T> {
     fn from(buffer: BufferRepr<T>) -> Self {
         Self {
             raw: Arc::new(buffer.raw),
-            _m: PhantomData::default(),
+            _m: PhantomData,
         }
     }
 }
@@ -1755,7 +1755,7 @@ impl<T: Scalar> TryFrom<ScalarArcBufferRepr> for ArcBufferRepr<T> {
         if T::scalar_type() == buffer.scalar_type {
             Ok(Self {
                 raw: buffer.raw,
-                _m: PhantomData::default(),
+                _m: PhantomData,
             })
         } else {
             Err(buffer)
@@ -1786,7 +1786,7 @@ impl<T: Scalar> Data for ArcBufferRepr<T> {
     fn as_slice(&self) -> SliceRepr<T> {
         SliceRepr {
             raw: self.raw.slice.clone(),
-            _m: PhantomData::default(),
+            _m: PhantomData,
         }
     }
     fn get_slice_mut(&mut self) -> Option<SliceMutRepr<T>> {
@@ -1800,11 +1800,11 @@ impl<T: Scalar> Data for ArcBufferRepr<T> {
         match Arc::try_unwrap(self.raw) {
             Ok(raw) => Ok(BufferRepr {
                 raw,
-                _m: PhantomData::default(),
+                _m: PhantomData,
             }),
             Err(raw) => Err(Self {
                 raw,
-                _m: PhantomData::default(),
+                _m: PhantomData,
             }),
         }
     }
@@ -1823,20 +1823,20 @@ impl<T: Scalar> DataOwned for ArcBufferRepr<T> {
     fn from_buffer(buffer: BufferRepr<T>) -> Self {
         Self {
             raw: Arc::new(buffer.raw),
-            _m: PhantomData::default(),
+            _m: PhantomData,
         }
     }
     fn make_slice_mut(&mut self) -> Result<SliceMutRepr<T>> {
         if let Some(raw) = Arc::get_mut(&mut self.raw) {
             return Ok(SliceMutRepr {
                 raw: raw.slice.clone(),
-                _m: PhantomData::default(),
+                _m: PhantomData,
             });
         }
         self.raw = Arc::new(self.as_slice().to_buffer()?.raw);
         Ok(SliceMutRepr {
             raw: self.raw.slice.clone(),
-            _m: PhantomData::default(),
+            _m: PhantomData,
         })
     }
 }

@@ -5,9 +5,9 @@ use compute_benches::cuda_backend::CudaBackend;
 use compute_benches::krnl_backend::KrnlBackend;
 #[cfg(feature = "ocl")]
 use compute_benches::ocl_backend::OclBackend;
-use criterion::{criterion_group, criterion_main, Criterion, BenchmarkId};
-use rand::{distributions::OpenClosed01, thread_rng, Rng};
+use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 use num_format::{Locale, ToFormattedString};
+use rand::{distributions::OpenClosed01, thread_rng, Rng};
 use std::{
     str::FromStr,
     time::{Duration, Instant},
@@ -25,7 +25,7 @@ pub fn criterion_benchmark(c: &mut Criterion) {
         println!("testing device {device_index}");
         device_index
     };
-    
+
     #[cfg_attr(not(feature = "cuda"), allow(unused))]
     let cuda_device_index = if cfg!(feature = "cuda") {
         let cuda_device = std::env::var("CUDA_DEVICE");
@@ -40,8 +40,8 @@ pub fn criterion_benchmark(c: &mut Criterion) {
     } else {
         0
     };
-    
-    #[cfg(feature = "ocl")] 
+
+    #[cfg(feature = "ocl")]
     let (ocl_platform_index, ocl_device_index) = {
         let ocl_platform = std::env::var("OCL_PLATFORM");
         let ocl_device = std::env::var("OCL_DEVICE");
@@ -59,7 +59,7 @@ pub fn criterion_benchmark(c: &mut Criterion) {
         println!("testing ocl platform {ocl_platform_index} device {ocl_device_index}");
         (ocl_platform_index, ocl_device_index)
     };
-    
+
     let lens = [1_000_000, 10_000_000, 64_000_000];
     let n_max = lens.last().copied().unwrap();
     {
@@ -121,10 +121,10 @@ pub fn criterion_benchmark(c: &mut Criterion) {
             }
         }
     }
-    
+
     let x: Vec<f32> = thread_rng().sample_iter(OpenClosed01).take(n_max).collect();
     let y: Vec<f32> = thread_rng().sample_iter(OpenClosed01).take(n_max).collect();
-    
+
     {
         let mut g = c.benchmark_group("upload");
         {
@@ -160,7 +160,7 @@ pub fn criterion_benchmark(c: &mut Criterion) {
             }
         }
     }
-    
+
     {
         let mut g = c.benchmark_group("download");
         {
@@ -196,7 +196,7 @@ pub fn criterion_benchmark(c: &mut Criterion) {
             }
         }
     }
-    
+
     {
         let mut g = c.benchmark_group("zero");
         {
@@ -232,7 +232,7 @@ pub fn criterion_benchmark(c: &mut Criterion) {
             }
         }
     }
-    
+
     {
         let mut g = c.benchmark_group("saxpy");
         let alpha = 0.5;

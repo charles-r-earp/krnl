@@ -5,7 +5,7 @@ use super::{
 };
 
 use anyhow::{Error, Result};
-use ash::vk::{Handle};
+use ash::vk::Handle;
 use crossbeam_channel::{Receiver, Sender};
 use dashmap::DashMap;
 use parking_lot::Mutex;
@@ -32,7 +32,10 @@ use vulkano::{
     device::{
         Device, DeviceCreateInfo, DeviceOwned, Queue, QueueCreateInfo, QueueFlags, QueueGuard,
     },
-    instance::{Instance, InstanceCreateInfo, Version, debug::{DebugUtilsMessengerCreateInfo, DebugUtilsMessageSeverity, DebugUtilsMessageType}, InstanceExtensions},
+    instance::{
+        debug::{DebugUtilsMessageSeverity, DebugUtilsMessageType, DebugUtilsMessengerCreateInfo},
+        Instance, InstanceCreateInfo, InstanceExtensions, Version,
+    },
     library::{LoadingError, VulkanLibrary},
     memory::allocator::{
         AllocationCreateInfo, GenericMemoryAllocatorCreateInfo, MemoryUsage,
@@ -192,28 +195,38 @@ impl DeviceEngine for Engine {
         //let instance = Instance::new(library, InstanceCreateInfo::application_from_cargo_toml())?;
         let debug_printf = Arc::new(AtomicBool::default());
         let debug_printf2 = debug_printf.clone();
-        let debug_create_info = DebugUtilsMessengerCreateInfo { 
+        let debug_create_info = DebugUtilsMessengerCreateInfo {
             message_severity: DebugUtilsMessageSeverity::INFO,
             message_type: DebugUtilsMessageType::VALIDATION,
             ..DebugUtilsMessengerCreateInfo::user_callback(Arc::new(move |msg| {
                 if debug_printf2.load(Ordering::SeqCst) {
                     return;
                 }
-                if msg.layer_prefix == Some("UNASSIGNED-khronos-validation-createinstance-status-message") &&
-                    msg.description.contains("Khronos Validation Layer Active:")
-                    && msg.description.contains("Current Enables: VK_VALIDATION_FEATURE_ENABLE_DEBUG_PRINTF_EXT.") {
+                if msg.layer_prefix
+                    == Some("UNASSIGNED-khronos-validation-createinstance-status-message")
+                    && msg.description.contains("Khronos Validation Layer Active:")
+                    && msg
+                        .description
+                        .contains("Current Enables: VK_VALIDATION_FEATURE_ENABLE_DEBUG_PRINTF_EXT.")
+                {
                     debug_printf2.store(true, Ordering::SeqCst);
                 }
             }))
         };
-        let instance_create_info = InstanceCreateInfo { 
+        let instance_create_info = InstanceCreateInfo {
             enabled_extensions: InstanceExtensions {
                 ext_debug_utils: true,
-                .. Default::default()
+                ..Default::default()
             },
             ..InstanceCreateInfo::application_from_cargo_toml()
         };
-        let instance = unsafe { Instance::with_debug_utils_messengers(library, instance_create_info, [debug_create_info])? };
+        let instance = unsafe {
+            Instance::with_debug_utils_messengers(
+                library,
+                instance_create_info,
+                [debug_create_info],
+            )?
+        };
         let debug_printf = debug_printf.load(Ordering::SeqCst);
         let mut physical_devices = instance.enumerate_physical_devices()?;
         let devices = physical_devices.len();

@@ -304,7 +304,7 @@ impl<'a, T: Scalar> From<&'a mut [T]> for UnsafeSlice<'a, T> {
         let data = UnsafeSliceRepr {
             ptr: slice.as_mut_ptr(),
             len: slice.len(),
-            _m: PhantomData::default(),
+            _m: PhantomData,
         };
         Self { data }
     }

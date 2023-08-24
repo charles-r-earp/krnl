@@ -229,7 +229,7 @@ macro_for!($T in [i32, u32, f32] {
 
 # Groups
 Kernels are dispatched in groups of threads (CUDA thread blocks). The threads provided to `.with_threads(..)`
-sets the number of threads per group, which will default to a reasonable value based on the device if not 
+sets the number of threads per group, which will default to a reasonable value based on the device if not
 provided.
 
 For simple kernels, threads can be arbitrary, typically 128, 256, or 512. This can be tuned for optimal performance.
@@ -280,7 +280,7 @@ fn group_sum(
 Group memory is zeroed.
 
 # Subgroups
-Thread groups are composed of subgroups of threads (CUDA warps). The number of threads per subgroup is at 
+Thread groups are composed of subgroups of threads (CUDA warps). The number of threads per subgroup is at
 most 128. Typical values are:
 - 32: NVIDIA
 - 64: AMD
@@ -329,7 +329,7 @@ certain code path is not reached.
 
 # debug_printf
 The [debug_printf](krnl_core::spirv_std::macros::debug_printfln) and [debug_printfln](krnl_core::spirv_std::macros::debug_printfln)
-macros can be used to write to stdout. 
+macros can be used to write to stdout.
 
 [`Slice`](krnl_core::buffer::Slice) and [`UnsafeSlice`](krnl_core::buffer::UnsafeSlice) will write out the panic message in
 addition to aborting the thread if an index is out of bounds.
@@ -431,7 +431,12 @@ impl KernelDesc {
         size += self.slice_descs.len() * 2 * 4;
         size.try_into().unwrap()
     }
-    fn specialize(&self, threads: u32, spec_consts: &[ScalarElem], debug_printf: bool) -> Result<Self> {
+    fn specialize(
+        &self,
+        threads: u32,
+        spec_consts: &[ScalarElem],
+        debug_printf: bool,
+    ) -> Result<Self> {
         use rspirv::spirv::{Decoration, Op};
         let mut module = rspirv::dr::load_words(&self.spirv).unwrap();
         let mut spec_ids = HashMap::<u32, u32>::with_capacity(spec_consts.len());
@@ -479,10 +484,8 @@ impl KernelDesc {
                                 bytemuck::bytes_of_mut(a).copy_from_slice(value.as_bytes());
                             }
                             [Operand::LiteralInt32(a), Operand::LiteralInt32(b)] => {
-                                bytemuck::bytes_of_mut(a)
-                                    .copy_from_slice(&value.as_bytes()[..8]);
-                                bytemuck::bytes_of_mut(b)
-                                    .copy_from_slice(&value.as_bytes()[9..]);
+                                bytemuck::bytes_of_mut(a).copy_from_slice(&value.as_bytes()[..8]);
+                                bytemuck::bytes_of_mut(b).copy_from_slice(&value.as_bytes()[9..]);
                             }
                             _ => unreachable!("{:?}", inst.operands),
                         }
@@ -540,18 +543,24 @@ impl KernelDesc {
 
 #[cfg(feature = "device")]
 fn strip_debug_printf(module: &mut rspirv::dr::Module) {
-    use std::collections::HashSet;
     use rspirv::spirv::Op;
+    use std::collections::HashSet;
     module.extensions.retain(|inst| {
         if inst.operands.first().unwrap().unwrap_literal_string() == "SPV_KHR_non_semantic_info" {
-            false 
+            false
         } else {
             true
         }
     });
     let mut ext_insts = HashSet::new();
     module.ext_inst_imports.retain(|inst| {
-        if inst.operands.first().unwrap().unwrap_literal_string().starts_with("NonSemantic.DebugPrintf") {
+        if inst
+            .operands
+            .first()
+            .unwrap()
+            .unwrap_literal_string()
+            .starts_with("NonSemantic.DebugPrintf")
+        {
             ext_insts.insert(inst.result_id.unwrap());
             false
         } else {
@@ -768,7 +777,8 @@ pub mod __private {
                     };
                     let debug_printf = device.info().debug_printf();
                     let inner = RawKernel::cached(device.clone(), key, || {
-                        desc.specialize(threads, &self.spec_consts, debug_printf).map(Arc::new)
+                        desc.specialize(threads, &self.spec_consts, debug_printf)
+                            .map(Arc::new)
                     })?;
                     Ok(Kernel {
                         inner,
