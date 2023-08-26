@@ -607,8 +607,8 @@ extern crate krnl_core;
         let mut builder = SpirvBuilder::new(&device_crate_dir, "spirv-unknown-vulkan1.2")
             .spirv_metadata(SpirvMetadata::NameVariables)
             .print_metadata(MetadataPrintout::None)
-            .deny_warnings(true)
-            .extension("SPV_KHR_non_semantic_info");
+            .deny_warnings(true);
+            //.extension("SPV_KHR_non_semantic_info")
         let capabilites = {
             use spirv_builder::Capability::*;
             [
@@ -704,316 +704,321 @@ fn kernel_post_process(
         .collect();
     let (module_name_with_hash, kernel_name) = entry_name.split_once("::").unwrap();
     let module_data = module_datas.get(module_name_with_hash).unwrap();
-    let spirv_module = Module {
-        entry_points: vec![entry_point.clone()],
-        execution_modes: vec![execution_mode.clone()],
-        functions,
-        ..spirv_module.clone()
-    };
-    let spirv = spirv_module.assemble();
-    let spirv = spirv_opt(&spirv, SpirvOptKind::DeadCodeElimination)?;
-    let mut spirv_module = rspirv::dr::load_words(&spirv).map_err(|e| Error::msg(e.to_string()))?;
     let module_path = &module_data.path;
-    let mut kernel_desc: KernelDesc = {
-        let mut kernel_data_var = None;
-        for inst in spirv_module.annotations.iter() {
-            let op = inst.class.opcode;
-            if op == Op::Decorate {
-                if let [Operand::IdRef(id), Operand::Decoration(Decoration::DescriptorSet), Operand::LiteralInt32(1)] =
-                    inst.operands.as_slice()
-                {
-                    kernel_data_var.replace(*id);
-                    break;
-                }
-            }
-        }
-        let kernel_data_var = if let Some(var) = kernel_data_var {
-            var
-        } else {
-            bail!("Unable to decode kernel {module_path}::{kernel_name}!");
+    let kernel_desc = (|| -> Result<KernelDesc> {
+        let spirv_module = Module {
+            entry_points: vec![entry_point.clone()],
+            execution_modes: vec![execution_mode.clone()],
+            functions,
+            ..spirv_module.clone()
         };
-        spirv_module.annotations.retain(|inst| {
-            let op = inst.class.opcode;
-            !(op == Op::Decorate && inst.operands.first() == Some(&Operand::IdRef(kernel_data_var)))
-        });
-        spirv_module.entry_points[0].operands.retain(|x| {
-            if let Operand::IdRef(id) = x {
-                *id != kernel_data_var
-            } else {
-                true
-            }
-        });
-        add_spec_constant_ops(&mut spirv_module);
-        let mut constants = FxHashMap::default();
-        for inst in spirv_module.types_global_values.iter() {
-            if let Some(result_id) = inst.result_id {
+        let spirv = spirv_module.assemble();
+        let spirv = spirv_opt(&spirv, SpirvOptKind::DeadCodeElimination)?;
+        let mut spirv_module = rspirv::dr::load_words(&spirv).map_err(|e| Error::msg(e.to_string())).unwrap();
+        let mut kernel_desc: KernelDesc = {
+            let mut kernel_data_var = None;
+            for inst in spirv_module.annotations.iter() {
                 let op = inst.class.opcode;
-                let operands = inst.operands.as_slice();
-                if let (Op::Constant, [Operand::LiteralInt32(value)]) = (op, operands) {
-                    constants.insert(result_id, *value);
+                if op == Op::Decorate {
+                    if let [Operand::IdRef(id), Operand::Decoration(Decoration::DescriptorSet), Operand::LiteralInt32(1)] =
+                        inst.operands.as_slice()
+                    {
+                        kernel_data_var.replace(*id);
+                        break;
+                    }
                 }
             }
-        }
-        let mut kernel_data_ptrs = FxHashMap::default();
-        let mut kernel_data_stores = FxHashMap::default();
-        for function in spirv_module.functions.iter_mut() {
-            for block in function.blocks.iter_mut() {
-                block.instructions.retain(|inst| {
-                    let op = inst.class.opcode;
-                    let operands = inst.operands.as_slice();
-                    match (op, operands) {
-                        (Op::AccessChain, [Operand::IdRef(var), _, Operand::IdRef(index)]) => {
-                            if *var == kernel_data_var {
-                                kernel_data_ptrs.insert(inst.result_id.unwrap(), *index);
-                                return false;
-                            }
-                        }
-                        (Op::AccessChain, [Operand::IdRef(var), ..]) => {
-                            if *var == kernel_data_var {
-                                return false;
-                            }
-                        }
-                        (Op::Store, [Operand::IdRef(ptr), Operand::IdRef(value)]) => {
-                            if let Some(index) = kernel_data_ptrs.get(ptr) {
-                                if let Some(id) = constants.get(index) {
-                                    kernel_data_stores.insert(*id, *value);
-                                }
-                                return false;
-                            }
-                        }
-                        _ => {}
-                    }
+            let kernel_data_var = if let Some(var) = kernel_data_var {
+                var
+            } else {
+                bail!("Unable to decode kernel {module_path}::{kernel_name}!");
+            };
+            spirv_module.annotations.retain(|inst| {
+                let op = inst.class.opcode;
+                !(op == Op::Decorate && inst.operands.first() == Some(&Operand::IdRef(kernel_data_var)))
+            });
+            spirv_module.entry_points[0].operands.retain(|x| {
+                if let Operand::IdRef(id) = x {
+                    *id != kernel_data_var
+                } else {
                     true
-                });
-            }
-        }
-        let mut kernel_data = None;
-        let mut array_ids = FxHashMap::with_capacity_and_hasher(
-            kernel_data_stores.len().checked_sub(1).unwrap_or_default(),
-            Default::default(),
-        );
-        spirv_module.debug_names.retain_mut(|inst| {
-            let op = inst.class.opcode;
-            let operands = inst.operands.as_mut_slice();
-            if let (Op::Name, [Operand::IdRef(var), Operand::LiteralString(name)]) = (op, operands)
-            {
-                if *var == kernel_data_var {
-                    kernel_data.replace(std::mem::take(name));
-                    return false;
-                } else if name.starts_with("__krnl_group_array_")
-                    || name.starts_with("__krnl_subgroup_array_")
-                {
-                    if let Some(id) = name.rsplit_once('_').and_then(|x| x.1.parse().ok()) {
-                        array_ids.insert(*var, id);
-                    }
                 }
-            }
-            true
-        });
-        if !array_ids.is_empty() {
-            let mut array_types = FxHashMap::default();
-            let mut pointer_types = FxHashMap::default();
-            let mut pointer_lens = FxHashMap::default();
+            });
+            add_spec_constant_ops(&mut spirv_module);
+            let mut constants = FxHashMap::default();
             for inst in spirv_module.types_global_values.iter() {
                 if let Some(result_id) = inst.result_id {
                     let op = inst.class.opcode;
                     let operands = inst.operands.as_slice();
-                    match (op, operands) {
-                        (Op::Constant, [Operand::LiteralInt32(value)]) => {
-                            constants.insert(result_id, *value);
-                        }
-                        (Op::TypeArray, [Operand::IdRef(ty), Operand::IdRef(_)]) => {
-                            array_types.insert(result_id, *ty);
-                        }
-                        (
-                            Op::TypePointer,
-                            [Operand::StorageClass(storage_class), Operand::IdRef(pointee)],
-                        ) => {
-                            if *storage_class == StorageClass::Workgroup
-                                || *storage_class == StorageClass::Private
-                            {
-                                if let Some(ty) = array_types.get(pointee) {
-                                    pointer_types.insert(result_id, *ty);
-                                }
-                            }
-                        }
-                        (Op::Variable, _) => {
-                            if let Some((result_type, id)) =
-                                inst.result_type.zip(array_ids.get(&result_id))
-                            {
-                                if let Some(len) = kernel_data_stores.get(id) {
-                                    pointer_lens.insert(result_type, *len);
-                                }
-                            }
-                        }
-                        _ => {}
+                    if let (Op::Constant, [Operand::LiteralInt32(value)]) = (op, operands) {
+                        constants.insert(result_id, *value);
                     }
                 }
             }
-            let mut id_counter = spirv_module.header.as_ref().unwrap().bound;
-            let mut scalars = Vec::new();
-            let mut constants = Vec::new();
-            let mut types_global_values =
-                Vec::with_capacity(spirv_module.types_global_values.len() + array_ids.len());
-            for mut inst in spirv_module.types_global_values {
-                if inst.result_id == Some(kernel_data_var) {
-                    continue;
-                } else if let Some(result_id) = inst.result_id {
-                    let op = inst.class.opcode;
-                    let operands = inst.operands.as_mut_slice();
-                    match (op, operands) {
-                        (Op::TypeInt | Op::TypeFloat | Op::TypeBool, _) => {
-                            scalars.push(inst);
-                            continue;
-                        }
-                        (
-                            Op::Constant
-                            | Op::ConstantTrue
-                            | Op::ConstantFalse
-                            | Op::ConstantNull
-                            | Op::SpecConstant
-                            | Op::SpecConstantTrue
-                            | Op::SpecConstantFalse
-                            | Op::SpecConstantOp,
-                            _,
-                        ) => {
-                            if scalars.iter().any(|x| x.result_id == inst.result_type) {
-                                constants.push(inst);
+            let mut kernel_data_ptrs = FxHashMap::default();
+            let mut kernel_data_stores = FxHashMap::default();
+            for function in spirv_module.functions.iter_mut() {
+                for block in function.blocks.iter_mut() {
+                    block.instructions.retain(|inst| {
+                        let op = inst.class.opcode;
+                        let operands = inst.operands.as_slice();
+                        match (op, operands) {
+                            (Op::AccessChain, [Operand::IdRef(var), _, Operand::IdRef(index)]) => {
+                                if *var == kernel_data_var {
+                                    kernel_data_ptrs.insert(inst.result_id.unwrap(), *index);
+                                    return false;
+                                }
                             }
-                            continue;
-                        }
-                        (Op::TypePointer, [Operand::StorageClass(_), Operand::IdRef(pointee)]) => {
-                            if let Some((ty, len)) = pointer_types
-                                .get(&result_id)
-                                .zip(pointer_lens.get(&result_id))
-                            {
-                                *pointee = id_counter;
-                                id_counter += 1;
-                                types_global_values.push(Instruction::new(
-                                    Op::TypeArray,
-                                    None,
-                                    Some(*pointee),
-                                    vec![Operand::IdRef(*ty), Operand::IdRef(*len)],
-                                ));
+                            (Op::AccessChain, [Operand::IdRef(var), ..]) => {
+                                if *var == kernel_data_var {
+                                    return false;
+                                }
                             }
+                            (Op::Store, [Operand::IdRef(ptr), Operand::IdRef(value)]) => {
+                                if let Some(index) = kernel_data_ptrs.get(ptr) {
+                                    if let Some(id) = constants.get(index) {
+                                        kernel_data_stores.insert(*id, *value);
+                                    }
+                                    return false;
+                                }
+                            }
+                            _ => {}
                         }
-                        (Op::Variable, [Operand::StorageClass(storage_class)]) => {
-                            if *storage_class == StorageClass::Private {
-                                if let Some(result_type) = inst.result_type {
-                                    if let Some(ty) = pointer_types.get(&result_type) {
-                                        let null = id_counter;
-                                        id_counter += 1;
-                                        types_global_values.push(Instruction::new(
-                                            Op::ConstantNull,
-                                            Some(*ty),
-                                            Some(null),
-                                            Vec::new(),
-                                        ));
-                                        inst.operands.push(Operand::IdRef(null));
+                        true
+                    });
+                }
+            }
+            let mut kernel_data = None;
+            let mut array_ids = FxHashMap::with_capacity_and_hasher(
+                kernel_data_stores.len().checked_sub(1).unwrap_or_default(),
+                Default::default(),
+            );
+            spirv_module.debug_names.retain_mut(|inst| {
+                let op = inst.class.opcode;
+                let operands = inst.operands.as_mut_slice();
+                if let (Op::Name, [Operand::IdRef(var), Operand::LiteralString(name)]) = (op, operands)
+                {
+                    if *var == kernel_data_var {
+                        kernel_data.replace(std::mem::take(name));
+                        return false;
+                    } else if name.starts_with("__krnl_group_array_")
+                        || name.starts_with("__krnl_subgroup_array_")
+                    {
+                        if let Some(id) = name.rsplit_once('_').and_then(|x| x.1.parse().ok()) {
+                            array_ids.insert(*var, id);
+                        }
+                    }
+                }
+                true
+            });
+            if !array_ids.is_empty() {
+                let mut array_types = FxHashMap::default();
+                let mut pointer_types = FxHashMap::default();
+                let mut pointer_lens = FxHashMap::default();
+                for inst in spirv_module.types_global_values.iter() {
+                    if let Some(result_id) = inst.result_id {
+                        let op = inst.class.opcode;
+                        let operands = inst.operands.as_slice();
+                        match (op, operands) {
+                            (Op::Constant, [Operand::LiteralInt32(value)]) => {
+                                constants.insert(result_id, *value);
+                            }
+                            (Op::TypeArray, [Operand::IdRef(ty), Operand::IdRef(_)]) => {
+                                array_types.insert(result_id, *ty);
+                            }
+                            (
+                                Op::TypePointer,
+                                [Operand::StorageClass(storage_class), Operand::IdRef(pointee)],
+                            ) => {
+                                if *storage_class == StorageClass::Workgroup
+                                    || *storage_class == StorageClass::Private
+                                {
+                                    if let Some(ty) = array_types.get(pointee) {
+                                        pointer_types.insert(result_id, *ty);
                                     }
                                 }
                             }
+                            (Op::Variable, _) => {
+                                if let Some((result_type, id)) =
+                                    inst.result_type.zip(array_ids.get(&result_id))
+                                {
+                                    if let Some(len) = kernel_data_stores.get(id) {
+                                        pointer_lens.insert(result_type, *len);
+                                    }
+                                }
+                            }
+                            _ => {}
                         }
-                        _ => {}
                     }
                 }
-                types_global_values.push(inst);
-            }
-            spirv_module.types_global_values = scalars
-                .into_iter()
-                .chain(constants)
-                .chain(types_global_values)
-                .collect();
-            spirv_module.header.as_mut().unwrap().bound = id_counter;
-        } else {
-            for (i, inst) in spirv_module.types_global_values.iter().enumerate() {
-                if inst.result_id == Some(kernel_data_var) {
-                    spirv_module.types_global_values.remove(i);
-                    break;
+                let mut id_counter = spirv_module.header.as_ref().unwrap().bound;
+                let mut scalars = Vec::new();
+                let mut constants = Vec::new();
+                let mut types_global_values =
+                    Vec::with_capacity(spirv_module.types_global_values.len() + array_ids.len());
+                for mut inst in spirv_module.types_global_values {
+                    if inst.result_id == Some(kernel_data_var) {
+                        continue;
+                    } else if let Some(result_id) = inst.result_id {
+                        let op = inst.class.opcode;
+                        let operands = inst.operands.as_mut_slice();
+                        match (op, operands) {
+                            (Op::TypeInt | Op::TypeFloat | Op::TypeBool, _) => {
+                                scalars.push(inst);
+                                continue;
+                            }
+                            (
+                                Op::Constant
+                                | Op::ConstantTrue
+                                | Op::ConstantFalse
+                                | Op::ConstantNull
+                                | Op::SpecConstant
+                                | Op::SpecConstantTrue
+                                | Op::SpecConstantFalse
+                                | Op::SpecConstantOp,
+                                _,
+                            ) => {
+                                if scalars.iter().any(|x| x.result_id == inst.result_type) {
+                                    constants.push(inst);
+                                }
+                                continue;
+                            }
+                            (Op::TypePointer, [Operand::StorageClass(_), Operand::IdRef(pointee)]) => {
+                                if let Some((ty, len)) = pointer_types
+                                    .get(&result_id)
+                                    .zip(pointer_lens.get(&result_id))
+                                {
+                                    *pointee = id_counter;
+                                    id_counter += 1;
+                                    types_global_values.push(Instruction::new(
+                                        Op::TypeArray,
+                                        None,
+                                        Some(*pointee),
+                                        vec![Operand::IdRef(*ty), Operand::IdRef(*len)],
+                                    ));
+                                }
+                            }
+                            (Op::Variable, [Operand::StorageClass(storage_class)]) => {
+                                if *storage_class == StorageClass::Private {
+                                    if let Some(result_type) = inst.result_type {
+                                        if let Some(ty) = pointer_types.get(&result_type) {
+                                            let null = id_counter;
+                                            id_counter += 1;
+                                            types_global_values.push(Instruction::new(
+                                                Op::ConstantNull,
+                                                Some(*ty),
+                                                Some(null),
+                                                Vec::new(),
+                                            ));
+                                            inst.operands.push(Operand::IdRef(null));
+                                        }
+                                    }
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                    types_global_values.push(inst);
+                }
+                spirv_module.types_global_values = scalars
+                    .into_iter()
+                    .chain(constants)
+                    .chain(types_global_values)
+                    .collect();
+                spirv_module.header.as_mut().unwrap().bound = id_counter;
+            } else {
+                for (i, inst) in spirv_module.types_global_values.iter().enumerate() {
+                    if inst.result_id == Some(kernel_data_var) {
+                        spirv_module.types_global_values.remove(i);
+                        break;
+                    }
                 }
             }
-        }
-        let kernel_data = if let Some(kernel_data) = kernel_data
-            .as_ref()
-            .and_then(|x| x.strip_prefix("__krnl_kernel_data_"))
-        {
-            kernel_data
-        } else {
-            bail!("Unable to decode kernel {module_path}::{kernel_name}, found {kernel_data:?}!");
+            let kernel_data = if let Some(kernel_data) = kernel_data
+                .as_ref()
+                .and_then(|x| x.strip_prefix("__krnl_kernel_data_"))
+            {
+                kernel_data
+            } else {
+                bail!("Unable to decode kernel {module_path}::{kernel_name}, found {kernel_data:?}!");
+            };
+            let bytes = hex::decode(kernel_data).unwrap();
+            bincode2::deserialize(&bytes).unwrap()
         };
-        let bytes = hex::decode(kernel_data)?;
-        bincode2::deserialize(&bytes)?
-    };
-    {
-        let mut builder = rspirv::dr::Builder::new_from_module(std::mem::take(&mut spirv_module));
-        let uint = builder.type_int(32, 0);
-        let one = builder.constant_u32(uint, 1);
-        let threads = builder.spec_constant_u32(uint, 1);
-        let spec_id = kernel_desc.spec_descs.len() as u32;
-        builder.decorate(
-            threads,
-            Decoration::SpecId,
-            [Operand::LiteralInt32(spec_id)],
-        );
-        let uvec3 = builder.type_vector(uint, 3);
-        let workgroup_size = builder.spec_constant_composite(uvec3, [threads, one, one]);
-        builder.decorate(workgroup_size, Decoration::BuiltIn, [Operand::BuiltIn(BuiltIn::WorkgroupSize)]);
-        spirv_module = builder.module();
-    }
-    spirv_module.entry_points.first_mut().unwrap().operands[2] =
-        Operand::LiteralString("main".to_string());
-    kernel_desc.name = format!("{crate_name_ident}::{module_path}::{kernel_name}");
-    let mut features = Features::default();
-    for inst in spirv_module.types_global_values.iter() {
-        let class = inst.class;
-        let op = class.opcode;
-        match (op, inst.operands.first()) {
-            (Op::TypeInt, Some(Operand::LiteralInt32(8))) => {
-                features.shader_int8 = true;
-            }
-            (Op::TypeInt, Some(Operand::LiteralInt32(16))) => {
-                features.shader_int16 = true;
-            }
-            (Op::TypeInt, Some(Operand::LiteralInt32(64))) => {
-                features.shader_int64 = true;
-            }
-            (Op::TypeFloat, Some(Operand::LiteralInt32(16))) => {
-                features.shader_float16 = true;
-            }
-            (Op::TypeFloat, Some(Operand::LiteralInt32(64))) => {
-                features.shader_float64 = true;
-            }
-            _ => (),
+        {
+            let mut builder = rspirv::dr::Builder::new_from_module(std::mem::take(&mut spirv_module));
+            let uint = builder.type_int(32, 0);
+            let one = builder.constant_u32(uint, 1);
+            let threads = builder.spec_constant_u32(uint, 1);
+            let spec_id = kernel_desc.spec_descs.len() as u32;
+            builder.decorate(
+                threads,
+                Decoration::SpecId,
+                [Operand::LiteralInt32(spec_id)],
+            );
+            let uvec3 = builder.type_vector(uint, 3);
+            let workgroup_size = builder.spec_constant_composite(uvec3, [threads, one, one]);
+            builder.decorate(workgroup_size, Decoration::BuiltIn, [Operand::BuiltIn(BuiltIn::WorkgroupSize)]);
+            spirv_module = builder.module();
         }
-    }
-    spirv_module.capabilities.retain(|inst| {
-        use rspirv::spirv::Capability::*;
-        match inst.operands.first().unwrap().unwrap_capability() {
-            Int8 => features.shader_int8,
-            Int16 => features.shader_int16,
-            Int64 => features.shader_int64,
-            Float16 => features.shader_float16,
-            Float64 => features.shader_float64,
-            _ => true,
+        spirv_module.entry_points.first_mut().unwrap().operands[2] =
+            Operand::LiteralString("main".to_string());
+        kernel_desc.name = format!("{crate_name_ident}::{module_path}::{kernel_name}");
+        let mut features = Features::default();
+        for inst in spirv_module.types_global_values.iter() {
+            let class = inst.class;
+            let op = class.opcode;
+            match (op, inst.operands.first()) {
+                (Op::TypeInt, Some(Operand::LiteralInt32(8))) => {
+                    features.shader_int8 = true;
+                }
+                (Op::TypeInt, Some(Operand::LiteralInt32(16))) => {
+                    features.shader_int16 = true;
+                }
+                (Op::TypeInt, Some(Operand::LiteralInt32(64))) => {
+                    features.shader_int64 = true;
+                }
+                (Op::TypeFloat, Some(Operand::LiteralInt32(16))) => {
+                    features.shader_float16 = true;
+                }
+                (Op::TypeFloat, Some(Operand::LiteralInt32(64))) => {
+                    features.shader_float64 = true;
+                }
+                _ => (),
+            }
         }
-    });
-    /*{
-        use rspirv::binary::Disassemble;
-        eprintln!("{}", spirv_module.disassemble());
-    }*/
-    //unroll_loops(&mut spirv_module);
-    let spirv = spirv_module.assemble();
-    let spirv = spirv_opt(&spirv, SpirvOptKind::Performance)?;
-    {
-        let path = kernels_dir.join(kernel_desc.name.replace("::", "__"));
-        let string = serde_json::to_string_pretty(&kernel_desc)?;
-        std::fs::write(path.with_extension("json"), string.as_bytes())?;
-        std::fs::write(
-            path.with_extension("spv"),
-            bytemuck::cast_slice(spirv.as_slice()),
-        )?;
-    }
-    kernel_desc.spirv = spirv;
+        spirv_module.capabilities.retain(|inst| {
+            use rspirv::spirv::Capability::*;
+            match inst.operands.first().unwrap().unwrap_capability() {
+                Int8 => features.shader_int8,
+                Int16 => features.shader_int16,
+                Int64 => features.shader_int64,
+                Float16 => features.shader_float16,
+                Float64 => features.shader_float64,
+                _ => true,
+            }
+        });
+        /*{
+            use rspirv::binary::Disassemble;
+            eprintln!("{}", spirv_module.disassemble());
+        }*/
+        //unroll_loops(&mut spirv_module);
+        let spirv = spirv_module.assemble();
+        let spirv = spirv_opt(&spirv, SpirvOptKind::Performance)?;
+        {
+            let path = kernels_dir.join(kernel_desc.name.replace("::", "__"));
+            let string = serde_json::to_string_pretty(&kernel_desc)?;
+            std::fs::write(path.with_extension("json"), string.as_bytes())?;
+            std::fs::write(
+                path.with_extension("spv"),
+                bytemuck::cast_slice(spirv.as_slice()),
+            )?;
+        }
+        kernel_desc.spirv = spirv;
+        Ok(kernel_desc)
+    })().map_err(|e| { 
+        e.context(format!("{module_path}::{kernel_name}"))
+    })?;
     let kernel_name_with_hash = format!(
         "{}_{}",
         kernel_name.rsplit("::").next().unwrap(),

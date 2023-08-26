@@ -1419,14 +1419,11 @@ fn kernel_impl(item_tokens: TokenStream2) -> Result<TokenStream2> {
             let spec_args = kernel_meta.spec_args();
             quote! {
                 /// Specializes the kernel.
-                ///
-                /// **errors**
-                /// Thread dimensions can not be 0.
-                pub fn specialize(mut self, #spec_def_args) -> Result<Self> {
-                    let inner = self.inner.specialize(&[#(#spec_args.into()),*])?;
-                    Ok(Self {
+                pub fn specialize(mut self, #spec_def_args) -> Self {
+                    let inner = self.inner.specialize(&[#(#spec_args.into()),*]);
+                    Self {
                         inner,
-                    })
+                    }
                 }
             }
         } else {

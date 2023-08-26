@@ -21,7 +21,7 @@ pub mod kernels {
     #[cfg(test)]
     #[test]
     fn test_specs() {
-        specs::builder().unwrap().specialize(10u32, 1.5f32).unwrap();
+        specs::builder().unwrap().specialize(10u32, 1.5f32);
     }
 
     macro_for!($A in [u8, i8, u16, i16, f16, bf16, u32, i32, f32, u64, i64, f64] {
@@ -39,7 +39,7 @@ pub mod kernels {
             fn [<test_basic_ $A>]() {
                 #[allow(unused_imports)]
                 use krnl::krnl_core::{num_traits::FromPrimitive, half::{f16, bf16}};
-                [<basic_ $A>]::builder().unwrap().specialize($A::from_u32(16).unwrap()).unwrap();
+                [<basic_ $A>]::builder().unwrap().specialize($A::from_u32(16).unwrap());
             }
         }
     });
@@ -64,7 +64,7 @@ pub mod kernels {
                     #[cfg(test)]
                     #[test]
                     fn [<test_group_ $k>]() {
-                        [<group_ $k>]::builder().unwrap().specialize(11).unwrap();
+                        [<group_ $k>]::builder().unwrap().specialize(11);
                     }
                 }
             )*

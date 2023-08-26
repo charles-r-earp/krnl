@@ -352,11 +352,11 @@ rustup component add --toolchain nightly-2023-03-04 rust-src rustc-dev llvm-tool
 ## Installing
 With spirv-tools installed (will save significant compile time):
 ```text
-cargo +nightly-2023-03-04 install krnlc --no-default-features --features use-installed-tools
+cargo +nightly-2023-03-04 install krnlc --locked --no-default-features --features use-installed-tools
 ```
 Otherwise:
 ```text
-cargo +nightly-2023-03-04 install krnlc
+cargo +nightly-2023-03-04 install krnlc --locked
 ```
 
 ## Metadata
@@ -656,16 +656,17 @@ pub mod __private {
                 ..self
             }
         }
-        pub fn specialize(mut self, spec_consts: &[ScalarElem]) -> Result<Self> {
+        pub fn specialize(self, spec_consts: &[ScalarElem]) -> Self {
             assert_eq!(spec_consts.len(), self.desc.spec_descs.len());
             for (spec_const, spec_desc) in
                 spec_consts.iter().copied().zip(self.desc.spec_descs.iter())
             {
                 assert_eq!(spec_const.scalar_type(), spec_desc.scalar_type);
             }
-            self.spec_consts.clear();
-            self.spec_consts.extend_from_slice(spec_consts);
-            Ok(self)
+            Self {
+                spec_consts: spec_consts.to_vec(),
+                ..self
+            }
         }
         pub fn features(&self) -> Features {
             self.desc.features
