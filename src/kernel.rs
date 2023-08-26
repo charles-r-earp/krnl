@@ -317,7 +317,7 @@ pub fn group_sum<const N: u32>(
 # use kernels::group_sum;
 let kernel = group_sum::builder()?
     .with_threads(128)
-    .specialize(128)?
+    .specialize(128)
     .build(device)?;
 # todo!()
 # }
