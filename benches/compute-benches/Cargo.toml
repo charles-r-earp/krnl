@@ -10,6 +10,9 @@ autoexamples = false
 autotests = false
 autobenches = false
 
+[build-dependencies]
+anyhow.workspace = true
+
 [dependencies]
 approx = "0.5.1"
 anyhow.workspace = true
@@ -21,19 +24,18 @@ ocl = { version = "0.19.4", optional = true }
 qutex = { version = "=0.2.3", optional = true }
 rand = "0.8.5"
 
+[dev-dependencies]
+num-format = "0.4.4"
+
 [features]
 default = ["device"]
 device = ["krnl/device"]
 cuda = ["dep:cust"]
 ocl = ["dep:ocl", "dep:futures", "dep:qutex"]
 
-[build-dependencies]
-anyhow.workspace = true
-
 [[bench]]
 name = "benchmarks"
 harness = false
 required-features = ["device"]
 
-[dev-dependencies]
-num-format = "0.4.4"
+

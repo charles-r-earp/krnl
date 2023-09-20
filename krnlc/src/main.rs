@@ -147,8 +147,10 @@ struct KrnlcMetadata {
 impl KrnlcMetadata {
     fn new(metadata: &Metadata, package: &Package) -> Result<Self> {
         use std::fmt::Write;
+        use std::collections::HashSet;
 
-        fn find_krnl_core<'a>(metadata: &'a Metadata, root: &PackageId) -> Option<&'a Package> {
+        fn find_krnl_core<'a>(metadata: &'a Metadata, root: &'a PackageId, searched: &mut HashSet<&'a PackageId>) -> Option<&'a Package> {
+            searched.insert(root);
             let node = metadata
                 .resolve
                 .as_ref()?
@@ -162,13 +164,16 @@ impl KrnlcMetadata {
                 return Some(package);
             }
             for id in node.dependencies.iter() {
-                if let Some(package) = find_krnl_core(metadata, id) {
-                    return Some(package);
+                if !searched.contains(id) {
+                    if let Some(package) = find_krnl_core(metadata, id, searched) {
+                        return Some(package);
+                    }
                 }
             }
             None
         }
-        let krnl_core_package = if let Some(package) = find_krnl_core(metadata, &package.id) {
+        let mut searched = HashSet::new();
+        let krnl_core_package = if let Some(package) = find_krnl_core(metadata, &package.id, &mut searched) {
             package
         } else {
             bail!(
