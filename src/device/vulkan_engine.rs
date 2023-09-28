@@ -188,11 +188,6 @@ impl DeviceEngine for Engine {
             optimal_features,
         } = options;
         let library = vulkan_library().map_err(|e| Error::new(DeviceUnavailable).context(e))?;
-        /*let layers = library.layer_properties().unwrap().map(|x| {
-            (x.name().to_string(), x.description().to_string())
-        }).collect::<Vec<_>>();
-        dbg!(layers);*/
-        //let instance = Instance::new(library, InstanceCreateInfo::application_from_cargo_toml())?;
         let debug_printf = Arc::new(AtomicBool::default());
         let debug_printf2 = debug_printf.clone();
         let debug_create_info = DebugUtilsMessengerCreateInfo {

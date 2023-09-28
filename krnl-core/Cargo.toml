@@ -18,12 +18,11 @@ autobenches = false
 
 [dependencies]
 krnl-macros.workspace = true
-spirv-std = "=0.7.0"
+spirv-std = "=0.8.0"
 paste.workspace = true
 dry.workspace = true
 
 [target.'cfg(not(target_arch = "spirv"))'.dependencies]
-#glam.workspace = true
 num-traits.workspace = true
 half = { workspace = true, features = ["bytemuck", "serde"] }
 bytemuck.workspace = true
@@ -33,6 +32,5 @@ derive_more = { version = "0.99.11", default-features = false, features = ["disp
 paste.workspace = true
 
 [target.'cfg(target_arch = "spirv")'.dependencies]
-#glam = { workspace = true, default-features = false, features = ["libm"] }
 num-traits = { workspace = true, default-features = false, features = ["libm"] }
 half.workspace = true

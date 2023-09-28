@@ -22,10 +22,8 @@ For device functionality (kernels), install Vulkan for your platform.
 - For development, it's recomended to install the [LunarG Vulkan SDK](https://www.lunarg.com/vulkan-sdk/), which includes additional tools:
     - vulkaninfo
     - Validation layers
-    - vkconfig
-        - This can be used for valiation and with [debug_printf](kernel#debug_printf).
     - spirv-tools
-        - This is used by **krnlc** for validation and optimization.
+        - This is used by **krnlc** for spirv validation and optimization.
             - **krnlc** builds by default without needing spirv-tools to be installed.
 
 ## Test

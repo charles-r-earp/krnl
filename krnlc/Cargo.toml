@@ -24,7 +24,7 @@ clap-cargo = { version = "0.10.0", features = ["cargo_metadata"] }
 anyhow = "1.0.60"
 syn = { version = "1.0.103", features = ["full", "visit", "extra-traits"] }
 cargo_metadata = "0.15.1"
-spirv-builder = { version = "=0.7.0", default-features = false }
+spirv-builder = { version = "=0.8.0", default-features = false }
 serde = { version = "1.0.143", default-features = false, features = ["derive"] }
 bincode2 = "2.0.1"
 symlink = "0.1.0"

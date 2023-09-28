@@ -1092,7 +1092,7 @@ impl<S: ScalarData> ScalarBufferBase<S> {
     }
     /** Casts into `scalar_type`.
 
-    See [`.cast()`](ScalarBufferBase::scalar_cast). */
+    See [`.cast()`](ScalarBufferBase::cast). */
     pub fn cast_into(self, scalar_type: ScalarType) -> Result<ScalarBuffer> {
         if self.scalar_type() == scalar_type {
             self.into_owned()

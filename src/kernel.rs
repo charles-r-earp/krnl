@@ -171,9 +171,6 @@ pub mod fill_ones {
         /// - Waits for mutable access to mutable slice arguments.
         /// - Blocks until the kernel is queued.
         ///
-        /// A device has 1 or more compute queues. One kernel can be queued while another is
-        /// executing on that queue.
-        ///
         /// **errors**
         /// - DeviceLost: The device was lost.
         /// - The kernel could not be queued.
@@ -222,10 +219,7 @@ macro_for!($T in [i32, u32, f32] {
     }
 });
 # }
-
 ```
-
-
 
 # Groups
 Kernels are dispatched in groups of threads (CUDA thread blocks). The threads provided to `.with_threads(..)`
@@ -285,7 +279,8 @@ most 128. Typical values are:
 - 32: NVIDIA
 - 64: AMD
 
-Note that it must be at least 1 and not greater than 128.
+Note that it must be at least 1 and not greater than 128. It can be accessed in a kernel via [`Kernel::subgroup_threads()`](krnl_core::kernel::Kernel::subgroup_threads),
+or on the host via [`DeviceInfo::subgroup_threads()`](crate::device::DeviceInfo::subgroup_threads).
 
 # Features
 Kernels implicitly declare [`Features`](device::Features) based on types and or operations used.
@@ -324,17 +319,7 @@ let kernel = group_sum::builder()?
 ```
 
 # Panics
-Panics will abort the thread, but this will not be caught from the host. You can use [debug_printf](#debug_printf) to ensure a
-certain code path is not reached.
-
-# debug_printf
-The [debug_printf](krnl_core::spirv_std::macros::debug_printfln) and [debug_printfln](krnl_core::spirv_std::macros::debug_printfln)
-macros can be used to write to stdout.
-
-[`Slice`](krnl_core::buffer::Slice) and [`UnsafeSlice`](krnl_core::buffer::UnsafeSlice) will write out the panic message in
-addition to aborting the thread if an index is out of bounds.
-
-See <https://github.com/KhronosGroup/Vulkan-ValidationLayers/blob/main/docs/debug_printf.md> for usage.
+Panics will abort the thread, but this will not be caught from the host.
 
 # Compiling
 Kernels are compiled with **krnlc**.
@@ -346,17 +331,17 @@ rustup toolchain install nightly
 ```
 To compile kernels with [spirv-builder](https://docs.rs/crate/spirv-builder), a specific nightly is required:
 ```text
-rustup component add --toolchain nightly-2023-03-04 rust-src rustc-dev llvm-tools-preview
+rustup component add --toolchain nightly-2023-04-15 rust-src rustc-dev llvm-tools-preview
 ```
 
 ## Installing
 With spirv-tools installed (will save significant compile time):
 ```text
-cargo +nightly-2023-03-04 install krnlc --locked --no-default-features --features use-installed-tools
+cargo +nightly-2023-04-15 install krnlc --locked --no-default-features --features use-installed-tools
 ```
 Otherwise:
 ```text
-cargo +nightly-2023-03-04 install krnlc --locked
+cargo +nightly-2023-04-15 install krnlc --locked
 ```
 
 ## Metadata

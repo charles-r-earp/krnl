@@ -34,6 +34,8 @@ struct Cli {
     /// Check mode.
     #[arg(long = "check")]
     check: bool,
+    #[arg(long = "debug-printf", hide = true)]
+    debug_printf: bool,
     /// Use verbose output.
     #[arg(short = 'v', long = "verbose")]
     verbose: bool,
@@ -59,6 +61,7 @@ fn main() -> Result<()> {
             &target_dir,
             &krnlc_metadata.dependencies,
             module_datas,
+            cli.debug_printf,
             cli.verbose,
         )?;
         cache(package, modules, cli.check)?;
@@ -451,6 +454,7 @@ fn compile(
     target_dir: &str,
     dependencies: &str,
     module_datas: FxHashMap<String, ModuleData>,
+    debug_printf: bool,
     verbose: bool,
 ) -> Result<FxHashMap<String, FxHashMap<String, KernelDesc>>> {
     use std::{
@@ -613,7 +617,10 @@ extern crate krnl_core;
             .spirv_metadata(SpirvMetadata::NameVariables)
             .print_metadata(MetadataPrintout::None)
             .deny_warnings(true);
-            //.extension("SPV_KHR_non_semantic_info")
+        if debug_printf {
+            builder = builder.extension("SPV_KHR_non_semantic_info")
+                .relax_logical_pointer(true);
+        }
         let capabilites = {
             use spirv_builder::Capability::*;
             [
