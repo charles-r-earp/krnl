@@ -252,9 +252,9 @@ fn group_sum(
 ) {
     use krnl_core::{buffer::UnsafeIndex, spirv_std::arch::workgroup_memory_barrier_with_group_sync as group_barrier};
 
-    let global_id = kernel.global_id() as usize;
-    let group_id = kernel.group_id() as usize;
-    let thread_id = kernel.thread_id() as usize;
+    let global_id = kernel.global_id as usize;
+    let group_id = kernel.group_id as usize;
+    let thread_id = kernel.thread_id as usize;
     unsafe {
         x_group.unsafe_index_mut(thread_id) = x[global_id];
         // Barriers are used to synchronize access to group memory.
