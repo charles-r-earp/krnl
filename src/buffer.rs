@@ -2466,6 +2466,31 @@ impl<T: Scalar> Slice<'_, T> {
             return Ok(());
         }
         if let Some((x, y)) = self.as_host_slice().zip(output.as_host_slice_mut()) {
+            {
+                use half::slice::HalfFloatSliceExt;
+                if T::scalar_type() == ScalarType::F16 && Y::scalar_type() == ScalarType::F32 {
+                    bytemuck::cast_slice::<_, f16>(x)
+                        .convert_to_f32_slice(bytemuck::cast_slice_mut(y));
+                    return Ok(());
+                } else if T::scalar_type() == ScalarType::BF16
+                    && Y::scalar_type() == ScalarType::F32
+                {
+                    bytemuck::cast_slice::<_, bf16>(x)
+                        .convert_to_f32_slice(bytemuck::cast_slice_mut(y));
+                    return Ok(());
+                } else if T::scalar_type() == ScalarType::F16 && Y::scalar_type() == ScalarType::F64
+                {
+                    bytemuck::cast_slice::<_, f16>(x)
+                        .convert_to_f64_slice(bytemuck::cast_slice_mut(y));
+                    return Ok(());
+                } else if T::scalar_type() == ScalarType::BF16
+                    && Y::scalar_type() == ScalarType::F64
+                {
+                    bytemuck::cast_slice::<_, bf16>(x)
+                        .convert_to_f64_slice(bytemuck::cast_slice_mut(y));
+                    return Ok(());
+                }
+            }
             for (x, y) in x.iter().zip(y.iter_mut()) {
                 *y = x.cast();
             }
