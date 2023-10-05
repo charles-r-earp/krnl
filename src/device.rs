@@ -541,15 +541,20 @@ pub struct DeviceInfo {
     device_id: u32,
     vendor_id: u32,
     max_groups: u32,
+    max_threads: u32,
     subgroup_threads: u32,
     features: Features,
     debug_printf: bool,
 }
 
 impl DeviceInfo {
-    /// Max groups.
+    /// Max groups per kernel dispatch.
     pub fn max_groups(&self) -> u32 {
         self.max_groups
+    }
+    /// Max threads per group.
+    pub fn max_threads(&self) -> u32 {
+        self.max_threads
     }
     /// Subgroup threads.
     pub fn subgroup_threads(&self) -> u32 {
@@ -561,7 +566,7 @@ impl DeviceInfo {
     }
     /// Default threads.
     pub fn default_threads(&self) -> u32 {
-        256
+        256.min(self.max_threads)
     }
     #[allow(dead_code)]
     pub(crate) fn debug_printf(&self) -> bool {

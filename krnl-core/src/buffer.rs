@@ -22,6 +22,7 @@ fn debug_index_out_of_bounds(index: usize, len: usize) {
 }
 
 /** Unsafe Index trait.
+
 Like [`Index`], performs checked indexing, but the caller must ensure that there is no aliasing of a mutable reference.
 **/
 pub trait UnsafeIndex<Idx> {
@@ -73,9 +74,11 @@ pub trait DataBase: Sealed {
 }
 
 /// Marker trait for immutable access.
+///
 /// See [`Slice`].
 pub trait Data: DataBase + Index<usize, Output = Self::Elem> {}
 /// Marker trait for unsafe access.
+///
 /// See [`UnsafeSlice`].
 pub trait UnsafeData: DataBase + UnsafeIndex<usize, Output = Self::Elem> {}
 
@@ -217,6 +220,7 @@ unsafe impl<T: Send> Send for UnsafeSliceRepr<'_, T> {}
 unsafe impl<T: Sync> Sync for UnsafeSliceRepr<'_, T> {}
 
 /// A buffer.
+///
 /// [`Slice`] implements [`Index`] and [`UnsafeSlice`] implements [`UnsafeIndex`].
 #[derive(Clone, Copy)]
 pub struct BufferBase<S> {
@@ -224,9 +228,11 @@ pub struct BufferBase<S> {
 }
 
 /// [`Slice`] implements [`Index`].
+///
 /// See [`BufferBase`].
 pub type Slice<'a, T> = BufferBase<SliceRepr<'a, T>>;
 /// [`UnsafeSlice`] implements [`UnsafeIndex`].
+///
 /// See [`BufferBase`].
 pub type UnsafeSlice<'a, T> = BufferBase<UnsafeSliceRepr<'a, T>>;
 
@@ -274,6 +280,11 @@ impl<'a, T: Scalar> Slice<'a, T> {
         let data = SliceRepr { inner, offset, len };
         Self { data }
     }
+    /// A pointer to the buffer's data.
+    #[cfg(not(target_arch = "spirv"))]
+    pub fn as_ptr(&self) -> *const T {
+        self.data.inner.as_ptr()
+    }
 }
 
 impl<'a, T: Scalar> UnsafeSlice<'a, T> {
@@ -288,6 +299,11 @@ impl<'a, T: Scalar> UnsafeSlice<'a, T> {
         };
         Self { data }
     }
+    /// A mutable pointer to the buffer's data.
+    #[cfg(not(target_arch = "spirv"))]
+    pub fn as_mut_ptr(&self) -> *mut T {
+        self.data.ptr
+    }
 }
 
 #[cfg(not(target_arch = "spirv"))]
@@ -295,6 +311,13 @@ impl<'a, T: Scalar> From<&'a [T]> for Slice<'a, T> {
     fn from(slice: &'a [T]) -> Self {
         let data = SliceRepr { inner: slice };
         Self { data }
+    }
+}
+
+#[cfg(not(target_arch = "spirv"))]
+impl<'a, T: Scalar> From<Slice<'a, T>> for &'a [T] {
+    fn from(slice: Slice<'a, T>) -> &'a [T] {
+        slice.data.inner
     }
 }
 

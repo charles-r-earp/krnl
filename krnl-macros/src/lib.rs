@@ -1470,6 +1470,8 @@ fn kernel_impl(item_tokens: TokenStream2) -> Result<TokenStream2> {
                     kernel::__private::{Kernel as KernelBase, KernelBuilder as KernelBuilderBase, Mutability},
                     once_cell::sync::Lazy,
                 };
+                #[cfg(doc)]
+                use __krnl::{kernel, device::{DeviceInfo, error::DeviceLost}};
 
                 #host_array_length_checks
 
@@ -1485,7 +1487,7 @@ fn kernel_impl(item_tokens: TokenStream2) -> Result<TokenStream2> {
                 ///
                 /// The builder is lazily created on first call.
                 ///
-                /// **errors**
+                /// **Errors**
                 /// - The kernel wasn't compiled (with `#[krnl(no_build)]` applied to `#[module]`).
                 /// - The kernel could not be deserialized. For stable releases, this is a bug, as `#[module]` should produce a compile error.
                 pub fn builder() -> Result<KernelBuilder> {
@@ -1514,7 +1516,9 @@ fn kernel_impl(item_tokens: TokenStream2) -> Result<TokenStream2> {
                 }
 
                 impl KernelBuilder {
-                    /// Threads.
+                    /// Threads per group.
+                    ///
+                    /// Defaults to [`DeviceInfo::default_threads()`](DeviceInfo::default_threads).
                     pub fn with_threads(self, threads: u32) -> Self {
                         Self {
                             inner: self.inner.with_threads(threads),
@@ -1522,6 +1526,16 @@ fn kernel_impl(item_tokens: TokenStream2) -> Result<TokenStream2> {
                         }
                     }
                     #kernel_builder_specialize_fn
+                    /// Builds the kernel for `device`.
+                    ///
+                    /// The kernel is cached, so subsequent calls to `.build()` with identical
+                    /// builders (ie threads and spec constants) may avoid recompiling.
+                    ///
+                    /// **Errors**
+                    /// - `device` doesn't have required features.
+                    /// - The kernel requires [specialization](kernel#specialization), but `.specialize(..)` was not called.
+                    /// - The kernel is not supported on `device`.
+                    /// - [`DeviceLost`].
                     pub fn build(&self, device: Device) -> Result<Kernel> {
                         let inner = self.inner.build(device)?;
                         Ok(Kernel { inner })
@@ -1535,7 +1549,7 @@ fn kernel_impl(item_tokens: TokenStream2) -> Result<TokenStream2> {
                 }
 
                 impl Kernel {
-                    /// Threads.
+                    /// Threads per group.
                     pub fn threads(&self) -> u32 {
                         self.inner.threads()
                     }
@@ -1559,10 +1573,7 @@ fn kernel_impl(item_tokens: TokenStream2) -> Result<TokenStream2> {
                     /// - Waits for mutable access to mutable slice arguments.
                     /// - Blocks until the kernel is queued.
                     ///
-                    /// A device has 1 or more compute queues. One kernel can be queued while another is
-                    /// executing on that queue.
-                    ///
-                    /// **errors**
+                    /// **Errors**
                     /// - DeviceLost: The device was lost.
                     /// - The kernel could not be queued.
                     pub #unsafe_token fn dispatch(&self, #dispatch_args) -> Result<()> {

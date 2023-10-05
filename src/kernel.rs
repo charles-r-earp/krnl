@@ -144,12 +144,26 @@ pub mod fill_ones {
     ///
     /// The builder is lazily created on first call.
     ///
-    /// **errors**
+    /// **Errors**
     /// - The kernel wasn't compiled (with `#[krnl(no_build)]` applied to `#[module]`).
     /// - The kernel could not be deserialized. For stable releases, this is a bug, as `#[module]` should produce a compile error.
     pub fn builder() -> Result<KernelBuilder>;
 
     impl KernelBuilder {
+        /// Threads per group.
+        ///
+        /// Defaults to [`DeviceInfo::default_threads()`](DeviceInfo::default_threads).
+        pub fn with_threads(self, threads: u32) -> Self;
+        /// Builds the kernel for `device`.
+        ///
+        /// The kernel is cached, so subsequent calls to `.build()` with identical
+        /// builders (ie threads and spec constants) may avoid recompiling.
+        ///
+        /// **Errors**
+        /// - `device` doesn't have required features.
+        /// - The kernel requires [specialization](kernel#specialization), but `.specialize(..)` was not called.
+        /// - The kernel is not supported on `device`.
+        /// - [`DeviceLost`].
         pub fn build(&self, device: Device) -> Result<Kernel>;
     }
 
@@ -157,6 +171,8 @@ pub mod fill_ones {
     pub struct Kernel { /* .. */ }
 
     impl Kernel {
+        /// Threads per group.
+        pub fn threads(&self) -> u32;
         /// Global threads to dispatch.
         ///
         /// Implicitly declares groups by rounding up to the next multiple of threads.
@@ -171,7 +187,7 @@ pub mod fill_ones {
         /// - Waits for mutable access to mutable slice arguments.
         /// - Blocks until the kernel is queued.
         ///
-        /// **errors**
+        /// **Errors**
         /// - DeviceLost: The device was lost.
         /// - The kernel could not be queued.
         pub fn dispatch(&self, y: SliceMut<u32>) -> Result<()>;
@@ -223,14 +239,13 @@ macro_for!($T in [i32, u32, f32] {
 
 # Groups
 Kernels are dispatched in groups of threads (CUDA thread blocks). The threads provided to `.with_threads(..)`
-sets the number of threads per group, which will default to a reasonable value based on the device if not
-provided.
+sets the number of threads per group, which defaults to [`DeviceInfo::default_threads()`](crate::device::DeviceInfo::default_threads).
 
-For simple kernels, threads can be arbitrary, typically 128, 256, or 512. This can be tuned for optimal performance.
-Note that the device may impose limits on the maximum thread dimensions.
+For simple kernels, threads can be arbitrary, typically 128, 256, or 512. This can be tuned for optimal performance. It must be less than
+[`DeviceInfo::max_threads()`](crate::device::DeviceInfo::max_threads).
 
 Item kernels can infer the global_threads by the sizes of the item arguments. This is functionally equivalent
-to `iter().zip()`, where the number of items is the minimum of the lengths of the buffers.
+to `.iter().zip(..)`, where the number of items is the minimum of the lengths of the buffers.
 
 Note that `global_threads = groups * threads`. When provided to `.with_global_threads()` prior to dispatch, global_threads
 are rounded up to the next multiple of threads. Because of this, it is typical to check that the global_id is
@@ -300,7 +315,7 @@ SpecConstants are constants that are set when the kernel is compiled via `.speci
 # use krnl::krnl_core;
 # use krnl_core::macros::kernel;
 #[kernel]
-pub fn group_sum<const N: u32>(
+pub fn group_sum<const N: u32 /*, ...additional spec constants */>(
     #[global] x: Slice<f32>,
     #[group] x_group: UnsafeSlice<f32, { 2 * N as usize }>,
     #[global] y: UnsafeSlice<f32>,
@@ -310,9 +325,10 @@ pub fn group_sum<const N: u32>(
 # }
 # fn foo(device: Device) -> Result<()> {
 # use kernels::group_sum;
+let n = 128;
 let kernel = group_sum::builder()?
-    .with_threads(128)
-    .specialize(128)
+    .with_threads(n)
+    .specialize(n /*, ...additional spec constants */)
     .build(device)?;
 # todo!()
 # }
@@ -730,11 +746,16 @@ pub mod __private {
                     let desc = &self.desc;
                     let name = &desc.name;
                     let features = desc.features;
-                    let device_features = device.info().features();
+                    let info = device.info();
+                    let device_features = info.features();
                     if !device_features.contains(&features) {
                         bail!("Kernel {name} requires {features:?}, {device:?} has {device_features:?}!");
                     }
-                    let threads = self.threads.unwrap_or(device.info().default_threads());
+                    let threads = self.threads.unwrap_or(info.default_threads());
+                    let max_threads = info.max_threads();
+                    if threads > max_threads {
+                        bail!("Kernel {name} threads {threads} is greater than max_threads {max_threads}!");
+                    }
                     let spec_bytes = {
                         if !self.desc.spec_descs.is_empty() {
                             if self.spec_consts.is_empty() {
@@ -761,7 +782,7 @@ pub mod __private {
                         id: self.id,
                         spec_bytes,
                     };
-                    let debug_printf = device.info().debug_printf();
+                    let debug_printf = info.debug_printf();
                     let inner = RawKernel::cached(device.clone(), key, || {
                         desc.specialize(threads, &self.spec_consts, debug_printf)
                             .map(Arc::new)

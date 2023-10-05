@@ -331,6 +331,7 @@ impl DeviceEngine for Engine {
             device_id: properties.device_id,
             vendor_id: properties.vendor_id,
             max_groups: properties.max_compute_work_group_count[0],
+            max_threads: properties.max_compute_work_group_size[0],
             subgroup_threads: properties.subgroup_size.unwrap(),
             features,
             debug_printf,
