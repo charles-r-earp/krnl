@@ -25,16 +25,6 @@ use syn::{
 
 type Result<T, E = Error> = std::result::Result<T, E>;
 
-/*
-#[derive(Parse, Debug)]
-struct InsideParen<T> {
-    #[allow(unused)]
-    #[paren]
-    paren: Paren,
-    #[inside(paren)]
-    value: T,
-}*/
-
 #[derive(Parse, Debug)]
 struct InsideBracket<T> {
     #[allow(unused)]
@@ -773,13 +763,6 @@ impl KernelMeta {
             .chain(arrays)
             .collect()
     }
-    /*fn compute_threads(&self) -> Punctuated<LitInt, Comma> {
-        self.attr_meta
-            .threads
-            .iter()
-            .map(|dim| LitInt::new(&dim.to_string(), Span2::call_site()))
-            .collect()
-    }*/
     fn threads(&self) -> TokenStream2 {
         let id = self.spec_metas.len();
         let spec_id_string = format!("OpDecorate %spec SpecId {}", id);
@@ -1277,11 +1260,9 @@ fn kernel_impl(item_tokens: TokenStream2) -> Result<TokenStream2> {
     let device_tokens = {
         let kernel_data = format_ident!("{}", kernel_desc.encode()?);
         let block = &kernel_meta.block;
-        //let compute_threads = kernel_meta.compute_threads();
         let compute_def_args = kernel_meta.compute_def_args();
         let declare_specs = kernel_meta.declare_specs();
         let declare_threads = kernel_meta.threads();
-        //let threads3 = kernel_meta.threads3();
         let items = kernel_meta.device_items();
         let device_arrays = kernel_meta.device_arrays();
         let device_slices = kernel_meta.device_slices();
@@ -1398,11 +1379,6 @@ fn kernel_impl(item_tokens: TokenStream2) -> Result<TokenStream2> {
             }
         }
     };
-    /*if ident.to_string() == "foo" {
-        let string = prettyplease::unparse(&syn::parse2(device_tokens.clone()).unwrap());
-        eprintln!("{string}");
-        panic!();
-    }*/
     let host_tokens = {
         let check_spec_args = kernel_meta.check_spec_args();
         let check_buffer_args = kernel_meta.check_buffer_args();

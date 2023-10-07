@@ -1,8 +1,9 @@
 [package]
 name = "compute-benches"
 version = "0.1.0"
-edition.workspace = true
 authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 publish = false
 autobins = false 

@@ -1,7 +1,5 @@
-#![forbid(unsafe_op_in_unsafe_fn)]
+#![deny(unsafe_op_in_unsafe_fn)]
 
-#[cfg(feature = "autograph")]
-pub mod autograph_backend;
 #[cfg(feature = "cuda")]
 pub mod cuda_backend;
 #[cfg(feature = "device")]

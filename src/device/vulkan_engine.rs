@@ -36,7 +36,7 @@ use vulkano::{
         debug::{DebugUtilsMessageSeverity, DebugUtilsMessageType, DebugUtilsMessengerCreateInfo},
         Instance, InstanceCreateInfo, InstanceExtensions, Version,
     },
-    library::{LoadingError, VulkanLibrary},
+    library::VulkanLibrary,
     memory::allocator::{
         AllocationCreateInfo, GenericMemoryAllocatorCreateInfo, MemoryUsage,
         StandardMemoryAllocator,
@@ -49,38 +49,6 @@ use vulkano::{
     sync::semaphore::Semaphore,
     VulkanObject,
 };
-
-/*#[cfg(any(target_os = "ios", target_os = "macos"))]
-struct MoltenLoader;
-
-#[cfg(any(target_os = "ios", target_os = "macos"))]
-unsafe impl vulkano::library::Loader for MoltenLoader {
-    unsafe fn get_instance_proc_addr(
-        &self,
-        instance: ash::vk::Instance,
-        name: *const std::os::raw::c_char,
-    ) -> ash::vk::PFN_vkVoidFunction {
-        unsafe { ash_molten::load().get_instance_proc_addr(instance, name) }
-    }
-}*/
-
-fn vulkan_library() -> Result<Arc<VulkanLibrary>, LoadingError> {
-    /*#[cfg(target_os = "ios")]
-    {
-        VulkanLibrary::with_loader(MoltenLoader)
-    }
-    #[cfg(target_os = "macos")]
-    {
-        match VulkanLibrary::new() {
-            Err(LoadingError::LibraryLoadFailure(_)) => VulkanLibrary::with_loader(MoltenLoader),
-            result => result,
-        }
-    }
-    #[cfg(not(any(target_os = "ios", target_os = "macos")))]*/
-    {
-        VulkanLibrary::new()
-    }
-}
 
 pub struct Engine {
     info: Arc<DeviceInfo>,
@@ -187,7 +155,7 @@ impl DeviceEngine for Engine {
             index,
             optimal_features,
         } = options;
-        let library = vulkan_library().map_err(|e| Error::new(DeviceUnavailable).context(e))?;
+        let library = VulkanLibrary::new().map_err(|e| Error::new(DeviceUnavailable).context(e))?;
         let debug_printf = Arc::new(AtomicBool::default());
         let debug_printf2 = debug_printf.clone();
         let debug_create_info = DebugUtilsMessengerCreateInfo {
