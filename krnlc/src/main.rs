@@ -584,6 +584,11 @@ extern crate krnl_core;
                 "pub mod {name} /* {module_path} */ {{ {module_source} }}"
             )
             .unwrap();
+            let module_path_ident = module_path.replace("::", "__");
+            writeln!(
+                &mut source,
+                "#[allow(unused_imports)] use {name} as {module_path_ident};"
+            ).unwrap();
         }
         let src_path = src_dir.join("lib.rs");
         let mut src_changed = true;

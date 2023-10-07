@@ -213,6 +213,42 @@ pub mod foo {
 
 Modules mut be within a module hierarchy, not within fn's or impl blocks.
 
+Functions and items can be shared between modules:
+```no_run
+use krnl::macros::module;
+
+mod util {
+    use krnl::macros::module;
+
+    #[module]
+    # #[krnl(no_build)]
+    pub mod functional {
+        #[cfg(not(target_arch = "spirv"))]
+        use krnl::krnl_core;
+        use krnl_core::scalar::Scalar;
+
+        pub fn add<T: Scalar>(a: T, b: T) -> T {
+            a + b
+        }
+    }
+}
+
+#[module]
+# #[krnl(no_build)]
+mod kernels {
+    #[cfg(not(target_arch = "spirv"))]
+    use krnl::krnl_core;
+    use krnl_core::macros::kernel;
+    #[cfg(target_arch = "spirv")]
+    use crate::util__functional::add;
+
+    #[kernel]
+    fn add_i32(#[item] a: i32, #[item] b: i32, #[item] c: &mut i32) {
+        *c = add(a, b);
+    }
+}
+```
+
 # Macros
 Kernels can be generated via macro_rules! and procedural macros. For example, [dry](https://docs.rs/dry/latest/dry/) and [paste](https://docs.rs/paste/latest/paste/)
 can be very useful:

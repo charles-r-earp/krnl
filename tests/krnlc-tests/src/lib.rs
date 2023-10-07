@@ -99,3 +99,28 @@ macro_for!($T in [u8, i8, u16, i16, f16, bf16, u32, i32, f32, u64, i64, f64] {
         }
     }
 });
+
+mod parent {
+    use krnl::macros::module;
+
+    #[module]
+    pub mod functional {
+        pub fn foo() -> i32 {
+            1
+        }
+    }
+}
+
+#[module]
+mod use_functional {
+    #[cfg(target_arch = "spirv")]
+    use crate::parent__functional::foo;
+    #[cfg(not(target_arch = "spirv"))]
+    use krnl::krnl_core;
+    use krnl_core::macros::kernel;
+
+    #[kernel]
+    fn bar(#[item] y: &mut i32) {
+        *y = foo();
+    }
+}
