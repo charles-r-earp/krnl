@@ -406,10 +406,12 @@ default-features = false
 features = ["zoom", "zap"]
 
 [package.metadata.krnlc.dependencies]
-# keys are inherited from resolved values for the host target
-foo = { version = "0.1.0", features = ["foo"] }
-bar = { default-features = false }
-baz = {}
+# source is inherited from host target
+foo = { default-features = false, features = ["foo"] }
+# keys are inherited if not provided
+bar = {}
+# private dependency
+baz = { path = "baz" }
 ```
 
 ## Compiling your kernels!

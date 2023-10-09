@@ -105,6 +105,7 @@ mod parent {
 
     #[module]
     pub mod functional {
+        #[cfg(target_arch = "spirv")]
         pub fn foo() -> i32 {
             1
         }
@@ -122,5 +123,19 @@ mod use_functional {
     #[kernel]
     fn bar(#[item] y: &mut i32) {
         *y = foo();
+    }
+}
+
+#[module]
+mod dependency {
+    #[cfg(not(target_arch = "spirv"))]
+    use krnl::krnl_core;
+    use krnl_core::macros::kernel;
+    #[cfg(target_arch = "spirv")]
+    use test_dependency::add_one;
+
+    #[kernel]
+    fn add_one_i32(#[item] x: i32, #[item] y: &mut i32) {
+        *y = add_one(x);
     }
 }

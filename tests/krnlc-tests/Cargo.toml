@@ -18,3 +18,4 @@ krnlc = []
 [package.metadata.krnlc.dependencies]
 paste = {}
 dry = {}
+test-dependency = { path = "test-dependency" }

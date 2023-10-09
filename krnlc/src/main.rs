@@ -195,6 +195,7 @@ impl KrnlcMetadata {
             krnl_core_package.manifest_path.parent().unwrap()
         );
         let manifest_path_str = package.manifest_path.as_str();
+        let manifest_dir = package.manifest_path.parent().unwrap();
         let mut default_features = true;
         let mut features = String::new();
         let mut dependencies = String::new();
@@ -225,7 +226,7 @@ impl KrnlcMetadata {
             if let Some(metadata_dependencies) = krnlc_metadata.get("dependencies") {
                 if let Some(metadata_dependencies) = metadata_dependencies.as_object() {
                     for (dep, value) in metadata_dependencies.iter() {
-                        let (dep_source, dep_default_features, dep_features) = if dep == "krnl-core"
+                        let (mut dep_source, dep_default_features, dep_features) = if dep == "krnl-core"
                         {
                             has_krnl_core = true;
                             (krnl_core_source.clone(), true, Vec::new())
@@ -255,17 +256,47 @@ impl KrnlcMetadata {
                                 dependency.features.clone(),
                             )
                         } else {
-                            // TODO maybe allow dependencies not included in host?
-                            bail!("{manifest_path_str:?} [package.metadata.krnlc.dependencies] {dep:?} is not a dependency of {:?}!", package.name);
+                            let source = String::new();
+                            let dep_default_features = false;
+                            let features = Vec::new();
+                            (
+                                source,
+                                dep_default_features,
+                                features,   
+                            )
                         };
+                        let mut inherit_from_host_dep = true;
                         let mut default_features = None;
                         let mut features = Vec::new();
                         if let Some(table) = value.as_object() {
                             for (key, value) in table.iter() {
                                 match key.as_str() {
+                                    "path" => {
+                                        if let Some(value) = value.as_str() {
+                                            let mut path = PathBuf::from(value);
+                                            if path.is_relative() {
+                                               path = manifest_dir.as_std_path().join(&path).canonicalize()?; 
+                                            }
+                                            if !path.exists() {
+                                                bail!(
+                                                    "{manifest_path_str:?} [package.metadata.krnlc.dependencies] {dep:?} path = {value:?} does not exist!"
+                                                );
+                                            }
+                                            dep_source = format!("path = {path:?}"); 
+                                            inherit_from_host_dep = false;
+                                        } else {
+                                            bail!(
+                                                "{manifest_path_str:?} [package.metadata.krnlc.dependencies] {dep:?} path, expected string!"
+                                            );
+                                        }
+                                    }
                                     "default-features" => {
                                         if let Some(value) = value.as_bool() {
                                             default_features.replace(value);
+                                        } else {
+                                            bail!(
+                                                "{manifest_path_str:?} [package.metadata.krnlc.dependencies] {dep:?} default-features, expected bool!"
+                                            );
                                         }
                                     }
                                     "features" => {
@@ -298,12 +329,15 @@ impl KrnlcMetadata {
                             );
                         }
                         let default_features = default_features.unwrap_or(dep_default_features);
-                        if features.is_empty() {
+                        if features.is_empty() && inherit_from_host_dep {
                             features = dep_features;
                         }
                         let mut features = itertools::join(features, ", ");
-                        if !features.is_empty() {
+                        if !features.is_empty() && inherit_from_host_dep {
                             features = format!("{features:?}");
+                        }
+                        if dep_source.is_empty() {
+                            bail!("{manifest_path_str:?} [package.metadata.krnlc.dependencies] {dep:?} is not a dependency of {:?}!", package.name);
                         }
                         writeln!(&mut dependencies, "{dep:?} = {{ {dep_source}, features = [{features}], default-features = {default_features} }}").unwrap();
                     }
@@ -415,6 +449,7 @@ fn cache(
             (module, kernels)
         })
         .collect();
+    
     let cache = KrnlcCache {
         version: version.to_string(),
         modules,
@@ -664,26 +699,14 @@ extern crate krnl_core;
                 )
             })
             .collect();
-        let mut modules =
-            FxHashMap::<String, FxHashMap<String, KernelDesc>>::with_capacity_and_hasher(
-                module_datas.len(),
-                Default::default(),
-            );
+        let mut modules: FxHashMap<String, FxHashMap<String, KernelDesc>> = module_datas.keys().map(|key| (key.to_string(), Default::default())).collect();
         let mut kernels = kernels.into_iter();
         while let Some((module_name_with_hash, (kernel_name_with_hash, kernel_desc))) =
             kernels.next().transpose()?
         {
-            let name = kernel_desc.name.clone();
-            let prev = modules
-                .entry(module_name_with_hash)
-                .or_default()
+            modules.get_mut(&module_name_with_hash)
+                .unwrap()
                 .insert(kernel_name_with_hash, kernel_desc);
-            if let Some(prev) = prev {
-                bail!(
-                    "Hash collsion `{name}` with `{}`! Try renaming a kernel.",
-                    prev.name
-                );
-            }
         }
         modules
     };
@@ -1015,11 +1038,6 @@ fn kernel_post_process(
                 _ => true,
             }
         });
-        /*{
-            use rspirv::binary::Disassemble;
-            eprintln!("{}", spirv_module.disassemble());
-        }*/
-        //unroll_loops(&mut spirv_module);
         let spirv = spirv_module.assemble();
         let spirv = spirv_opt(&spirv, SpirvOptKind::Performance)?;
         {
