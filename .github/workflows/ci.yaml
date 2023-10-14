@@ -78,13 +78,13 @@ jobs:
           toolchain: nightly-2023-04-15
           components: rust-src, rustc-dev, llvm-tools-preview
       - name: check krnlc
-        if: ${{ !canceled() }}
+        if: ${{ !cancelled() }}
         run: cargo +nightly-2023-04-15 -Zunstable-options -C=krnlc check --locked --no-default-features --features use-installed-tools -vv
       - name: install krnlc
-        if: ${{ !canceled() }}
+        if: ${{ !cancelled() }}
         run: cargo +nightly-2023-04-15 install --path krnlc --root . --locked --no-default-features --features use-installed-tools -vv --debug
       - name: krnlc check 
-        if: ${{ !canceled() }}
+        if: ${{ !cancelled() }}
         run: ./bin/krnlc --check -p krnl -p krnlc-tests -p compute-benchmarks -v
   miri:
     runs-on: ubuntu-latest
@@ -127,13 +127,13 @@ jobs:
     - name: fmt
       run: cargo fmt --check
     - name: clippy
-      if: ${{ !canceled() }}
+      if: ${{ !cancelled() }}
       run: cargo clippy -- -D warnings
     - name: krnlc fmt
-      if: ${{ !canceled() }}
+      if: ${{ !cancelled() }}
       run: cargo +nightly-2023-04-15 fmt --check --manifest-path krnlc/Cargo.toml
     - name: krnlc clippy
-      if: ${{ !canceled() }}
+      if: ${{ !cancelled() }}
       run: cargo +nightly-2023-04-15 clippy --manifest-path krnlc/Cargo.toml --no-default-features --features use-installed-tools -v -- -D warnings
   cargo-deny:    
     runs-on: ubuntu-latest    
