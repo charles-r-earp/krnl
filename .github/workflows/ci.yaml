@@ -80,7 +80,7 @@ jobs:
           toolchain: nightly-2023-04-15
           components: rust-src, rustc-dev, llvm-tools-preview
       - name: check krnlc
-        run: cargo +nightly-2023-04-15 check --locked --no-default-features --features use-installed-tools -vv
+        run: cargo +nightly-2023-04-15 -Zunstable-options -C=krnlc check --locked --no-default-features --features use-installed-tools -vv
       - name: install krnlc
         run: cargo +nightly-2023-04-15 install --path krnlc --root . --locked --no-default-features --features use-installed-tools -vv --debug
       - name: krnlc check 
