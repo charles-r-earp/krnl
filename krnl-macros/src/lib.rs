@@ -1498,7 +1498,6 @@ fn kernel_impl(item_tokens: TokenStream2) -> Result<TokenStream2> {
                     pub fn with_threads(self, threads: u32) -> Self {
                         Self {
                             inner: self.inner.with_threads(threads),
-                            .. self
                         }
                     }
                     #kernel_builder_specialize_fn
@@ -1532,16 +1531,18 @@ fn kernel_impl(item_tokens: TokenStream2) -> Result<TokenStream2> {
                     /// Global threads to dispatch.
                     ///
                     /// Implicitly declares groups by rounding up to the next multiple of threads.
-                    pub fn with_global_threads(mut self, global_threads: u32) -> Self {
-                        self.inner = self.inner.with_global_threads(global_threads);
-                        self
+                    pub fn with_global_threads(self, global_threads: u32) -> Self {
+                        Self {
+                            inner: self.inner.with_global_threads(global_threads),
+                        }
                     }
                     /// Groups to dispatch.
                     ///
                     /// For item kernels, if not provided, is inferred based on item arguments.
-                    pub fn with_groups(mut self, groups: u32) -> Self {
-                        self.inner = self.inner.with_groups(groups);
-                        self
+                    pub fn with_groups(self, groups: u32) -> Self {
+                        Self {
+                            inner: self.inner.with_groups(groups),
+                        }
                     }
                     /// Dispatches the kernel.
                     ///

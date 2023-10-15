@@ -114,7 +114,7 @@ impl Engine {
     fn wait_pending(&self, epoch: u64) -> Result<(), DeviceLost> {
         while self.pending.load(Ordering::SeqCst) < epoch {
             if self.worker_exited.load(Ordering::SeqCst) {
-                return Err(DeviceLost(self.id()).into());
+                return Err(DeviceLost(self.id()));
             }
             std::hint::spin_loop();
         }

@@ -552,11 +552,7 @@ fn strip_debug_printf(module: &mut rspirv::dr::Module) {
     use rspirv::spirv::Op;
     use std::collections::HashSet;
     module.extensions.retain(|inst| {
-        if inst.operands.first().unwrap().unwrap_literal_string() == "SPV_KHR_non_semantic_info" {
-            false
-        } else {
-            true
-        }
+        inst.operands.first().unwrap().unwrap_literal_string() != "SPV_KHR_non_semantic_info"
     });
     let mut ext_insts = HashSet::new();
     module.ext_inst_imports.retain(|inst| {
@@ -762,10 +758,8 @@ pub mod __private {
                         bail!("Kernel {name} threads {threads} is greater than max_threads {max_threads}!");
                     }
                     let spec_bytes = {
-                        if !self.desc.spec_descs.is_empty() {
-                            if self.spec_consts.is_empty() {
-                                bail!("Kernel `{name}` must be specialized!");
-                            }
+                        if !self.desc.spec_descs.is_empty() && self.spec_consts.is_empty() {
+                            bail!("Kernel `{name}` must be specialized!");
                         }
                         debug_assert_eq!(self.spec_consts.len(), desc.spec_descs.len());
                         #[cfg(debug_assertions)]

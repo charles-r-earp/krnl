@@ -1401,7 +1401,7 @@ impl<T: Scalar> BufferRepr<T> {
                 };
                 Ok(Self {
                     raw,
-                    _m: PhantomData::default(),
+                    _m: PhantomData,
                 })
             }
         }
@@ -1663,7 +1663,7 @@ impl<'a, T: Scalar> SliceMutRepr<'a, T> {
                 Slice { data: src.clone() }.cast_impl(&mut SliceMut::<T> {
                     data: SliceMutRepr {
                         raw: self.raw.clone(),
-                        _m: PhantomData::default(),
+                        _m: PhantomData,
                     },
                 })
             }
