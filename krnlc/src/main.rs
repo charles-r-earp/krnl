@@ -149,10 +149,14 @@ struct KrnlcMetadata {
 
 impl KrnlcMetadata {
     fn new(metadata: &Metadata, package: &Package) -> Result<Self> {
-        use std::fmt::Write;
         use std::collections::HashSet;
+        use std::fmt::Write;
 
-        fn find_krnl_core<'a>(metadata: &'a Metadata, root: &'a PackageId, searched: &mut HashSet<&'a PackageId>) -> Option<&'a Package> {
+        fn find_krnl_core<'a>(
+            metadata: &'a Metadata,
+            root: &'a PackageId,
+            searched: &mut HashSet<&'a PackageId>,
+        ) -> Option<&'a Package> {
             searched.insert(root);
             let node = metadata
                 .resolve
@@ -176,14 +180,15 @@ impl KrnlcMetadata {
             None
         }
         let mut searched = HashSet::new();
-        let krnl_core_package = if let Some(package) = find_krnl_core(metadata, &package.id, &mut searched) {
-            package
-        } else {
-            bail!(
-                "krnl-core is not in dependency tree of package {:?}!",
-                package.name
-            );
-        };
+        let krnl_core_package =
+            if let Some(package) = find_krnl_core(metadata, &package.id, &mut searched) {
+                package
+            } else {
+                bail!(
+                    "krnl-core is not in dependency tree of package {:?}!",
+                    package.name
+                );
+            };
         if !krnlc_version_compatible(
             env!("CARGO_PKG_VERSION"),
             &krnl_core_package.version.to_string(),
@@ -226,7 +231,8 @@ impl KrnlcMetadata {
             if let Some(metadata_dependencies) = krnlc_metadata.get("dependencies") {
                 if let Some(metadata_dependencies) = metadata_dependencies.as_object() {
                     for (dep, value) in metadata_dependencies.iter() {
-                        let (mut dep_source, dep_default_features, dep_features) = if dep == "krnl-core"
+                        let (mut dep_source, dep_default_features, dep_features) = if dep
+                            == "krnl-core"
                         {
                             has_krnl_core = true;
                             (krnl_core_source.clone(), true, Vec::new())
@@ -259,11 +265,7 @@ impl KrnlcMetadata {
                             let source = String::new();
                             let dep_default_features = false;
                             let features = Vec::new();
-                            (
-                                source,
-                                dep_default_features,
-                                features,   
-                            )
+                            (source, dep_default_features, features)
                         };
                         let mut inherit_from_host_dep = true;
                         let mut default_features = None;
@@ -275,14 +277,17 @@ impl KrnlcMetadata {
                                         if let Some(value) = value.as_str() {
                                             let mut path = PathBuf::from(value);
                                             if path.is_relative() {
-                                               path = manifest_dir.as_std_path().join(&path).canonicalize()?; 
+                                                path = manifest_dir
+                                                    .as_std_path()
+                                                    .join(&path)
+                                                    .canonicalize()?;
                                             }
                                             if !path.exists() {
                                                 bail!(
                                                     "{manifest_path_str:?} [package.metadata.krnlc.dependencies] {dep:?} path = {value:?} does not exist!"
                                                 );
                                             }
-                                            dep_source = format!("path = {path:?}"); 
+                                            dep_source = format!("path = {path:?}");
                                             inherit_from_host_dep = false;
                                         } else {
                                             bail!(
@@ -449,7 +454,7 @@ fn cache(
             (module, kernels)
         })
         .collect();
-    
+
     let cache = KrnlcCache {
         version: version.to_string(),
         modules,
@@ -623,7 +628,8 @@ extern crate krnl_core;
             writeln!(
                 &mut source,
                 "#[allow(unused_imports)] use {name} as {module_path_ident};"
-            ).unwrap();
+            )
+            .unwrap();
         }
         let src_path = src_dir.join("lib.rs");
         let mut src_changed = true;
@@ -658,7 +664,8 @@ extern crate krnl_core;
             .print_metadata(MetadataPrintout::None)
             .deny_warnings(true);
         if debug_printf {
-            builder = builder.extension("SPV_KHR_non_semantic_info")
+            builder = builder
+                .extension("SPV_KHR_non_semantic_info")
                 .relax_logical_pointer(true);
         }
         let capabilites = {
@@ -699,12 +706,16 @@ extern crate krnl_core;
                 )
             })
             .collect();
-        let mut modules: FxHashMap<String, FxHashMap<String, KernelDesc>> = module_datas.keys().map(|key| (key.to_string(), Default::default())).collect();
+        let mut modules: FxHashMap<String, FxHashMap<String, KernelDesc>> = module_datas
+            .keys()
+            .map(|key| (key.to_string(), Default::default()))
+            .collect();
         let mut kernels = kernels.into_iter();
         while let Some((module_name_with_hash, (kernel_name_with_hash, kernel_desc))) =
             kernels.next().transpose()?
         {
-            modules.get_mut(&module_name_with_hash)
+            modules
+                .get_mut(&module_name_with_hash)
                 .unwrap()
                 .insert(kernel_name_with_hash, kernel_desc);
         }
@@ -724,7 +735,7 @@ fn kernel_post_process(
     use rspirv::{
         binary::Assemble,
         dr::{Instruction, Module, Operand},
-        spirv::{Decoration, BuiltIn, Op, StorageClass},
+        spirv::{BuiltIn, Decoration, Op, StorageClass},
     };
     let entry_id = entry_point.operands[1].unwrap_id_ref();
     let entry_name = entry_point.operands[2].unwrap_literal_string().to_owned();
@@ -1051,7 +1062,7 @@ fn kernel_post_process(
         }
         kernel_desc.spirv = spirv;
         Ok(kernel_desc)
-    })().map_err(|e| { 
+    })().map_err(|e| {
         e.context(format!("{module_path}::{kernel_name}"))
     })?;
     let kernel_name_with_hash = format!(
@@ -1079,7 +1090,7 @@ fn spirv_opt(spirv: &[u32], kind: SpirvOptKind) -> Result<Vec<u32>> {
     };
     let target_env = TargetEnv::Vulkan_1_2;
     let validator = spirv_tools::val::create(Some(target_env));
-    validator.validate(&spirv, None)?;
+    validator.validate(spirv, None)?;
     let mut optimizer = spirv_tools::opt::create(Some(target_env));
     match kind {
         SpirvOptKind::DeadCodeElimination => {
@@ -1141,7 +1152,7 @@ fn spirv_opt(spirv: &[u32], kind: SpirvOptKind) -> Result<Vec<u32>> {
     }
     //optimizer.register_performance_passes();
     let spirv = optimizer
-        .optimize(&spirv, &mut |_| (), None)?
+        .optimize(spirv, &mut |_| (), None)?
         .as_words()
         .to_vec();
     Ok(spirv)

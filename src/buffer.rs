@@ -717,6 +717,7 @@ impl ScalarData for ScalarArcBufferRepr {
 impl ScalarDataOwned for ScalarArcBufferRepr {
     fn from_scalar_buffer(buffer: ScalarBufferRepr) -> Self {
         Self {
+            #[allow(clippy::arc_with_non_send_sync)]
             raw: Arc::new(buffer.raw),
             scalar_type: buffer.scalar_type,
         }
@@ -729,7 +730,10 @@ impl ScalarDataOwned for ScalarArcBufferRepr {
                 _m: PhantomData,
             });
         }
-        self.raw = Arc::new(self.as_scalar_slice().to_scalar_buffer()?.raw);
+        #[allow(clippy::arc_with_non_send_sync)]
+        {
+            self.raw = Arc::new(self.as_scalar_slice().to_scalar_buffer()?.raw);
+        }
         Ok(ScalarSliceMutRepr {
             raw: self.raw.slice.clone(),
             scalar_type: self.scalar_type,
@@ -1743,6 +1747,7 @@ pub struct ArcBufferRepr<T> {
 impl<T: Scalar> From<BufferRepr<T>> for ArcBufferRepr<T> {
     fn from(buffer: BufferRepr<T>) -> Self {
         Self {
+            #[allow(clippy::arc_with_non_send_sync)]
             raw: Arc::new(buffer.raw),
             _m: PhantomData,
         }
@@ -1822,6 +1827,7 @@ impl<T: Scalar> Data for ArcBufferRepr<T> {
 impl<T: Scalar> DataOwned for ArcBufferRepr<T> {
     fn from_buffer(buffer: BufferRepr<T>) -> Self {
         Self {
+            #[allow(clippy::arc_with_non_send_sync)]
             raw: Arc::new(buffer.raw),
             _m: PhantomData,
         }
@@ -1833,7 +1839,10 @@ impl<T: Scalar> DataOwned for ArcBufferRepr<T> {
                 _m: PhantomData,
             });
         }
-        self.raw = Arc::new(self.as_slice().to_buffer()?.raw);
+        #[allow(clippy::arc_with_non_send_sync)]
+        {
+            self.raw = Arc::new(self.as_slice().to_buffer()?.raw);
+        }
         Ok(SliceMutRepr {
             raw: self.raw.slice.clone(),
             _m: PhantomData,
