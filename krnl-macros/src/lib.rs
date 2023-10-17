@@ -1569,6 +1569,7 @@ fn kernel_impl(item_tokens: TokenStream2) -> Result<TokenStream2> {
     Ok(tokens)
 }
 
+#[doc(hidden)]
 #[proc_macro]
 pub fn __krnl_module(input: TokenStream) -> TokenStream {
     use flate2::read::GzDecoder;
