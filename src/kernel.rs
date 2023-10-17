@@ -338,7 +338,7 @@ Kernels implicitly declare [`Features`](device::Features) based on types and or 
 If the [device](device::Device) does not support these features, `.build()` will return an
 error.
 
-See [`DeviceInfo::features`](device::DeviceInfo::features).
+See [`DeviceInfo::features()`](device::DeviceInfo::features).
 
 # Specialization
 SpecConstants are constants that are set when the kernel is compiled via `.specialize(..)`.
