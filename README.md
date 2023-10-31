@@ -1,5 +1,5 @@
 [![DocsBadge]][Docs]
-[![Build Status](https://github.com/charles-r-earp/autograph/workflows/Continuous%20Integration/badge.svg?branch=main)](https://github.com/charles-r-earp/krnl/actions)
+[![Continuous Integration](https://github.com/charles-r-earp/krnl/actions/workflows/ci.yaml/badge.svg)](https://github.com/charles-r-earp/krnl/actions/workflows/ci.yaml)
 
 [Docs]: https://docs.rs/krnl
 [DocsBadge]: https://docs.rs/krnl/badge.svg
