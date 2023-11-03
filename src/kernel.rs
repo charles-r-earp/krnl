@@ -645,13 +645,14 @@ impl KernelDesc {
                         } else {
                             unreachable!("{inst:?}")
                         };
+                        let bytes = value.as_bytes();
                         match inst.operands.as_mut_slice() {
                             [Operand::LiteralInt32(a)] => {
-                                bytemuck::bytes_of_mut(a).copy_from_slice(value.as_bytes());
+                                bytemuck::bytes_of_mut(a)[..bytes.len()].copy_from_slice(bytes);
                             }
                             [Operand::LiteralInt32(a), Operand::LiteralInt32(b)] => {
-                                bytemuck::bytes_of_mut(a).copy_from_slice(&value.as_bytes()[..8]);
-                                bytemuck::bytes_of_mut(b).copy_from_slice(&value.as_bytes()[9..]);
+                                bytemuck::bytes_of_mut(a).copy_from_slice(&bytes[..8]);
+                                bytemuck::bytes_of_mut(b).copy_from_slice(&bytes[9..]);
                             }
                             _ => unreachable!("{:?}", inst.operands),
                         }
@@ -662,6 +663,8 @@ impl KernelDesc {
         if !debug_printf {
             strip_debug_printf(&mut module);
         }
+        freeze_spec_constants(&mut module);
+        reorder_push_constant_pointers(&mut module);
         let spirv = module.assemble();
         Ok(Self {
             name,
@@ -713,6 +716,200 @@ fn strip_debug_printf(module: &mut rspirv::dr::Module) {
             })
         }
     }
+}
+
+// vulkano 0.34.1 false positive assert with spec constant ops where result type != constant type
+// https://docs.rs/crate/vulkano/0.34.1/source/src/shader/spirv/specialization.rs
+// evaluate_spec_constant_op constant_to_instruction
+// no way to bypass because it attempts to specialize the module even with an empty map
+// solution: replace OpSpecConstant with OpConstant and OpSpecConstantOp with the Op
+// and remove SpecId decorations
+#[cfg(feature = "device")]
+fn freeze_spec_constants(module: &mut rspirv::dr::Module) {
+    use fxhash::FxHashMap;
+    use half::f16;
+    use rspirv::{dr::Instruction, spirv::Op};
+
+    fn scalar_elem_from_operand(scalar_type: ScalarType, operand: &Operand) -> ScalarElem {
+        match scalar_type {
+            ScalarType::U8 => ScalarElem::U8(operand.unwrap_literal_int32().to_ne_bytes()[0]),
+            ScalarType::I8 => ScalarElem::I8(i8::from_ne_bytes([operand
+                .unwrap_literal_int32()
+                .to_ne_bytes()[0]])),
+            ScalarType::U16 => {
+                let [a, b, _, _] = operand.unwrap_literal_int32().to_ne_bytes();
+                ScalarElem::U16(u16::from_ne_bytes([a, b]))
+            }
+            ScalarType::I16 => {
+                let [a, b, _, _] = operand.unwrap_literal_int32().to_ne_bytes();
+                ScalarElem::U16(u16::from_ne_bytes([a, b]))
+            }
+            ScalarType::F16 => ScalarElem::F16(f16::from_f32(operand.unwrap_literal_float32())),
+            ScalarType::U32 => ScalarElem::U32(operand.unwrap_literal_int32()),
+            ScalarType::I32 => ScalarElem::I32(i32::from_ne_bytes(
+                operand.unwrap_literal_int32().to_ne_bytes(),
+            )),
+            ScalarType::F32 => ScalarElem::F32(operand.unwrap_literal_float32()),
+            ScalarType::U64 => ScalarElem::U64(operand.unwrap_literal_int64()),
+            ScalarType::I64 => ScalarElem::I64(i64::from_ne_bytes(
+                operand.unwrap_literal_int64().to_ne_bytes(),
+            )),
+            ScalarType::F64 => ScalarElem::F64(operand.unwrap_literal_float64()),
+            _ => unreachable!(),
+        }
+    }
+
+    fn scalar_elem_to_operand(scalar_elem: ScalarElem) -> Operand {
+        match scalar_elem {
+            ScalarElem::U8(x) => Operand::LiteralInt32(u32::from_ne_bytes([x, 0, 0, 0])),
+            ScalarElem::I8(x) => {
+                Operand::LiteralInt32(u32::from_ne_bytes([x.to_ne_bytes()[0], 0, 0, 0]))
+            }
+            ScalarElem::U16(x) => {
+                let [a, b] = x.to_ne_bytes();
+                Operand::LiteralInt32(u32::from_ne_bytes([a, b, 0, 0]))
+            }
+            ScalarElem::I16(x) => {
+                let [a, b] = x.to_ne_bytes();
+                Operand::LiteralInt32(u32::from_ne_bytes([a, b, 0, 0]))
+            }
+            ScalarElem::F16(x) => Operand::LiteralFloat32(x.to_f32()),
+            ScalarElem::U32(x) => Operand::LiteralInt32(x),
+            ScalarElem::I32(x) => Operand::LiteralInt32(u32::from_ne_bytes(x.to_ne_bytes())),
+            ScalarElem::F32(x) => Operand::LiteralFloat32(x),
+            ScalarElem::U64(x) => Operand::LiteralInt64(x),
+            ScalarElem::I64(x) => Operand::LiteralInt64(u64::from_ne_bytes(x.to_ne_bytes())),
+            ScalarElem::F64(x) => Operand::LiteralFloat64(x),
+            _ => unreachable!(),
+        }
+    }
+
+    let mut scalars = FxHashMap::default();
+    let mut values = FxHashMap::default();
+    for inst in module.types_global_values.iter_mut() {
+        match inst.class.opcode {
+            Op::TypeInt => {
+                let width = inst.operands[0].unwrap_literal_int32();
+                let signed = inst.operands[1].unwrap_literal_int32() == 1;
+                let scalar_type = match (width, signed) {
+                    (8, false) => ScalarType::U8,
+                    (8, true) => ScalarType::I8,
+                    (16, false) => ScalarType::U16,
+                    (16, true) => ScalarType::I16,
+                    (32, false) => ScalarType::U32,
+                    (32, true) => ScalarType::I32,
+                    (64, false) => ScalarType::U64,
+                    (64, true) => ScalarType::I64,
+                    _ => unreachable!("{inst:?}"),
+                };
+                scalars.insert(inst.result_id.unwrap(), scalar_type);
+            }
+            Op::TypeFloat => {
+                let width = inst.operands.first().unwrap().unwrap_literal_int32();
+                let scalar_type = match width {
+                    16 => ScalarType::F16,
+                    32 => ScalarType::F32,
+                    64 => ScalarType::F64,
+                    _ => unreachable!(),
+                };
+                scalars.insert(inst.result_id.unwrap(), scalar_type);
+            }
+            Op::Constant | Op::SpecConstant => {
+                let operand = inst.operands.first().unwrap();
+                let scalar_type = scalars[&inst.result_type.unwrap()];
+                let value = scalar_elem_from_operand(scalar_type, operand);
+                values.insert(inst.result_id.unwrap(), value);
+                if let Op::SpecConstant = inst.class.opcode {
+                    let result_type = inst.result_type;
+                    let result_id = inst.result_id;
+                    let operands = std::mem::take(&mut inst.operands);
+                    *inst = Instruction::new(Op::Constant, result_type, result_id, operands);
+                }
+            }
+            Op::SpecConstantComposite => {
+                let result_type = inst.result_type;
+                let result_id = inst.result_id;
+                let operands = std::mem::take(&mut inst.operands);
+                *inst = Instruction::new(Op::ConstantComposite, result_type, result_id, operands);
+            }
+            Op::SpecConstantOp => {
+                let op = inst
+                    .operands
+                    .first()
+                    .unwrap()
+                    .unwrap_literal_spec_constant_op_integer();
+                let operands = &inst.operands[1..];
+                let result_type = inst.result_type;
+                let result_id = inst.result_id;
+                let output = match op {
+                    Op::SConvert => {
+                        let scalar_type = scalars[&result_type.unwrap()];
+                        let x = values[&operands.first().unwrap().unwrap_id_ref()];
+                        x.scalar_cast(scalar_type)
+                    }
+                    _ => continue,
+                };
+                *inst = Instruction::new(
+                    Op::Constant,
+                    result_type,
+                    result_id,
+                    vec![scalar_elem_to_operand(output)],
+                );
+            }
+            _ => (),
+        }
+    }
+
+    /*module.annotations.retain(|inst| {
+        if inst.class.opcode == Op::Decorate {
+            if let [_id, Operand::Decoration(Decoration::SpecId), _spec_id] =
+                inst.operands.as_slice()
+            {
+                return false;
+            }
+        }
+        true
+    })*/
+}
+
+// vulkano 0.34.1 false positive assert with PushConstant TypePointer not being a struct
+// https://docs.rs/vulkano/0.34.1/vulkano/shader/reflect/fn.entry_points.html
+// solution: move non struct PushConstant TypePointer instructions to end of types_global_variables
+#[cfg(feature = "device")]
+fn reorder_push_constant_pointers(module: &mut rspirv::dr::Module) {
+    use rspirv::{
+        dr::Instruction,
+        spirv::{Op, StorageClass},
+    };
+
+    let mut structs = Vec::new();
+    let non_struct_pointers: Vec<_> = module.types_global_values.iter_mut().filter_map(|inst| {
+        match inst.class.opcode {
+            Op::TypeStruct => {
+                structs.push(inst.result_id.unwrap());
+            }
+            Op::TypePointer => {
+                if let [Operand::StorageClass(StorageClass::PushConstant), Operand::IdRef(pointee)] =
+                    inst.operands.as_slice()
+                {
+                    if structs.iter().find(|x| *x == pointee).is_none() {
+                        return Some(std::mem::replace(
+                            inst,
+                            Instruction::new(Op::Nop, None, None, Vec::new()),
+                        ));
+                    }
+                }
+            }
+            _ => (),
+        }
+        None
+    }).collect();
+    module.types_global_values = module
+        .types_global_values
+        .drain(..)
+        .filter(|inst| inst.class.opcode != Op::Nop)
+        .chain(non_struct_pointers)
+        .collect();
 }
 
 #[cfg(feature = "device")]

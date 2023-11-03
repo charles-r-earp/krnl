@@ -20,14 +20,17 @@ use std::{
 use vulkano::{
     buffer::{Buffer, BufferCreateInfo, BufferUsage, Subbuffer},
     command_buffer::{
-        pool::{CommandBufferAllocateInfo, CommandPool, CommandPoolAlloc, CommandPoolCreateInfo},
+        allocator::{CommandBufferAlloc, CommandBufferAllocator, CommandBufferBuilderAlloc},
+        pool::{
+            CommandBufferAllocateInfo, CommandPool, CommandPoolAlloc, CommandPoolCreateFlags,
+            CommandPoolCreateInfo,
+        },
         sys::{CommandBufferBeginInfo, UnsafeCommandBuffer, UnsafeCommandBufferBuilder},
         CommandBufferLevel, CommandBufferUsage, CopyBufferInfo,
     },
     descriptor_set::{
-        layout::{DescriptorSetLayout, DescriptorType},
+        layout::{DescriptorSetLayout, DescriptorSetLayoutCreateFlags, DescriptorType},
         pool::{DescriptorPool, DescriptorPoolCreateInfo, DescriptorSetAllocateInfo},
-        WriteDescriptorSet,
     },
     device::{
         Device, DeviceCreateInfo, DeviceOwned, Queue, QueueCreateInfo, QueueFlags, QueueGuard,
@@ -35,22 +38,25 @@ use vulkano::{
     instance::{
         debug::{
             DebugUtilsMessageSeverity, DebugUtilsMessageType, DebugUtilsMessenger,
-            DebugUtilsMessengerCreateInfo,
+            DebugUtilsMessengerCallback, DebugUtilsMessengerCreateInfo,
         },
-        Instance, InstanceCreateInfo, InstanceExtensions, Version,
+        Instance, InstanceCreateInfo, InstanceExtensions,
     },
     library::VulkanLibrary,
-    memory::allocator::{
-        AllocationCreateInfo, GenericMemoryAllocatorCreateInfo, MemoryUsage,
-        StandardMemoryAllocator,
+    memory::{
+        allocator::{
+            AllocationCreateInfo, GenericMemoryAllocatorCreateInfo, MemoryAllocatorError,
+            MemoryTypeFilter, StandardMemoryAllocator,
+        },
+        MemoryPropertyFlags, ResourceMemory,
     },
-    pipeline::{ComputePipeline, Pipeline, PipelineBindPoint},
-    shader::{
-        DescriptorBindingRequirements, DescriptorRequirements, ShaderExecution, ShaderInterface,
-        ShaderModule, ShaderStages,
+    pipeline::{
+        compute::ComputePipelineCreateInfo, ComputePipeline, Pipeline,
+        PipelineShaderStageCreateInfo,
     },
+    shader::{ShaderModule, ShaderModuleCreateInfo, ShaderStages},
     sync::semaphore::Semaphore,
-    VulkanObject,
+    VulkanError, VulkanObject,
 };
 
 pub struct Engine {
@@ -166,36 +172,34 @@ impl DeviceEngine for Engine {
         let debug_create_info = DebugUtilsMessengerCreateInfo {
             message_severity: DebugUtilsMessageSeverity::INFO,
             message_type: DebugUtilsMessageType::VALIDATION,
-            ..DebugUtilsMessengerCreateInfo::user_callback(Arc::new(move |msg| {
-                if debug_printf2.load(Ordering::SeqCst) {
-                    return;
-                }
-                if msg.layer_prefix
-                    == Some("UNASSIGNED-khronos-validation-createinstance-status-message")
-                    && msg.description.contains("Khronos Validation Layer Active:")
-                    && msg
-                        .description
-                        .contains("Current Enables: VK_VALIDATION_FEATURE_ENABLE_DEBUG_PRINTF_EXT.")
-                {
-                    debug_printf2.store(true, Ordering::SeqCst);
-                }
-            }))
+            ..DebugUtilsMessengerCreateInfo::user_callback(unsafe {
+                DebugUtilsMessengerCallback::new(move |_severity, _message_type, data| {
+                    if debug_printf2.load(Ordering::SeqCst) {
+                        return;
+                    }
+                    if data.message_id_name
+                        == Some("UNASSIGNED-khronos-validation-createinstance-status-message")
+                        && data.message.contains("Khronos Validation Layer Active:")
+                        && data.message.contains(
+                            "Current Enables: VK_VALIDATION_FEATURE_ENABLE_DEBUG_PRINTF_EXT.",
+                        )
+                    {
+                        debug_printf2.store(true, Ordering::SeqCst);
+                    }
+                })
+            })
         };
         let instance_create_info = InstanceCreateInfo {
             enabled_extensions: InstanceExtensions {
                 ext_debug_utils: true,
+                khr_portability_enumeration: true,
                 ..Default::default()
             },
-            enumerate_portability: true,
+            // enumerate_portability: true,
+            debug_utils_messengers: vec![debug_create_info],
             ..InstanceCreateInfo::application_from_cargo_toml()
         };
-        let instance = unsafe {
-            Instance::with_debug_utils_messengers(
-                library,
-                instance_create_info,
-                [debug_create_info],
-            )?
-        };
+        let instance = Instance::new(library, instance_create_info)?;
         let debug_printf = debug_printf.load(Ordering::SeqCst);
         let mut physical_devices = instance.enumerate_physical_devices()?;
         let devices = physical_devices.len();
@@ -253,7 +257,7 @@ impl DeviceEngine for Engine {
             ..Default::default()
         }];
         let (device, mut queues) = Device::new(
-            physical_device,
+            physical_device.clone(),
             DeviceCreateInfo {
                 enabled_extensions: device_extensions,
                 enabled_features: device_features,
@@ -262,17 +266,30 @@ impl DeviceEngine for Engine {
             },
         )?;
         let queue = queues.next().unwrap();
+        let memory_propoerties = physical_device.memory_properties();
+        let memory_types = &memory_propoerties.memory_types;
+        let memory_heaps = &memory_propoerties.memory_heaps;
+        let block_sizes: Vec<u64> = memory_types
+            .iter()
+            .map(|x| {
+                let size = memory_heaps[x.heap_index as usize].size;
+                let device_local = x.property_flags.contains(MemoryPropertyFlags::DEVICE_LOCAL);
+                let block_size: u64 = if device_local {
+                    DeviceBuffer::MAX_SIZE as _
+                } else {
+                    64_000_000
+                };
+                block_size.min(size)
+            })
+            .collect();
         let memory_allocator = Arc::new(StandardMemoryAllocator::new(
             device.clone(),
             GenericMemoryAllocatorCreateInfo {
-                block_sizes: &[
-                    (0, 64_000_000),
-                    (DeviceBuffer::MAX_SIZE as _, DeviceBuffer::MAX_SIZE as _),
-                ],
+                block_sizes: &block_sizes,
                 dedicated_allocation: false,
                 ..Default::default()
             },
-        )?);
+        ));
         let (host_buffer_sender, host_buffer_receiver) = crossbeam_channel::bounded(2);
         for _ in 0..2 {
             let buffer_info = BufferCreateInfo {
@@ -280,11 +297,16 @@ impl DeviceEngine for Engine {
                 ..Default::default()
             };
             let allocation_info = AllocationCreateInfo {
-                usage: MemoryUsage::Download,
+                memory_type_filter: MemoryTypeFilter {
+                    required_flags: MemoryPropertyFlags::HOST_VISIBLE,
+                    preferred_flags: MemoryPropertyFlags::HOST_COHERENT
+                        | MemoryPropertyFlags::HOST_CACHED,
+                    not_preferred_flags: MemoryPropertyFlags::DEVICE_LOCAL,
+                },
                 ..Default::default()
             };
             let inner = Buffer::new_slice(
-                &memory_allocator,
+                memory_allocator.clone(),
                 buffer_info,
                 allocation_info,
                 DeviceBuffer::HOST_BUFFER_SIZE as u64,
@@ -377,7 +399,7 @@ fn new_semaphore(device: &Arc<Device>) -> Result<Semaphore> {
 unsafe fn queue_submit(
     queue: &Queue,
     _guard: &mut QueueGuard,
-    command_buffer: &UnsafeCommandBuffer,
+    command_buffer: &UnsafeCommandBuffer<ArcCommandPoolBufferAllocator>,
     semaphore: &Semaphore,
     epoch: u64,
 ) -> Result<(), ash::vk::Result> {
@@ -461,10 +483,7 @@ impl FrameOuter {
             epoch.store(frame.epoch, Ordering::SeqCst);
             self.empty.store(false, Ordering::SeqCst);
         }
-        unsafe {
-            frame.transfer(src, dst, host_buffer, dst_device_buffer);
-        }
-        Ok(())
+        unsafe { frame.transfer(src, dst, host_buffer, dst_device_buffer) }
     }
     #[allow(clippy::too_many_arguments)]
     unsafe fn compute(
@@ -496,7 +515,7 @@ impl FrameOuter {
                 buffers,
                 push_consts,
                 debug_printf_panic,
-            );
+            )?;
         }
         self.kernels += 1;
         self.descriptors += new_descriptors;
@@ -506,9 +525,8 @@ impl FrameOuter {
 
 struct Frame {
     queue: Arc<Queue>,
-    _command_pool: CommandPool,
-    command_pool_alloc: CommandPoolAlloc,
-    command_buffer_builder: Option<UnsafeCommandBufferBuilder>,
+    command_buffer_allocator: Arc<CommandPoolBufferAllocator>,
+    command_buffer_builder: Option<UnsafeCommandBufferBuilder<ArcCommandPoolBufferAllocator>>,
     descriptor_pool: DescriptorPool,
     buffers: Vec<Subbuffer<[u8]>>,
     epoch: u64,
@@ -520,24 +538,7 @@ impl Frame {
     const MAX_DESCRIPTORS: u32 = 32;
     fn new(queue: Arc<Queue>) -> Result<Self> {
         let device = queue.device();
-        let command_pool = CommandPool::new(
-            device.clone(),
-            CommandPoolCreateInfo {
-                queue_family_index: queue.queue_family_index(),
-                transient: true,
-                reset_command_buffer: true,
-                ..Default::default()
-            },
-        )?;
-        let command_pool_alloc = command_pool
-            .allocate_command_buffers(CommandBufferAllocateInfo {
-                level: CommandBufferLevel::Primary,
-                command_buffer_count: 1,
-                ..Default::default()
-            })
-            .unwrap()
-            .next()
-            .unwrap();
+        let command_buffer_allocator = CommandPoolBufferAllocator::new(&queue)?;
         let command_buffer_builder = None;
         let descriptor_pool = DescriptorPool::new(
             device.clone(),
@@ -553,8 +554,7 @@ impl Frame {
         let epoch = 0;
         Ok(Self {
             queue,
-            _command_pool: command_pool,
-            command_pool_alloc,
+            command_buffer_allocator,
             command_buffer_builder,
             descriptor_pool,
             buffers,
@@ -563,18 +563,15 @@ impl Frame {
         })
     }
     unsafe fn begin(&mut self) -> Result<()> {
-        let device = self.queue.device();
         unsafe {
-            (device.fns().v1_0.reset_command_buffer)(
-                self.command_pool_alloc.handle(),
-                Default::default(),
-            )
-            .result()?;
+            self.command_buffer_allocator.reset()?;
             self.descriptor_pool.reset()?;
         }
         self.command_buffer_builder.replace(unsafe {
             UnsafeCommandBufferBuilder::new(
-                &self.command_pool_alloc,
+                &ArcCommandPoolBufferAllocator(self.command_buffer_allocator.clone()),
+                self.queue.queue_family_index(),
+                CommandBufferLevel::Primary,
                 CommandBufferBeginInfo {
                     usage: CommandBufferUsage::OneTimeSubmit,
                     ..Default::default()
@@ -589,16 +586,17 @@ impl Frame {
         dst: Subbuffer<[u8]>,
         host_buffer: &mut HostBuffer,
         dst_device_buffer: Option<&DeviceBuffer>,
-    ) {
+    ) -> Result<()> {
         let builder = self.command_buffer_builder.as_mut().unwrap();
         unsafe {
-            builder.copy_buffer(&CopyBufferInfo::buffers(src.clone(), dst.clone()));
+            builder.copy_buffer(&CopyBufferInfo::buffers(src.clone(), dst.clone()))?;
         }
         self.buffers.extend_from_slice(&[src, dst]);
         host_buffer.epoch = self.epoch;
         if let Some(dst_device_buffer) = dst_device_buffer {
             dst_device_buffer.epoch.store(self.epoch, Ordering::SeqCst);
         }
+        Ok(())
     }
     unsafe fn compute(
         &mut self,
@@ -608,52 +606,82 @@ impl Frame {
         buffers: &[Arc<DeviceBuffer>],
         push_consts: &[u8],
         debug_printf_panic: Option<Arc<AtomicBool>>,
-    ) {
+    ) -> Result<()> {
+        let device = self.queue.device();
         let builder = self.command_buffer_builder.as_mut().unwrap();
         unsafe {
-            builder.bind_pipeline_compute(pipeline);
+            builder.bind_pipeline_compute(pipeline)?;
         }
         let pipeline_layout = pipeline.layout();
         if !buffers.is_empty() {
             let descriptor_set_layout = pipeline_layout.set_layouts().first().unwrap();
-            let write_descriptor_set = WriteDescriptorSet::buffer_array(
-                0,
-                0,
-                buffers.iter().map(|x| x.inner.as_ref().unwrap().clone()),
-            );
-            unsafe {
-                let mut descriptor_set = self
-                    .descriptor_pool
-                    .allocate_descriptor_sets([DescriptorSetAllocateInfo {
-                        layout: descriptor_set_layout,
-                        variable_descriptor_count: 0,
-                    }])
+            let descriptor_set = unsafe {
+                self.descriptor_pool
+                    .allocate_descriptor_sets([DescriptorSetAllocateInfo::new(
+                        descriptor_set_layout.clone(),
+                    )])
                     .unwrap()
                     .next()
-                    .unwrap();
-                descriptor_set.write(descriptor_set_layout, [&write_descriptor_set]);
-                builder.bind_descriptor_sets(
-                    PipelineBindPoint::Compute,
-                    pipeline_layout,
-                    0,
-                    &[descriptor_set],
-                    [],
+                    .unwrap()
+            };
+            let buffer_infos: Vec<_> = buffers
+                .iter()
+                .map(|x| {
+                    let inner = x.inner.as_ref().unwrap();
+                    ash::vk::DescriptorBufferInfo::builder()
+                        .buffer(inner.buffer().handle())
+                        .offset(inner.offset())
+                        .range(inner.size())
+                        .build()
+                })
+                .collect();
+            let write_descriptor_set = ash::vk::WriteDescriptorSet::builder()
+                .dst_set(descriptor_set.handle())
+                .descriptor_type(ash::vk::DescriptorType::STORAGE_BUFFER)
+                .buffer_info(&buffer_infos)
+                .build();
+            unsafe {
+                let writes = [write_descriptor_set];
+                let copies = [];
+                (device.fns().v1_0.update_descriptor_sets)(
+                    device.handle(),
+                    writes.len() as u32,
+                    writes.as_ptr(),
+                    copies.len() as u32,
+                    copies.as_ptr(),
+                )
+            }
+            let sets = [descriptor_set.handle()];
+            let first_set = 0;
+            let dynamic_offsets = [];
+            unsafe {
+                (device.fns().v1_0.cmd_bind_descriptor_sets)(
+                    builder.handle(),
+                    ash::vk::PipelineBindPoint::COMPUTE,
+                    pipeline_layout.handle(),
+                    first_set,
+                    sets.len() as u32,
+                    sets.as_ptr(),
+                    dynamic_offsets.len() as u32,
+                    dynamic_offsets.as_ptr(),
                 );
             }
         }
         if !push_consts.is_empty() {
+            let offset = 0;
             unsafe {
-                builder.push_constants(
-                    pipeline_layout,
-                    ShaderStages::COMPUTE,
-                    0,
-                    push_consts.len() as u32,
-                    push_consts,
+                (device.fns().v1_0.cmd_push_constants)(
+                    builder.handle(),
+                    pipeline_layout.handle(),
+                    ash::vk::ShaderStageFlags::COMPUTE,
+                    offset,
+                    push_consts.len().try_into().unwrap(),
+                    push_consts.as_ptr() as *const _,
                 );
             }
         }
         unsafe {
-            builder.dispatch([groups, 1, 1]);
+            builder.dispatch([groups, 1, 1])?;
         }
         self.buffers
             .extend(buffers.iter().map(|x| x.inner.as_ref().unwrap().clone()));
@@ -666,6 +694,7 @@ impl Frame {
             self.debug_kernel_desc_panic
                 .replace((kernel_desc.clone(), debug_printf_panic));
         }
+        Ok(())
     }
     unsafe fn finish(&mut self) {
         self.buffers.clear();
@@ -748,30 +777,30 @@ impl Worker {
                 self.pending_frame.debug_kernel_desc_panic.take()
             {
                 Some(
-                    unsafe {
-                        DebugUtilsMessenger::new(
-                            self.queue.device().instance().clone(),
-                            DebugUtilsMessengerCreateInfo {
-                                message_severity: DebugUtilsMessageSeverity::INFO,
-                                message_type: DebugUtilsMessageType::VALIDATION,
-                                ..DebugUtilsMessengerCreateInfo::user_callback(Arc::new(
-                                    move |msg| {
-                                        if let Some(layer_prefix) = msg.layer_prefix.as_ref() {
+                    DebugUtilsMessenger::new(
+                        self.queue.device().instance().clone(),
+                        DebugUtilsMessengerCreateInfo {
+                            message_severity: DebugUtilsMessageSeverity::INFO,
+                            message_type: DebugUtilsMessageType::VALIDATION,
+                            ..DebugUtilsMessengerCreateInfo::user_callback(unsafe {
+                                DebugUtilsMessengerCallback::new(
+                                    move |_severity, _message_type, data| {
+                                        if let Some(layer_prefix) = data.message_id_name.as_ref() {
                                             if layer_prefix.contains("DEBUG-PRINTF") {
                                                 eprintln!(
                                                     "[{id:?} {}] {}",
-                                                    kernel_desc.name, msg.description
+                                                    kernel_desc.name, data.message,
                                                 );
-                                                if msg.description.contains("[Rust panicked at ") {
+                                                if data.message.contains("[Rust panicked at ") {
                                                     panicked.store(true, Ordering::SeqCst);
                                                 }
                                             }
                                         }
                                     },
-                                ))
-                            },
-                        )
-                    }
+                                )
+                            })
+                        },
+                    )
                     .unwrap(),
                 )
             } else {
@@ -847,7 +876,7 @@ impl DeviceBuffer {
     const HOST_BUFFER_SIZE: usize = 32_000_000;
     fn host_visible(&self) -> bool {
         if let Some(inner) = self.inner.as_ref() {
-            inner.mapped_ptr().is_some()
+            inner.mapped_slice().is_ok()
         } else {
             false
         }
@@ -860,7 +889,7 @@ impl DeviceEngineBuffer for DeviceBuffer {
         &self.engine
     }
     unsafe fn uninit(engine: Arc<Engine>, len: usize) -> Result<Self> {
-        use vulkano::{memory::allocator::AllocationCreationError, VulkanError};
+        use vulkano::Validated;
         let inner = if len > 0 {
             let len = aligned_ceil(len, Self::ALIGN);
             let usage =
@@ -871,7 +900,11 @@ impl DeviceEngineBuffer for DeviceBuffer {
                 ..Default::default()
             };
             let allocation_info = AllocationCreateInfo {
-                usage: MemoryUsage::DeviceOnly,
+                memory_type_filter: MemoryTypeFilter {
+                    required_flags: MemoryPropertyFlags::DEVICE_LOCAL,
+                    preferred_flags: MemoryPropertyFlags::empty(),
+                    not_preferred_flags: MemoryPropertyFlags::HOST_VISIBLE,
+                },
                 ..Default::default()
             };
             use vulkano::{
@@ -891,16 +924,20 @@ impl DeviceEngineBuffer for DeviceBuffer {
                 .memory_allocator
                 .allocate(requirements, AllocationType::Unknown, allocation_info, None)
                 .map_err(|e| {
-                    if let AllocationCreationError::VulkanError(VulkanError::OutOfDeviceMemory) = e
+                    if let MemoryAllocatorError::AllocateDeviceMemory(Validated::Error(
+                        VulkanError::OutOfDeviceMemory,
+                    )) = e
                     {
                         Error::new(OutOfDeviceMemory(engine.id())).context(e)
                     } else {
                         e.into()
                     }
                 })?;
-            debug_assert!(!memory_alloc.is_root());
+            let resource_memory = unsafe {
+                ResourceMemory::from_allocation(engine.memory_allocator.clone(), memory_alloc)
+            };
             let buffer = raw_buffer
-                .bind_memory(memory_alloc)
+                .bind_memory(resource_memory)
                 .map_err(|(e, _, _)| e)?;
             Some(Subbuffer::new(Arc::new(buffer)))
         } else {
@@ -1137,41 +1174,76 @@ struct KernelInner {
     compute_pipeline: Arc<ComputePipeline>,
 }
 
+// adapted from https://docs.rs/vulkano/0.33.0/src/vulkano/shader/mod.rs.html#229-312
+unsafe fn shader_module_from_words(
+    device: Arc<Device>,
+    words: &[u32],
+) -> Result<Arc<ShaderModule>, VulkanError> {
+    let handle = {
+        let infos = ash::vk::ShaderModuleCreateInfo {
+            flags: ash::vk::ShaderModuleCreateFlags::empty(),
+            code_size: words.len() * std::mem::size_of::<u32>(),
+            p_code: words.as_ptr(),
+            ..Default::default()
+        };
+
+        let fns = device.fns();
+        let mut output = MaybeUninit::uninit();
+        unsafe {
+            (fns.v1_0.create_shader_module)(
+                device.handle(),
+                &infos,
+                std::ptr::null(),
+                output.as_mut_ptr(),
+            )
+            .result()
+            .map_err(VulkanError::from)?;
+            output.assume_init()
+        }
+    };
+    Ok(unsafe { ShaderModule::from_handle(device, handle, ShaderModuleCreateInfo::new(words)) })
+}
+
 impl KernelInner {
     fn new(engine: &Arc<Engine>, desc: Arc<KernelDesc>) -> Result<Self> {
+        /*use vulkano::shader::spirv::Spirv;
+        let entry_point = vulkano::shader::reflect::entry_points(&Spirv::new(&desc.spirv).unwrap())
+            .next()
+            .unwrap();
+        dbg!(entry_point);*/
         use vulkano::{
             descriptor_set::layout::{DescriptorSetLayoutBinding, DescriptorSetLayoutCreateInfo},
             pipeline::layout::{PipelineLayout, PipelineLayoutCreateInfo, PushConstantRange},
-            shader::{spirv::ExecutionModel, EntryPointInfo},
+            shader::spirv::ExecutionModel,
         };
         let device = engine.queue.device();
-        let descriptor_binding_requirements = desc
-            .slice_descs
-            .iter()
-            .enumerate()
-            .map(|(i, desc)| {
-                let set = 0;
-                let binding = i.try_into().unwrap();
-                let memory_write = if desc.mutable {
-                    ShaderStages::COMPUTE
-                } else {
-                    ShaderStages::empty()
-                };
-                let descriptors = DescriptorRequirements {
-                    memory_read: ShaderStages::COMPUTE,
-                    memory_write,
-                    ..DescriptorRequirements::default()
-                };
-                let descriptor_binding_requirements = DescriptorBindingRequirements {
-                    descriptor_types: vec![DescriptorType::StorageBuffer],
-                    descriptor_count: Some(1),
-                    stages: ShaderStages::COMPUTE,
-                    descriptors: [(Some(0), descriptors)].into_iter().collect(),
-                    ..Default::default()
-                };
-                ((set, binding), descriptor_binding_requirements)
-            })
-            .collect();
+        /*let descriptor_binding_requirements = desc
+        .slice_descs
+        .iter()
+        .enumerate()
+        .map(|(i, desc)| {
+            let set = 0;
+            let binding = i.try_into().unwrap();
+            let memory_write = if desc.mutable {
+                ShaderStages::COMPUTE
+            } else {
+                ShaderStages::empty()
+            };
+            let descriptors = DescriptorRequirements {
+                memory_read: ShaderStages::COMPUTE,
+                memory_write,
+                ..DescriptorRequirements::default()
+            };
+            let descriptor_binding_requirements = DescriptorBindingRequirements {
+                descriptor_types: vec![DescriptorType::StorageBuffer],
+                descriptor_count: Some(1),
+                stages: ShaderStages::COMPUTE,
+                descriptors: [(Some(0), descriptors)].into_iter().collect(),
+                ..Default::default()
+            };
+            ((set, binding), descriptor_binding_requirements)
+        })
+        .collect();*/
         let push_consts_range = desc.push_consts_range();
         let push_constant_range = if push_consts_range > 0 {
             Some(PushConstantRange {
@@ -1182,30 +1254,7 @@ impl KernelInner {
         } else {
             None
         };
-        let entry_point_info = EntryPointInfo {
-            execution: ShaderExecution::Compute,
-            descriptor_binding_requirements,
-            push_constant_requirements: push_constant_range,
-            specialization_constant_requirements: Default::default(),
-            input_interface: ShaderInterface::empty(),
-            output_interface: ShaderInterface::empty(),
-        };
-        let version = Version::major_minor(1, 2);
-        let entry_point = "main";
-        let shader_module = unsafe {
-            ShaderModule::from_words_with_data(
-                device.clone(),
-                &desc.spirv,
-                version,
-                [],
-                [],
-                [(
-                    entry_point.to_string(),
-                    ExecutionModel::GLCompute,
-                    entry_point_info,
-                )],
-            )?
-        };
+        let shader_module = unsafe { shader_module_from_words(device.clone(), &desc.spirv)? };
         let bindings = (0..desc.slice_descs.len())
             .map(|binding| {
                 let descriptor_set_layout_binding = DescriptorSetLayoutBinding {
@@ -1216,9 +1265,14 @@ impl KernelInner {
                 (binding.try_into().unwrap(), descriptor_set_layout_binding)
             })
             .collect();
+        let enabled_features = device.enabled_features();
         let descriptor_set_layout_create_info = DescriptorSetLayoutCreateInfo {
             bindings,
-            push_descriptor: device.enabled_features().descriptor_buffer_push_descriptors,
+            flags: if enabled_features.descriptor_buffer_push_descriptors {
+                DescriptorSetLayoutCreateFlags::PUSH_DESCRIPTOR
+            } else {
+                DescriptorSetLayoutCreateFlags::empty()
+            },
             ..DescriptorSetLayoutCreateInfo::default()
         };
         let descriptor_set_layout =
@@ -1230,12 +1284,24 @@ impl KernelInner {
         };
         let pipeline_layout = PipelineLayout::new(device.clone(), pipeline_layout_create_info)?;
         let cache = None;
-        let compute_pipeline = ComputePipeline::with_pipeline_layout(
+        let required_subgroup_size = if enabled_features.subgroup_size_control {
+            Some(engine.info.subgroup_threads)
+        } else {
+            None
+        };
+
+        let stage_create_info = PipelineShaderStageCreateInfo {
+            required_subgroup_size,
+            ..PipelineShaderStageCreateInfo::new(
+                shader_module
+                    .single_entry_point_with_execution(ExecutionModel::GLCompute)
+                    .unwrap(),
+            )
+        };
+        let compute_pipeline = ComputePipeline::new(
             device.clone(),
-            shader_module.entry_point(entry_point).unwrap(),
-            &(),
-            pipeline_layout,
             cache,
+            ComputePipelineCreateInfo::stage_layout(stage_create_info, pipeline_layout),
         )?;
         Ok(Self {
             desc,
@@ -1299,5 +1365,112 @@ impl DeviceEngineKernel for Kernel {
     }
     fn desc(&self) -> &Arc<KernelDesc> {
         &self.desc
+    }
+}
+
+struct CommandPoolBufferAllocator {
+    pool: CommandPool,
+    alloc: CommandPoolAlloc,
+}
+
+impl CommandPoolBufferAllocator {
+    fn new(queue: &Queue) -> Result<Arc<Self>> {
+        let device = queue.device();
+        let pool = CommandPool::new(
+            device.clone(),
+            CommandPoolCreateInfo {
+                queue_family_index: queue.queue_family_index(),
+                flags: CommandPoolCreateFlags::TRANSIENT
+                    | CommandPoolCreateFlags::RESET_COMMAND_BUFFER,
+                ..Default::default()
+            },
+        )?;
+        let alloc = pool
+            .allocate_command_buffers(CommandBufferAllocateInfo {
+                level: CommandBufferLevel::Primary,
+                command_buffer_count: 1,
+                ..Default::default()
+            })
+            .unwrap()
+            .next()
+            .unwrap();
+        Ok(Arc::new(Self { pool, alloc }))
+    }
+    unsafe fn reset(self: &mut Arc<Self>) -> Result<(), ash::vk::Result> {
+        let this = Arc::get_mut(self).unwrap();
+        unsafe {
+            (this.device().fns().v1_0.reset_command_buffer)(this.alloc.handle(), Default::default())
+                .result()
+        }
+    }
+}
+
+unsafe impl DeviceOwned for CommandPoolBufferAllocator {
+    fn device(&self) -> &Arc<Device> {
+        self.pool.device()
+    }
+}
+
+struct ArcCommandPoolBufferAllocator(Arc<CommandPoolBufferAllocator>);
+
+unsafe impl DeviceOwned for ArcCommandPoolBufferAllocator {
+    fn device(&self) -> &Arc<Device> {
+        self.0.device()
+    }
+}
+
+unsafe impl CommandBufferAllocator for ArcCommandPoolBufferAllocator {
+    type Iter = std::iter::Once<Self::Builder>;
+    type Builder = Self::Alloc;
+    type Alloc = CommandPoolBufferAllocatorAlloc;
+
+    fn allocate(
+        &self,
+        queue_family_index: u32,
+        level: CommandBufferLevel,
+        command_buffer_count: u32,
+    ) -> Result<Self::Iter, vulkano::VulkanError> {
+        let allocator = self.0.clone();
+        debug_assert_eq!(allocator.pool.queue_family_index(), queue_family_index);
+        debug_assert_eq!(level, CommandBufferLevel::Primary);
+        debug_assert_eq!(command_buffer_count, 1);
+        Ok(std::iter::once(CommandPoolBufferAllocatorAlloc {
+            allocator,
+        }))
+    }
+}
+
+unsafe impl Send for CommandPoolBufferAllocator {}
+unsafe impl Sync for CommandPoolBufferAllocator {}
+
+struct CommandPoolBufferAllocatorAlloc {
+    allocator: Arc<CommandPoolBufferAllocator>,
+}
+
+unsafe impl DeviceOwned for CommandPoolBufferAllocatorAlloc {
+    fn device(&self) -> &Arc<Device> {
+        self.allocator.device()
+    }
+}
+
+unsafe impl CommandBufferBuilderAlloc for CommandPoolBufferAllocatorAlloc {
+    type Alloc = Self;
+    fn inner(&self) -> &CommandPoolAlloc {
+        &self.allocator.alloc
+    }
+    fn into_alloc(self) -> Self::Alloc {
+        self
+    }
+    fn queue_family_index(&self) -> u32 {
+        self.allocator.pool.queue_family_index()
+    }
+}
+
+unsafe impl CommandBufferAlloc for CommandPoolBufferAllocatorAlloc {
+    fn inner(&self) -> &CommandPoolAlloc {
+        &self.allocator.alloc
+    }
+    fn queue_family_index(&self) -> u32 {
+        self.allocator.pool.queue_family_index()
     }
 }
