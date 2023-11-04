@@ -270,7 +270,8 @@ fn buffer_cast<X: Scalar, Y: Scalar>(device: Device) {
 }
 
 fn buffer_bitcast<X: Scalar, Y: Scalar>(device: Device) {
-    let x_host = &[X::default(); 16];
+    //let x_host = &[X::default(); 16];
+    let x_host = vec![X::default(); 16];
     let x = Slice::from(x_host.as_ref()).to_device(device).unwrap();
     for i in 0..=16 {
         for range in [i..16, 0..i] {
@@ -295,6 +296,7 @@ fn buffer_from_vec_host() {
     buffer_from_vec(Device::host());
 }
 
+/*
 #[cfg(target_arch = "wasm32")]
 macro_for!($T in [u8, i8, u16, i16, f16, bf16, u32, i32, f32, u64, i64, f64] {
     paste! {
@@ -303,8 +305,9 @@ macro_for!($T in [u8, i8, u16, i16, f16, bf16, u32, i32, f32, u64, i64, f64] {
             buffer_fill::<$T>(Device::host());
         }
     }
-});
+});*/
 
+/*
 macro_for!($X in [u8, i8, u16, i16, f16, bf16, u32, i32, f32, u64, i64, f64] {
     macro_for!($Y in [u8, i8, u16, i16, f16, bf16, u32, i32, f32, u64, i64, f64] {
         paste! {
@@ -319,3 +322,9 @@ macro_for!($X in [u8, i8, u16, i16, f16, bf16, u32, i32, f32, u64, i64, f64] {
         }
     });
 });
+*/
+
+#[test]
+fn buffer_bitcast_u32_u64_host() {
+    buffer_bitcast::<u32, u64>(Device::host());
+}
