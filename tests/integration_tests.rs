@@ -270,8 +270,8 @@ fn buffer_cast<X: Scalar, Y: Scalar>(device: Device) {
 }
 
 fn buffer_bitcast<X: Scalar, Y: Scalar>(device: Device) {
-    //let x_host = &[X::default(); 16];
-    let x_host = vec![X::default(); 16];
+    let x_host = &[X::default(); 16];
+    //let x_host = vec![X::default(); 16];
     let x = Slice::from(x_host.as_ref()).to_device(device).unwrap();
     for i in 0..=16 {
         for range in [i..16, 0..i] {
