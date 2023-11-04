@@ -276,13 +276,15 @@ fn buffer_bitcast<X: Scalar, Y: Scalar>(device: Device) {
         for range in [i..16, 0..i] {
             let bytemuck_result =
                 bytemuck::try_cast_slice::<X, Y>(&x_host[range.clone()]).map(|_| ());
-            let result = x.slice(range).unwrap().bitcast::<Y>().map(|_| ());
+            let result = x.slice(range.clone()).unwrap().bitcast::<Y>().map(|_| ());
             #[cfg(miri)]
             let _ = (bytemuck_result, result);
+            let ptr = x_host[range.clone()].as_ptr();
+            let is_aligned = ptr as usize % std::mem::size_of::<Y>() == 0;
             #[cfg(not(miri))]
             assert_eq!(
                 result, bytemuck_result,
-                "{i}: {result:?}, {bytemuck_result:?}"
+                "{i}: {result:?}, {bytemuck_result:?} => ({ptr:?}, {is_aligned})"
             );
         }
     }
