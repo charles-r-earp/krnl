@@ -280,7 +280,10 @@ fn buffer_bitcast<X: Scalar, Y: Scalar>(device: Device) {
             #[cfg(miri)]
             let _ = (bytemuck_result, result);
             #[cfg(not(miri))]
-            assert_eq!(result, bytemuck_result);
+            assert_eq!(
+                result, bytemuck_result,
+                "{i}: {result:?}, {bytemuck_result:?}"
+            );
         }
     }
 }
