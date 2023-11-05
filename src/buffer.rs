@@ -150,7 +150,6 @@ impl RawSlice {
         } else if len % width != 0 {
             Err(PodCastError::OutputSliceWouldHaveSlop)
         } else {
-            panic!("{index} {len} {scalar_type:?} {width}");
             Ok(self)
         }
     }

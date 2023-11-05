@@ -270,11 +270,15 @@ fn buffer_cast<X: Scalar, Y: Scalar>(device: Device) {
 }
 
 fn buffer_bitcast<X: Scalar, Y: Scalar>(device: Device) {
-    let x_host = &[X::default(); 16];
-    assert!(x_host.as_ptr() as usize % std::mem::size_of::<Y>() == 0);
+    let x_host = vec![0u64; 16];
+    let x_host: &[X] = &bytemuck::cast_slice(&x_host)[..16];
     let x = Slice::from(x_host.as_ref()).to_device(device).unwrap();
     for i in 0..=16 {
         for range in [i..16, 0..i] {
+            #[cfg(target_arch = "wasm32")]
+            {
+                web_sys::console::log_1(&format!("range = {range:?}").into());
+            }
             let bytemuck_result =
                 bytemuck::try_cast_slice::<X, Y>(&x_host[range.clone()]).map(|_| ());
             let result = x.slice(range.clone()).unwrap().bitcast::<Y>().map(|_| ());
@@ -283,10 +287,7 @@ fn buffer_bitcast<X: Scalar, Y: Scalar>(device: Device) {
             let ptr = x_host[range.clone()].as_ptr();
             let is_aligned = ptr as usize % std::mem::size_of::<Y>() == 0;
             #[cfg(not(miri))]
-            assert_eq!(
-                result, bytemuck_result,
-                "{i}: {result:?}, {bytemuck_result:?} => ({ptr:?}, {is_aligned})"
-            );
+            assert_eq!(result, bytemuck_result);
         }
     }
 }
