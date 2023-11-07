@@ -663,7 +663,7 @@ impl KernelDesc {
         if !debug_printf {
             strip_debug_printf(&mut module);
         }
-        freeze_spec_constants(&mut module);
+        //freeze_spec_constants(&mut module);
         reorder_push_constant_pointers(&mut module);
         let spirv = module.assemble();
         Ok(Self {
@@ -718,6 +718,7 @@ fn strip_debug_printf(module: &mut rspirv::dr::Module) {
     }
 }
 
+/*
 // vulkano 0.34.1 false positive assert with spec constant ops where result type != constant type
 // https://docs.rs/crate/vulkano/0.34.1/source/src/shader/spirv/specialization.rs
 // evaluate_spec_constant_op constant_to_instruction
@@ -870,7 +871,7 @@ fn freeze_spec_constants(module: &mut rspirv::dr::Module) {
         }
         true
     })*/
-}
+}*/
 
 // vulkano 0.34.1 false positive assert with PushConstant TypePointer not being a struct
 // https://docs.rs/vulkano/0.34.1/vulkano/shader/reflect/fn.entry_points.html
