@@ -20,10 +20,10 @@ rustversion = "1.0.12"
 
 [dependencies]
 clap = { version = "4.2.4", features = ["derive"] }
-clap-cargo = { version = "0.10.0", features = ["cargo_metadata"] }
+clap-cargo = { version = "0.13.0", features = ["cargo_metadata"] }
 anyhow = "1.0.60"
 syn = { version = "1.0.103", features = ["full", "visit", "extra-traits"] }
-cargo_metadata = "0.15.1"
+cargo_metadata = "0.18.1"
 spirv-builder = { version = "=0.8.0", default-features = false }
 serde = { version = "1.0.143", default-features = false, features = ["derive"] }
 bincode2 = "2.0.1"

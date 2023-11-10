@@ -44,9 +44,6 @@ struct Cli {
 fn main() -> Result<()> {
     let cli = Cli::parse();
     let metadata = cli.manifest.metadata().exec()?;
-    if cli.workspace == Workspace::default() && metadata.workspace_members.len() > 1 {
-        bail!("Found a workspace. Specify packages with `-p` or use `--workspace` to build all packages.");
-    }
     let (selected, _) = cli.workspace.partition_packages(&metadata);
     let target_dir = cli
         .target_dir
