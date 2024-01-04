@@ -730,11 +730,7 @@ pub mod __private {
 
     impl Safety {
         const fn is_safe(&self) -> bool {
-            if let Self::Safe = self {
-                true
-            } else {
-                false
-            }
+            matches!(self, Self::Safe)
         }
     }
 

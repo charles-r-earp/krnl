@@ -722,7 +722,7 @@ extern crate krnl_core;
         }
         Ok(())
     }
-    cleanup_files(&src_dir, &files)
+    cleanup_files(src_dir, &files)
 }
 
 fn kernel_post_process(
