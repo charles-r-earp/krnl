@@ -115,7 +115,7 @@ mod parent {
 #[module]
 mod use_functional {
     #[cfg(target_arch = "spirv")]
-    use crate::parent__functional::foo;
+    use crate::parent::functional::foo;
     #[cfg(not(target_arch = "spirv"))]
     use krnl::krnl_core;
     use krnl_core::macros::kernel;

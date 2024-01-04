@@ -240,7 +240,7 @@ mod kernels {
     use krnl::krnl_core;
     use krnl_core::macros::kernel;
     #[cfg(target_arch = "spirv")]
-    use crate::util__functional::add;
+    use crate::util::functional::add;
 
     #[kernel]
     fn add_i32(#[item] a: i32, #[item] b: i32, #[item] c: &mut i32) {
@@ -434,24 +434,20 @@ use anyhow::{bail, Result};
 use dry::macro_wrap;
 #[cfg(feature = "device")]
 use rspirv::{binary::Assemble, dr::Operand};
-use serde::Deserialize;
-use std::sync::Arc;
+use std::{borrow::Cow, sync::Arc};
 #[cfg(feature = "device")]
 use std::{collections::HashMap, hash::Hash};
 
 #[cfg_attr(not(feature = "device"), allow(dead_code))]
-#[derive(Clone, Deserialize, Debug)]
+#[derive(Clone, Debug)]
 pub(crate) struct KernelDesc {
-    pub(crate) name: String,
-    hash: u64,
-    pub(crate) spirv: Vec<u32>,
+    pub(crate) name: Cow<'static, str>,
+    pub(crate) spirv: Cow<'static, [u32]>,
     features: Features,
-    #[serde(skip)]
     pub(crate) threads: u32,
-    safe: bool,
-    spec_descs: Vec<SpecDesc>,
-    pub(crate) slice_descs: Vec<SliceDesc>,
-    push_descs: Vec<PushDesc>,
+    spec_descs: &'static [SpecDesc],
+    pub(crate) slice_descs: &'static [SliceDesc],
+    push_descs: &'static [PushDesc],
 }
 
 #[cfg(feature = "device")]
@@ -485,7 +481,7 @@ impl KernelDesc {
             if !spec_string.is_empty() {
                 spec_string.push_str(", ");
             }
-            let n = desc.name.as_str();
+            let n = desc.name;
             macro_wrap!(match spec {
                 macro_for!($T in [U8, I8, U16, I16, F16, BF16, U32, I32, F32, U64, I64, F64] {
                     ScalarElem::$T(x) => write!(&mut spec_string, "{n}={x}").unwrap(),
@@ -494,7 +490,7 @@ impl KernelDesc {
             });
         }
         let name = if !spec_string.is_empty() {
-            format!("{}<{spec_string}>", self.name)
+            format!("{}<{spec_string}>", self.name).into()
         } else {
             self.name.clone()
         };
@@ -536,11 +532,11 @@ impl KernelDesc {
         if !debug_printf {
             strip_debug_printf(&mut module);
         }
-        let spirv = module.assemble();
+        let spirv = module.assemble().into();
         Ok(Self {
             name,
             spirv,
-            spec_descs: Vec::new(),
+            spec_descs: &[],
             threads,
             ..self.clone()
         })
@@ -588,31 +584,6 @@ fn strip_debug_printf(module: &mut rspirv::dr::Module) {
     }
 }
 
-#[cfg_attr(not(feature = "device"), allow(dead_code))]
-#[derive(Clone, Deserialize, Debug)]
-struct SpecDesc {
-    #[allow(unused)]
-    name: String,
-    scalar_type: ScalarType,
-}
-
-#[cfg_attr(not(feature = "device"), allow(dead_code))]
-#[derive(Clone, Deserialize, Debug)]
-pub(crate) struct SliceDesc {
-    name: String,
-    pub(crate) scalar_type: ScalarType,
-    pub(crate) mutable: bool,
-    item: bool,
-}
-
-#[cfg_attr(not(feature = "device"), allow(dead_code))]
-#[derive(Clone, Deserialize, Debug)]
-struct PushDesc {
-    #[allow(unused)]
-    name: String,
-    scalar_type: ScalarType,
-}
-
 #[cfg(feature = "device")]
 #[derive(PartialEq, Eq, Hash, Debug)]
 pub(crate) struct KernelKey {
@@ -633,24 +604,222 @@ pub mod __private {
         scalar::Scalar,
     };
 
+    #[derive(Clone, Copy)]
+    pub struct KernelDesc {
+        name: &'static str,
+        spirv: &'static [u32],
+        features: Features,
+        safe: bool,
+        spec_descs: &'static [SpecDesc],
+        slice_descs: &'static [SliceDesc],
+        push_descs: &'static [PushDesc],
+    }
+
+    #[derive(Clone, Copy)]
+    pub struct KernelDescArgs {
+        pub name: &'static str,
+        pub spirv: &'static [u32],
+        pub features: Features,
+        pub safety: Safety,
+        pub spec_descs: &'static [SpecDesc],
+        pub slice_descs: &'static [SliceDesc],
+        pub push_descs: &'static [PushDesc],
+    }
+
+    const fn bytes_eq(a: &[u8], b: &[u8]) -> bool {
+        if a.len() != b.len() {
+            return false;
+        }
+        let mut i = 0;
+        while i < a.len() {
+            if a[i] != b[i] {
+                return false;
+            }
+            i += 1;
+        }
+        true
+    }
+
+    pub const fn find_kernel(name: &str, kernels: &[KernelDesc]) -> Option<KernelDesc> {
+        let mut i = 0;
+        while i < kernels.len() {
+            if bytes_eq(name.as_bytes(), kernels[i].name.as_bytes()) {
+                return Some(kernels[i]);
+            }
+            i += 1;
+        }
+        None
+    }
+
+    impl KernelDesc {
+        pub const fn from_args(args: KernelDescArgs) -> Self {
+            let KernelDescArgs {
+                name,
+                spirv,
+                features,
+                safety,
+                spec_descs,
+                slice_descs,
+                push_descs,
+            } = args;
+            Self {
+                name,
+                spirv,
+                features,
+                safe: safety.is_safe(),
+                spec_descs,
+                slice_descs,
+                push_descs,
+            }
+        }
+        pub const fn check_declaration(
+            &self,
+            safety: Safety,
+            spec_descs: &[SpecDesc],
+            slice_descs: &[SliceDesc],
+            push_descs: &[PushDesc],
+        ) -> bool {
+            if self.safe != safety.is_safe() {
+                return false;
+            }
+            {
+                if self.spec_descs.len() != spec_descs.len() {
+                    return false;
+                }
+                let mut index = spec_descs.len();
+                while index < spec_descs.len() {
+                    if !self.spec_descs[index].const_eq(&spec_descs[index]) {
+                        return false;
+                    }
+                    index += 1;
+                }
+            }
+            {
+                if self.slice_descs.len() != slice_descs.len() {
+                    return false;
+                }
+                let mut index = slice_descs.len();
+                while index < slice_descs.len() {
+                    if !self.slice_descs[index].const_eq(&slice_descs[index]) {
+                        return false;
+                    }
+                    index += 1;
+                }
+            }
+            {
+                if self.push_descs.len() != push_descs.len() {
+                    return false;
+                }
+                let mut index = push_descs.len();
+                while index < push_descs.len() {
+                    if !self.push_descs[index].const_eq(&push_descs[index]) {
+                        return false;
+                    }
+                    index += 1;
+                }
+            }
+            true
+        }
+    }
+
+    #[derive(Clone, Copy)]
+    pub enum Safety {
+        Safe,
+        Unsafe,
+    }
+
+    impl Safety {
+        const fn is_safe(&self) -> bool {
+            if let Self::Safe = self {
+                true
+            } else {
+                false
+            }
+        }
+    }
+
+    const fn scalar_type_const_eq(a: ScalarType, b: ScalarType) -> bool {
+        a as u32 == b as u32
+    }
+
+    #[derive(Clone, Copy, Debug)]
+    pub struct SpecDesc {
+        pub name: &'static str,
+        pub scalar_type: ScalarType,
+    }
+
+    impl SpecDesc {
+        const fn const_eq(&self, other: &Self) -> bool {
+            bytes_eq(self.name.as_bytes(), other.name.as_bytes())
+                && scalar_type_const_eq(self.scalar_type, other.scalar_type)
+        }
+    }
+
+    #[derive(Clone, Copy, Debug)]
+    pub struct SliceDesc {
+        pub name: &'static str,
+        pub scalar_type: ScalarType,
+        pub mutable: bool,
+        pub item: bool,
+    }
+
+    impl SliceDesc {
+        const fn const_eq(&self, other: &Self) -> bool {
+            bytes_eq(self.name.as_bytes(), other.name.as_bytes())
+                && scalar_type_const_eq(self.scalar_type, other.scalar_type)
+                && self.mutable == other.mutable
+                && self.item == other.item
+        }
+    }
+
+    #[derive(Clone, Copy, Debug)]
+    pub struct PushDesc {
+        pub name: &'static str,
+        pub scalar_type: ScalarType,
+    }
+
+    impl PushDesc {
+        const fn const_eq(&self, other: &Self) -> bool {
+            bytes_eq(self.name.as_bytes(), other.name.as_bytes())
+                && scalar_type_const_eq(self.scalar_type, other.scalar_type)
+        }
+    }
+
     #[cfg_attr(not(feature = "device"), allow(dead_code))]
     #[derive(Clone)]
     pub struct KernelBuilder {
         id: usize,
-        desc: Arc<KernelDesc>,
+        desc: Arc<super::KernelDesc>,
         spec_consts: Vec<ScalarElem>,
         threads: Option<u32>,
     }
 
     impl KernelBuilder {
-        pub fn from_bytes(bytes: &'static [u8]) -> Result<Self> {
-            let desc: Arc<KernelDesc> = Arc::new(bincode2::deserialize(bytes)?);
-            Ok(Self {
-                id: bytes.as_ptr() as usize,
-                desc,
+        pub fn from_desc(desc: KernelDesc) -> Self {
+            let KernelDesc {
+                name,
+                spirv,
+                features,
+                safe: _,
+                spec_descs,
+                slice_descs,
+                push_descs,
+            } = desc;
+            let desc = super::KernelDesc {
+                name: name.into(),
+                spirv: spirv.into(),
+                features,
+                threads: 0,
+                spec_descs,
+                slice_descs,
+                push_descs,
+            };
+            Self {
+                id: name.as_ptr() as usize,
+                desc: desc.into(),
                 spec_consts: Vec::new(),
                 threads: None,
-            })
+            }
         }
         pub fn with_threads(self, threads: u32) -> Self {
             Self {
@@ -669,73 +838,6 @@ pub mod __private {
                 spec_consts: spec_consts.to_vec(),
                 ..self
             }
-        }
-        pub fn features(&self) -> Features {
-            self.desc.features
-        }
-        pub fn hash(&self) -> u64 {
-            self.desc.hash
-        }
-        pub fn safe(&self) -> bool {
-            self.desc.safe
-        }
-        pub fn check_spec_consts(&self, spec_consts: &[(&str, ScalarType)]) {
-            let spec_descs = &self.desc.spec_descs;
-            if spec_consts.len() == spec_descs.len() {
-                let mut success = true;
-                for ((name, scalar_type), spec_desc) in spec_consts.iter().copied().zip(spec_descs)
-                {
-                    if name != spec_desc.name || scalar_type != spec_desc.scalar_type {
-                        success = false;
-                        break;
-                    }
-                }
-                if success {
-                    return;
-                }
-            }
-            let name = &self.desc.name;
-            panic!("Kernel `{name}` spec consts check failed:\n {spec_consts:#?}\n{spec_descs:#?}")
-        }
-        pub fn check_buffers(&self, buffers: &[(&str, ScalarType, Mutability)]) {
-            let buffer_descs = &self.desc.slice_descs;
-            if buffers.len() == buffer_descs.len() {
-                let mut success = true;
-                for ((name, scalar_type, mutability), buffer_desc) in
-                    buffers.iter().copied().zip(buffer_descs)
-                {
-                    if name != buffer_desc.name
-                        || scalar_type != buffer_desc.scalar_type
-                        || mutability.is_mutable() != buffer_desc.mutable
-                    {
-                        success = false;
-                        break;
-                    }
-                }
-                if success {
-                    return;
-                }
-            }
-            let name = &self.desc.name;
-            panic!("Kernel `{name}` buffers check failed:\n {buffers:#?}\n{buffer_descs:#?}")
-        }
-        pub fn check_push_consts(&self, push_consts: &[(&str, ScalarType)]) {
-            let push_descs = &self.desc.push_descs;
-            if push_consts.len() == push_descs.len() {
-                let mut success = true;
-                for ((name, scalar_type), push_desc) in push_consts.iter().copied().zip(push_descs)
-                {
-                    if name != push_desc.name || scalar_type != push_desc.scalar_type {
-                        success = false;
-                        break;
-                    }
-                }
-                if success {
-                    return;
-                }
-            }
-            let name = &self.desc.name;
-            panic!("Kernel `{name}` push consts check failed:\n {push_consts:#?}\n{push_descs:#?}")
         }
         pub fn build(&self, device: Device) -> Result<Kernel> {
             match device.inner() {
@@ -973,10 +1075,6 @@ pub mod __private {
             Self::SliceMut(slice.into())
         }
     }
-
-    #[derive(Clone, Copy, Debug, derive_more::IsVariant)]
-    pub enum Mutability {
-        Mutable,
-        Immutable,
-    }
 }
+
+pub(crate) use __private::{PushDesc, SliceDesc, SpecDesc};
