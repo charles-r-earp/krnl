@@ -640,7 +640,7 @@ fn write_device_source(src_dir: &Path, module_sources: &FxHashMap<String, String
     if module_sources.is_empty() {
         return Ok(());
     }
-    let mut tree = FxHashMap::<&str, Vec<&str>>::default();
+    let mut tree = FxHashMap::<&str, FxHashSet<&str>>::default();
     for module in module_sources.keys() {
         let mut parent = "";
         for child in module.split("::") {
@@ -649,7 +649,7 @@ fn write_device_source(src_dir: &Path, module_sources: &FxHashMap<String, String
             } else {
                 &module[..parent.len() + "::".len() + child.len()]
             };
-            tree.entry(parent).or_default().push(child);
+            tree.entry(parent).or_default().insert(child);
             parent = child;
         }
     }
@@ -657,7 +657,7 @@ fn write_device_source(src_dir: &Path, module_sources: &FxHashMap<String, String
     fn visit_module(
         dir: &Path,
         module: &str,
-        tree: &FxHashMap<&str, Vec<&str>>,
+        tree: &FxHashMap<&str, FxHashSet<&str>>,
         module_sources: &FxHashMap<String, String>,
         files: &mut FxHashSet<PathBuf>,
     ) -> Result<()> {
