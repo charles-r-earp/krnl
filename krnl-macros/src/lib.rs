@@ -1006,40 +1006,6 @@ impl KernelMeta {
         }
         tokens
     }
-    fn check_spec_descs(&self) -> Punctuated<TokenStream2, Comma> {
-        self.spec_metas
-            .iter()
-            .map(|arg| {
-                let name = arg.ident.to_string();
-                let scalar_type = arg.ty.scalar_type;
-                quote! {
-                    SpecDesc {
-                        name: #name, scalar_type: #scalar_type
-                    }
-                }
-            })
-            .collect()
-    }
-    fn check_slice_descs(&self) -> Punctuated<TokenStream2, Comma> {
-        self.arg_metas
-            .iter()
-            .filter(|arg| arg.binding.is_some())
-            .map(|arg| {
-                let name = arg.ident.to_string();
-                let scalar_type = arg.scalar_ty.scalar_type;
-                let mutable = arg.mutable;
-                let item = arg.kind.is_item();
-                quote! {
-                    SliceDesc {
-                        name: #name,
-                        scalar_type: #scalar_type,
-                        mutable: #mutable,
-                        item: #item,
-                    }
-                }
-            })
-            .collect()
-    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
@@ -1219,21 +1185,6 @@ impl KernelDesc {
             .map(|push| format_ident!("{}", push.name))
             .collect()
     }
-    fn check_push_descs(&self) -> Punctuated<TokenStream2, Comma> {
-        self.push_descs
-            .iter()
-            .map(|push| {
-                let name = &push.name;
-                let scalar_type = push.scalar_type;
-                quote! {
-                    PushDesc {
-                        name: #name,
-                        scalar_type: #scalar_type,
-                    }
-                }
-            })
-            .collect()
-    }
 }
 
 #[derive(Default, Debug, Serialize, Deserialize)]
@@ -1253,14 +1204,19 @@ impl ToTokens for Features {
             shader_int64,
             shader_float16,
             shader_float64,
-        } = self;
+        } = *self;
+        let shader_int8 = if shader_int8 { [true].as_ref() } else { &[] };
+        let shader_int16 = if shader_int16 { [true].as_ref() } else { &[] };
+        let shader_int64 = if shader_int64 { [true].as_ref() } else { &[] };
+        let shader_float16 = if shader_float16 { [true].as_ref() } else { &[] };
+        let shader_float64 = if shader_float64 { [true].as_ref() } else { &[] };
         tokens.extend(quote! {
             Features::empty()
-            .with_shader_int8(#shader_int8)
-            .with_shader_int16(#shader_int16)
-            .with_shader_int64(#shader_int64)
-            .with_shader_float16(#shader_float16)
-            .with_shader_float64(#shader_float64)
+            #(.with_shader_int8(#shader_int8))*
+            #(.with_shader_int16(#shader_int16))*
+            #(.with_shader_int64(#shader_int64))*
+            #(.with_shader_float16(#shader_float16))*
+            #(.with_shader_float64(#shader_float64))*
         });
     }
 }
@@ -1457,9 +1413,9 @@ fn kernel_impl(item_tokens: TokenStream2) -> Result<TokenStream2> {
         }
     };
     let host_tokens = {
-        let check_spec_descs = kernel_meta.check_spec_descs();
-        let check_slice_descs = kernel_meta.check_slice_descs();
-        let check_push_descs = kernel_desc.check_push_descs();
+        let spec_descs = &kernel_desc.spec_descs;
+        let slice_descs = &kernel_desc.slice_descs;
+        let push_descs = &kernel_desc.push_descs;
         let dispatch_args = kernel_meta.dispatch_args();
         let dispatch_slice_args = kernel_meta.dispatch_slice_args();
         let dispatch_push_args = kernel_desc.dispatch_push_args();
@@ -1527,7 +1483,7 @@ fn kernel_impl(item_tokens: TokenStream2) -> Result<TokenStream2> {
                     buffer::{Slice, SliceMut},
                     device::Device,
                     scalar::ScalarType,
-                    kernel::__private::{Kernel as KernelBase, KernelBuilder as KernelBuilderBase, KernelDesc, SliceDesc, SpecDesc, PushDesc, Safety},
+                    kernel::__private::{Kernel as KernelBase, KernelBuilder as KernelBuilderBase, KernelDesc, SliceDesc, SpecDesc, PushDesc, Safety, validate_kernel},
                     once_cell::sync::Lazy,
                     anyhow::format_err,
                 };
@@ -1555,22 +1511,7 @@ fn kernel_impl(item_tokens: TokenStream2) -> Result<TokenStream2> {
                 pub fn builder() -> Result<KernelBuilder> {
                     #[doc(hidden)]
                     static BUILDER: Lazy<Option<KernelBuilderBase>> = Lazy::new(|| {
-                        const DESC: Option<KernelDesc> = {
-                            let kernel: Option<Option<KernelDesc>> = __krnl_kernel!(#ident);
-                            if let Some(kernel) = kernel {
-                                let success = if let Some(kernel) = kernel.as_ref() {
-                                    kernel.check_declaration(#safety, &[#check_spec_descs], &[#check_slice_descs], &[#check_push_descs])
-                                } else {
-                                    false
-                                };
-                                if !success {
-                                    panic!("recompile with krnlc");
-                                }
-                                kernel
-                            } else {
-                                None
-                            }
-                        };
+                        const DESC: Option<KernelDesc> = validate_kernel(__krnl_kernel!(#ident), #safety, &[#(#spec_descs),*], &[#(#slice_descs),*], &[#(#push_descs),*]);
                         DESC.as_ref().map(|desc| KernelBuilderBase::from_desc(desc.clone()))
                     });
                     if let Some(inner) = BUILDER.as_ref().cloned() {
@@ -1578,8 +1519,7 @@ fn kernel_impl(item_tokens: TokenStream2) -> Result<TokenStream2> {
                             inner,
                         })
                     } else {
-                        let name = module_path!();
-                        Err(format_err!("Kernel `{name}` not compiled!"))
+                        Err(format_err!("Kernel `{}` not compiled!", std::module_path!()))
                     }
                 }
 
@@ -1671,12 +1611,16 @@ pub fn __krnl_cache(input: TokenStream) -> TokenStream {
     .into()
 }
 
-#[derive(Parse, Debug)]
+#[derive(Parse)]
 struct KrnlCacheInput {
     module: Ident,
     _comma: Comma,
     kernel: Ident,
     _comma2: Comma,
+}
+
+#[derive(Parse)]
+struct KrnlCacheData {
     #[call(Punctuated::parse_terminated)]
     data: Punctuated<Ident, Comma>,
 }
@@ -1687,14 +1631,13 @@ fn __krnl_cache_impl(input: TokenStream2) -> Result<TokenStream2> {
 
     static CACHE: OnceLock<Result<KrnlcCache>> = OnceLock::new();
 
-    let input = syn::parse2::<KrnlCacheInput>(input)?;
-
+    let mut iter = input.into_iter();
+    let input = syn::parse2::<KrnlCacheInput>(iter.by_ref().take(4).collect())?;
     let cache = CACHE
         .get_or_init(|| {
             let version = env!("CARGO_PKG_VERSION");
-
-            let cache_bytes: Vec<_> = input
-                .data
+            let data = syn::parse2::<KrnlCacheData>(iter.collect())?.data;
+            let cache_bytes: Vec<_> = data
                 .iter()
                 .flat_map(|ident| {
                     let string = ident.to_string();
@@ -1704,15 +1647,15 @@ fn __krnl_cache_impl(input: TokenStream2) -> Result<TokenStream2> {
                 .collect();
             let krnlc_version: String =
                 bincode2::deserialize_from(GzDecoder::new(&*cache_bytes))
-                    .map_err(|_| Error::new_spanned(&input.data, "Expected krnlc version!"))?;
+                    .map_err(|_| Error::new_spanned(&data, "Expected krnlc version!"))?;
             if !krnlc_version_compatible(&krnlc_version, version) {
                 return Err(Error::new_spanned(
-                    &input.data,
+                    &data,
                     format!("Cached krnlc version {krnlc_version} is not compatible!"),
                 ));
             }
             bincode2::deserialize_from::<_, KrnlcCache>(GzDecoder::new(&*cache_bytes))
-                .map_err(|e| Error::new_spanned(&input.data, e))
+                .map_err(|e| Error::new_spanned(&data, e))
         })
         .as_ref()
         .map_err(|e| e.clone())?;
@@ -1722,8 +1665,11 @@ fn __krnl_cache_impl(input: TokenStream2) -> Result<TokenStream2> {
         .iter()
         .filter(|kernel| {
             let name = &kernel.name;
-            name.split("::").any(|x| input.module == x)
-                && input.kernel == name.rsplit_once("::").unwrap().1
+            let mut iter = name.rsplit("::");
+            if input.kernel != iter.next().unwrap() {
+                return false;
+            }
+            iter.any(|x| input.module == x)
         })
         .map(|kernel| {
             let KernelDesc {
@@ -1739,17 +1685,12 @@ fn __krnl_cache_impl(input: TokenStream2) -> Result<TokenStream2> {
                 .iter()
                 .copied()
                 .map(|x| TokenTree::Literal(Literal::u32_unsuffixed(x)));
-            let safety = if *safe {
-                quote! { Safety::Safe }
-            } else {
-                quote! { Safety::Unsafe }
-            };
             quote! {
                 KernelDesc::from_args(KernelDescArgs {
                     name: #name,
                     spirv: &[#(#spirv),*],
                     features: #features,
-                    safety: #safety,
+                    safe: #safe,
                     spec_descs: &[#(#spec_descs),*],
                     slice_descs: &[#(#slice_descs),*],
                     push_descs: &[#(#push_descs),*],
@@ -1764,7 +1705,7 @@ fn __krnl_cache_impl(input: TokenStream2) -> Result<TokenStream2> {
                 kernel::__private::{find_kernel, KernelDesc, KernelDescArgs, Safety, SpecDesc, SliceDesc, PushDesc},
             };
 
-            find_kernel(module_path!(), &[#(#kernels),*])
+            find_kernel(std::module_path!(), &[#(#kernels),*])
         }
     };
     Ok(tokens)

@@ -620,7 +620,7 @@ pub mod __private {
         pub name: &'static str,
         pub spirv: &'static [u32],
         pub features: Features,
-        pub safety: Safety,
+        pub safe: bool,
         pub spec_descs: &'static [SpecDesc],
         pub slice_descs: &'static [SliceDesc],
         pub push_descs: &'static [PushDesc],
@@ -651,13 +651,35 @@ pub mod __private {
         None
     }
 
+    pub const fn validate_kernel(
+        kernel: Option<Option<KernelDesc>>,
+        safety: Safety,
+        spec_descs: &[SpecDesc],
+        slice_descs: &[SliceDesc],
+        push_descs: &[PushDesc],
+    ) -> Option<KernelDesc> {
+        if let Some(kernel) = kernel {
+            let success = if let Some(kernel) = kernel.as_ref() {
+                kernel.check_declaration(safety, spec_descs, slice_descs, push_descs)
+            } else {
+                false
+            };
+            if !success {
+                panic!("recompile with krnlc");
+            }
+            kernel
+        } else {
+            None
+        }
+    }
+
     impl KernelDesc {
         pub const fn from_args(args: KernelDescArgs) -> Self {
             let KernelDescArgs {
                 name,
                 spirv,
                 features,
-                safety,
+                safe,
                 spec_descs,
                 slice_descs,
                 push_descs,
@@ -666,13 +688,13 @@ pub mod __private {
                 name,
                 spirv,
                 features,
-                safe: safety.is_safe(),
+                safe,
                 spec_descs,
                 slice_descs,
                 push_descs,
             }
         }
-        pub const fn check_declaration(
+        const fn check_declaration(
             &self,
             safety: Safety,
             spec_descs: &[SpecDesc],
