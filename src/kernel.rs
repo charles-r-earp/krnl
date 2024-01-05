@@ -663,9 +663,9 @@ impl KernelDesc {
         if !debug_printf {
             strip_debug_printf(&mut module);
         }
-        //freeze_spec_constants(&mut module);
+        freeze_spec_constants(&mut module);
         reorder_push_constant_pointers(&mut module);
-        let spirv = module.assemble();
+        let spirv = module.assemble().into();
         Ok(Self {
             name,
             spirv,
@@ -718,18 +718,22 @@ fn strip_debug_printf(module: &mut rspirv::dr::Module) {
     }
 }
 
-/*
 // vulkano 0.34.1 false positive assert with spec constant ops where result type != constant type
 // https://docs.rs/crate/vulkano/0.34.1/source/src/shader/spirv/specialization.rs
 // evaluate_spec_constant_op constant_to_instruction
 // no way to bypass because it attempts to specialize the module even with an empty map
 // solution: replace OpSpecConstant with OpConstant and OpSpecConstantOp with the Op
 // and remove SpecId decorations
+// TODO: fixed in vulkano f2c68d7 https://github.com/vulkano-rs/vulkano/commit/f2c68d71c8e25a1b9ce35ab713a2960833c6115f
+// remove when published.
 #[cfg(feature = "device")]
 fn freeze_spec_constants(module: &mut rspirv::dr::Module) {
     use fxhash::FxHashMap;
     use half::f16;
-    use rspirv::{dr::Instruction, spirv::Op};
+    use rspirv::{
+        dr::Instruction,
+        spirv::{Decoration, Op},
+    };
 
     fn scalar_elem_from_operand(scalar_type: ScalarType, operand: &Operand) -> ScalarElem {
         match scalar_type {
@@ -861,7 +865,7 @@ fn freeze_spec_constants(module: &mut rspirv::dr::Module) {
         }
     }
 
-    /*module.annotations.retain(|inst| {
+    module.annotations.retain(|inst| {
         if inst.class.opcode == Op::Decorate {
             if let [_id, Operand::Decoration(Decoration::SpecId), _spec_id] =
                 inst.operands.as_slice()
@@ -870,12 +874,14 @@ fn freeze_spec_constants(module: &mut rspirv::dr::Module) {
             }
         }
         true
-    })*/
-}*/
+    })
+}
 
 // vulkano 0.34.1 false positive assert with PushConstant TypePointer not being a struct
 // https://docs.rs/vulkano/0.34.1/vulkano/shader/reflect/fn.entry_points.html
 // solution: move non struct PushConstant TypePointer instructions to end of types_global_variables
+// TODO: fixed in vulkano 84c6dbe https://github.com/vulkano-rs/vulkano/commit/84c6dbe18b26219cbbcc6ccac48f11beba86a27f
+// remove when published.
 #[cfg(feature = "device")]
 fn reorder_push_constant_pointers(module: &mut rspirv::dr::Module) {
     use rspirv::{

@@ -74,7 +74,7 @@ rspirv = { workspace = true, optional = true }
 fxhash = { workspace = true, optional = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-vulkano = { git = "https://github.com/vulkano-rs/vulkano", rev = "c9f3d69fc056a0ea1d322da1a36da45b12f77213", optional = true, default-features = false }
+vulkano = { version = "0.34.1", optional = true, default-features = false }
 ash = { version = "0.37.1", optional = true }
 crossbeam-channel = { version = "0.5.8", optional = true }   
 
