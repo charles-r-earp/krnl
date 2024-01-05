@@ -1305,7 +1305,7 @@ impl DeviceEngineKernel for Kernel {
                 &self.compute_pipeline,
                 groups,
                 buffers,
-                &self.desc.slice_descs,
+                self.desc.slice_descs,
                 &push_consts,
             )
         }

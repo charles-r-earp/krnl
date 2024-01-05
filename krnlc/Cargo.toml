@@ -38,6 +38,8 @@ fxhash = "0.2.1"
 semver = "1.0.17"
 serde_json = "1.0.96"
 bytemuck = "1.13.1"
+prettyplease = "0.1.25"
+walkdir = "2.4.0"
 
 
 [features]

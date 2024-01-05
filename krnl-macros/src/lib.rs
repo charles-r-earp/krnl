@@ -11,7 +11,7 @@ use proc_macro2::{Span as Span2, TokenStream as TokenStream2};
 use quote::{format_ident, quote, ToTokens};
 use semver::{Version, VersionReq};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
-use std::{hash::Hash, str::FromStr};
+use std::{str::FromStr, sync::OnceLock};
 use syn::{
     parse::{Parse, ParseStream},
     parse_macro_input,
@@ -118,8 +118,7 @@ pub fn module(attr: TokenStream, item: TokenStream) -> TokenStream {
     }
     if build {
         let source = item.tokens.to_string();
-        let hash = fxhash::hash64(&source);
-        let name_with_hash = format_ident!("{ident}_{hash:x}", ident = item.ident);
+        let ident = &item.ident;
         let tokens = item.tokens;
         item.tokens = quote! {
             #[doc(hidden)]
@@ -128,16 +127,18 @@ pub fn module(attr: TokenStream, item: TokenStream) -> TokenStream {
                 const __krnl_module_source: &'static str = #source;
             }
             #[cfg(not(krnlc))]
-            use #krnl::macros::__krnl_module;
-            #[cfg(not(krnlc))]
             include!(concat!(env!("CARGO_MANIFEST_DIR"), "/krnl-cache.rs"));
-            #[cfg(not(krnlc))]
-            __krnl_cache!(#name_with_hash);
-            #[cfg(krnlc)]
             #[doc(hidden)]
+            #[cfg(krnlc)]
             macro_rules! __krnl_kernel {
                 ($k:ident) => {
-                    &[]
+                    None
+                };
+            }
+            #[cfg(not(krnlc))]
+            macro_rules! __krnl_kernel {
+                ($k:ident) => {
+                    Some(__krnl_module!(#ident, $k))
                 };
             }
             #tokens
@@ -147,8 +148,8 @@ pub fn module(attr: TokenStream, item: TokenStream) -> TokenStream {
         item.tokens = quote! {
             #[doc(hidden)]
             macro_rules! __krnl_kernel {
-                ($k:path) => {
-                    &[]
+                ($k:ident) => {
+                    None
                 };
             }
             #tokens
@@ -712,7 +713,6 @@ impl KernelMeta {
             safe: self.unsafe_token.is_none(),
             ..KernelDesc::default()
         };
-        kernel_desc.hash = fxhash::hash64(&self.block.to_token_stream().to_string());
         for spec in self.spec_metas.iter() {
             kernel_desc.spec_descs.push(SpecDesc {
                 name: spec.ident.to_string(),
@@ -1006,33 +1006,36 @@ impl KernelMeta {
         }
         tokens
     }
-    fn check_spec_args(&self) -> Punctuated<TokenStream2, Comma> {
+    fn check_spec_descs(&self) -> Punctuated<TokenStream2, Comma> {
         self.spec_metas
             .iter()
             .map(|arg| {
                 let name = arg.ident.to_string();
-                let scalar_type = Ident::new(arg.ty.scalar_type.as_str(), Span2::call_site());
+                let scalar_type = arg.ty.scalar_type;
                 quote! {
-                    (#name, ScalarType::#scalar_type)
+                    SpecDesc {
+                        name: #name, scalar_type: #scalar_type
+                    }
                 }
             })
             .collect()
     }
-    fn check_buffer_args(&self) -> Punctuated<TokenStream2, Comma> {
+    fn check_slice_descs(&self) -> Punctuated<TokenStream2, Comma> {
         self.arg_metas
             .iter()
             .filter(|arg| arg.binding.is_some())
             .map(|arg| {
                 let name = arg.ident.to_string();
-                let scalar_type =
-                    Ident::new(arg.scalar_ty.scalar_type.as_str(), Span2::call_site());
-                let mutability = if arg.mutable {
-                    format_ident!("Mutable")
-                } else {
-                    format_ident!("Immutable")
-                };
+                let scalar_type = arg.scalar_ty.scalar_type;
+                let mutable = arg.mutable;
+                let item = arg.kind.is_item();
                 quote! {
-                    (#name, ScalarType::#scalar_type, Mutability::#mutability)
+                    SliceDesc {
+                        name: #name,
+                        scalar_type: #scalar_type,
+                        mutable: #mutable,
+                        item: #item,
+                    }
                 }
             })
             .collect()
@@ -1105,6 +1108,15 @@ impl ScalarType {
     }
 }
 
+impl ToTokens for ScalarType {
+    fn to_tokens(&self, tokens: &mut TokenStream2) {
+        let ident = format_ident!("{self:?}");
+        tokens.extend(quote! {
+            ScalarType::#ident
+        });
+    }
+}
+
 impl FromStr for ScalarType {
     type Err = ();
     fn from_str(input: &str) -> Result<Self, ()> {
@@ -1155,7 +1167,6 @@ impl<'de> Deserialize<'de> for ScalarType {
 #[derive(Default, Serialize, Deserialize, Debug)]
 struct KernelDesc {
     name: String,
-    hash: u64,
     spirv: Vec<u32>,
     features: Features,
     safe: bool,
@@ -1208,14 +1219,17 @@ impl KernelDesc {
             .map(|push| format_ident!("{}", push.name))
             .collect()
     }
-    fn check_push_args(&self) -> Punctuated<TokenStream2, Comma> {
+    fn check_push_descs(&self) -> Punctuated<TokenStream2, Comma> {
         self.push_descs
             .iter()
             .map(|push| {
                 let name = &push.name;
-                let scalar_type = Ident::new(push.scalar_type.as_str(), Span2::call_site());
+                let scalar_type = push.scalar_type;
                 quote! {
-                    (#name, ScalarType::#scalar_type)
+                    PushDesc {
+                        name: #name,
+                        scalar_type: #scalar_type,
+                    }
                 }
             })
             .collect()
@@ -1231,10 +1245,42 @@ struct Features {
     shader_float64: bool,
 }
 
+impl ToTokens for Features {
+    fn to_tokens(&self, tokens: &mut TokenStream2) {
+        let Self {
+            shader_int8,
+            shader_int16,
+            shader_int64,
+            shader_float16,
+            shader_float64,
+        } = self;
+        tokens.extend(quote! {
+            Features::empty()
+            .with_shader_int8(#shader_int8)
+            .with_shader_int16(#shader_int16)
+            .with_shader_int64(#shader_int64)
+            .with_shader_float16(#shader_float16)
+            .with_shader_float64(#shader_float64)
+        });
+    }
+}
+
 #[derive(Serialize, Deserialize, Debug)]
 struct SpecDesc {
     name: String,
     scalar_type: ScalarType,
+}
+
+impl ToTokens for SpecDesc {
+    fn to_tokens(&self, tokens: &mut TokenStream2) {
+        let Self { name, scalar_type } = self;
+        tokens.extend(quote! {
+            SpecDesc {
+                name: #name,
+                scalar_type: #scalar_type,
+            }
+        });
+    }
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -1245,10 +1291,41 @@ struct SliceDesc {
     item: bool,
 }
 
+impl ToTokens for SliceDesc {
+    fn to_tokens(&self, tokens: &mut TokenStream2) {
+        let Self {
+            name,
+            scalar_type,
+            mutable,
+            item,
+        } = self;
+        tokens.extend(quote! {
+            SliceDesc {
+                name: #name,
+                scalar_type: #scalar_type,
+                mutable: #mutable,
+                item: #item,
+            }
+        })
+    }
+}
+
 #[derive(Serialize, Deserialize, Debug)]
 struct PushDesc {
     name: String,
     scalar_type: ScalarType,
+}
+
+impl ToTokens for PushDesc {
+    fn to_tokens(&self, tokens: &mut TokenStream2) {
+        let Self { name, scalar_type } = self;
+        tokens.extend(quote! {
+            PushDesc {
+                name: #name,
+                scalar_type: #scalar_type,
+            }
+        })
+    }
 }
 
 fn kernel_impl(item_tokens: TokenStream2) -> Result<TokenStream2> {
@@ -1380,15 +1457,22 @@ fn kernel_impl(item_tokens: TokenStream2) -> Result<TokenStream2> {
         }
     };
     let host_tokens = {
-        let check_spec_args = kernel_meta.check_spec_args();
-        let check_buffer_args = kernel_meta.check_buffer_args();
-        let check_push_args = kernel_desc.check_push_args();
+        let check_spec_descs = kernel_meta.check_spec_descs();
+        let check_slice_descs = kernel_meta.check_slice_descs();
+        let check_push_descs = kernel_desc.check_push_descs();
         let dispatch_args = kernel_meta.dispatch_args();
         let dispatch_slice_args = kernel_meta.dispatch_slice_args();
         let dispatch_push_args = kernel_desc.dispatch_push_args();
-        let hash = kernel_desc.hash;
-        let kernel_name_with_hash = format_ident!("{ident}_{hash}");
         let safe = unsafe_token.is_none();
+        let safety = if safe {
+            quote! {
+                Safety::Safe
+            }
+        } else {
+            quote! {
+                Safety::Unsafe
+            }
+        };
         let host_array_length_checks = kernel_meta.host_array_length_checks();
         let kernel_builder_specialize_fn = if !kernel_desc.spec_descs.is_empty() {
             let spec_def_args = kernel_meta.spec_def_args();
@@ -1443,9 +1527,12 @@ fn kernel_impl(item_tokens: TokenStream2) -> Result<TokenStream2> {
                     buffer::{Slice, SliceMut},
                     device::Device,
                     scalar::ScalarType,
-                    kernel::__private::{Kernel as KernelBase, KernelBuilder as KernelBuilderBase, Mutability},
+                    kernel::__private::{Kernel as KernelBase, KernelBuilder as KernelBuilderBase, KernelDesc, SliceDesc, SpecDesc, PushDesc, Safety},
                     once_cell::sync::Lazy,
+                    anyhow::format_err,
                 };
+                #[cfg(not(krnlc))]
+                use __krnl::macros::__krnl_cache;
                 #[cfg(doc)]
                 use __krnl::{kernel, device::{DeviceInfo, error::DeviceLost}};
 
@@ -1465,29 +1552,34 @@ fn kernel_impl(item_tokens: TokenStream2) -> Result<TokenStream2> {
                 ///
                 /// **Errors**
                 /// - The kernel wasn't compiled (with `#[krnl(no_build)]` applied to `#[module]`).
-                /// - The kernel could not be deserialized. For stable releases, this is a bug, as `#[module]` should produce a compile error.
                 pub fn builder() -> Result<KernelBuilder> {
-                    let name = module_path!();
                     #[doc(hidden)]
-                    static BUILDER: Lazy<Result<KernelBuilderBase, String>> = Lazy::new(|| {
-                        let bytes = __krnl_kernel!(#kernel_name_with_hash);
-                        if bytes.is_empty() {
-                            return Err("Not compiled!".to_string());
-                        }
-                        let inner = KernelBuilderBase::from_bytes(bytes)
-                            .map_err(|e| e.to_string())?;
-                        assert_eq!(inner.hash(), #hash);
-                        assert_eq!(inner.safe(), #safe);
-                        inner.check_spec_consts(&[#check_spec_args]);
-                        inner.check_buffers(&[#check_buffer_args]);
-                        inner.check_push_consts(&[#check_push_args]);
-                        Ok(inner)
+                    static BUILDER: Lazy<Option<KernelBuilderBase>> = Lazy::new(|| {
+                        const DESC: Option<KernelDesc> = {
+                            let kernel: Option<Option<KernelDesc>> = __krnl_kernel!(#ident);
+                            if let Some(kernel) = kernel {
+                                let success = if let Some(kernel) = kernel.as_ref() {
+                                    kernel.check_declaration(#safety, &[#check_spec_descs], &[#check_slice_descs], &[#check_push_descs])
+                                } else {
+                                    false
+                                };
+                                if !success {
+                                    panic!("recompile with krnlc");
+                                }
+                                kernel
+                            } else {
+                                None
+                            }
+                        };
+                        DESC.as_ref().map(|desc| KernelBuilderBase::from_desc(desc.clone()))
                     });
-                    match &*BUILDER {
-                        Ok(inner) => {
-                            Ok(KernelBuilder { inner: inner.clone() })
-                        }
-                        Err(e) => Err(anyhow::Error::msg(e).context(format!("Kernel `{}`.", name))),
+                    if let Some(inner) = BUILDER.as_ref().cloned() {
+                        Ok(KernelBuilder {
+                            inner,
+                        })
+                    } else {
+                        let name = module_path!();
+                        Err(format_err!("Kernel `{name}` not compiled!"))
                     }
                 }
 
@@ -1571,94 +1663,118 @@ fn kernel_impl(item_tokens: TokenStream2) -> Result<TokenStream2> {
 
 #[doc(hidden)]
 #[proc_macro]
-pub fn __krnl_module(input: TokenStream) -> TokenStream {
-    use flate2::read::GzDecoder;
-
-    let version = env!("CARGO_PKG_VERSION");
-    let input = parse_macro_input!(input as KrnlcCacheInput);
-    let cache_bytes: Vec<_> = input
-        .data
-        .iter()
-        .flat_map(|ident| {
-            let string = ident.to_string();
-            let data = string.strip_prefix('x').expect("Expected x!");
-            hex::decode(data).expect("Expected cache as hex string!")
-        })
-        .collect();
-    let krnlc_version: String =
-        bincode2::deserialize_from(GzDecoder::new(&*cache_bytes)).expect("Expected krnlc version!");
-    let mut error = None;
-    if !krnlc_version_compatible(&krnlc_version, version) {
-        error.replace(format!(
-            "Cached krnlc version {krnlc_version} is not compatible!"
-        ));
+pub fn __krnl_cache(input: TokenStream) -> TokenStream {
+    match __krnl_cache_impl(input.into()) {
+        Ok(tokens) => tokens,
+        Err(err) => err.into_compile_error(),
     }
-    let mut macro_arms = Vec::new();
-    if error.is_none() {
-        match bincode2::deserialize_from::<_, KrnlcCache>(GzDecoder::new(&*cache_bytes)) {
-            Ok(cache) => {
-                let modules = &cache.modules;
-                let kernel_count = modules.iter().map(|(_, kernels)| kernels.len()).sum();
-                macro_arms.reserve(kernel_count);
-                let mut bytes = Vec::new();
-                if let Some((_, kernels)) = modules.iter().find(|(m, _)| input.module == m) {
-                    for (kernel_name_with_hash, kernel_desc) in kernels {
-                        let kernel_name_with_hash = format_ident!("{kernel_name_with_hash}");
-                        bytes.clear();
-                        bincode2::serialize_into(&mut bytes, kernel_desc).unwrap();
-                        let bytes = bytes.iter().map(|x| {
-                            use proc_macro2::{Literal, TokenTree};
-                            TokenTree::Literal(Literal::u8_unsuffixed(*x))
-                        });
-                        macro_arms.push(quote! {
-                            (#kernel_name_with_hash) => {
-                                &[#(#bytes),*]
-                            };
-                        });
-                    }
-                } else {
-                    error.replace("recompile with krnlc".to_string());
-                }
-            }
-            Err(e) => {
-                error.replace(format!(
-                    "Unable to deserialize cache: {e:?}, try recompiling with krnlc"
-                ));
-            }
-        }
-    }
-    let error = if let Some(error) = error {
-        quote! {
-            compile_error!(#error);
-        }
-    } else {
-        TokenStream2::new()
-    };
-    let tokens = quote! {
-        #[doc(hidden)]
-        macro_rules! __krnl_kernel {
-            #(#macro_arms)*
-            ($k:ident) => { &[] };
-        }
-        #error
-    };
-    tokens.into()
+    .into()
 }
 
 #[derive(Parse, Debug)]
-struct KrnlcCacheInput {
+struct KrnlCacheInput {
     module: Ident,
-    #[allow(unused)]
-    comma: Comma,
+    _comma: Comma,
+    kernel: Ident,
+    _comma2: Comma,
     #[call(Punctuated::parse_terminated)]
     data: Punctuated<Ident, Comma>,
+}
+
+fn __krnl_cache_impl(input: TokenStream2) -> Result<TokenStream2> {
+    use flate2::read::GzDecoder;
+    use proc_macro2::{Literal, TokenTree};
+
+    static CACHE: OnceLock<Result<KrnlcCache>> = OnceLock::new();
+
+    let input = syn::parse2::<KrnlCacheInput>(input)?;
+
+    let cache = CACHE
+        .get_or_init(|| {
+            let version = env!("CARGO_PKG_VERSION");
+
+            let cache_bytes: Vec<_> = input
+                .data
+                .iter()
+                .flat_map(|ident| {
+                    let string = ident.to_string();
+                    let data = string.strip_prefix('x').expect("Expected x!");
+                    hex::decode(data).expect("Expected cache as hex string!")
+                })
+                .collect();
+            let krnlc_version: String =
+                bincode2::deserialize_from(GzDecoder::new(&*cache_bytes))
+                    .map_err(|_| Error::new_spanned(&input.data, "Expected krnlc version!"))?;
+            if !krnlc_version_compatible(&krnlc_version, version) {
+                return Err(Error::new_spanned(
+                    &input.data,
+                    format!("Cached krnlc version {krnlc_version} is not compatible!"),
+                ));
+            }
+            bincode2::deserialize_from::<_, KrnlcCache>(GzDecoder::new(&*cache_bytes))
+                .map_err(|e| Error::new_spanned(&input.data, e))
+        })
+        .as_ref()
+        .map_err(|e| e.clone())?;
+
+    let kernels = cache
+        .kernels
+        .iter()
+        .filter(|kernel| {
+            let name = &kernel.name;
+            name.split("::").any(|x| input.module == x)
+                && input.kernel == name.rsplit_once("::").unwrap().1
+        })
+        .map(|kernel| {
+            let KernelDesc {
+                name,
+                spirv,
+                safe,
+                features,
+                spec_descs,
+                slice_descs,
+                push_descs,
+            } = kernel;
+            let spirv = spirv
+                .iter()
+                .copied()
+                .map(|x| TokenTree::Literal(Literal::u32_unsuffixed(x)));
+            let safety = if *safe {
+                quote! { Safety::Safe }
+            } else {
+                quote! { Safety::Unsafe }
+            };
+            quote! {
+                KernelDesc::from_args(KernelDescArgs {
+                    name: #name,
+                    spirv: &[#(#spirv),*],
+                    features: #features,
+                    safety: #safety,
+                    spec_descs: &[#(#spec_descs),*],
+                    slice_descs: &[#(#slice_descs),*],
+                    push_descs: &[#(#push_descs),*],
+                })
+            }
+        });
+    let tokens = quote! {
+        {
+            __krnl_module_arg!(use crate as __krnl);
+            use __krnl::{
+                device::Features,
+                kernel::__private::{find_kernel, KernelDesc, KernelDescArgs, Safety, SpecDesc, SliceDesc, PushDesc},
+            };
+
+            find_kernel(module_path!(), &[#(#kernels),*])
+        }
+    };
+    Ok(tokens)
 }
 
 #[derive(Deserialize)]
 struct KrnlcCache {
     #[allow(unused)]
     version: String,
-    modules: Vec<(String, Vec<(String, KernelDesc)>)>,
+    kernels: Vec<KernelDesc>,
 }
 
 fn krnlc_version_compatible(krnlc_version: &str, version: &str) -> bool {
