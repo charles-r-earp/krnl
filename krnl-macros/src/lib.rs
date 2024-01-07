@@ -127,18 +127,22 @@ pub fn module(attr: TokenStream, item: TokenStream) -> TokenStream {
                 const __krnl_module_source: &'static str = #source;
             }
             #[cfg(not(krnlc))]
+            macro_rules! __krnl_cache {
+                ($x:literal) => {
+                    macro_rules! __krnl_kernel {
+                        ($k:ident) => {
+                            Some(#krnl::macros::__krnl_cache!(#ident, $k, $x))
+                        };
+                    }
+                };
+            }
+            #[cfg(not(krnlc))]
             include!(concat!(env!("CARGO_MANIFEST_DIR"), "/krnl-cache.rs"));
             #[doc(hidden)]
             #[cfg(krnlc)]
             macro_rules! __krnl_kernel {
                 ($k:ident) => {
                     None
-                };
-            }
-            #[cfg(not(krnlc))]
-            macro_rules! __krnl_kernel {
-                ($k:ident) => {
-                    Some(__krnl_module!(#ident, $k))
                 };
             }
             #tokens
@@ -1611,55 +1615,48 @@ pub fn __krnl_cache(input: TokenStream) -> TokenStream {
     .into()
 }
 
+use syn::LitStr;
+
 #[derive(Parse)]
 struct KrnlCacheInput {
     module: Ident,
     _comma: Comma,
     kernel: Ident,
     _comma2: Comma,
-}
-
-#[derive(Parse)]
-struct KrnlCacheData {
-    #[call(Punctuated::parse_terminated)]
-    data: Punctuated<Ident, Comma>,
+    data: LitStr,
 }
 
 fn __krnl_cache_impl(input: TokenStream2) -> Result<TokenStream2> {
+    use base64::engine::{general_purpose::STANDARD as ENGINE, Engine};
     use flate2::read::GzDecoder;
     use proc_macro2::{Literal, TokenTree};
 
     static CACHE: OnceLock<Result<KrnlcCache>> = OnceLock::new();
 
-    let mut iter = input.into_iter();
-    let input = syn::parse2::<KrnlCacheInput>(iter.by_ref().take(4).collect())?;
+    let input = syn::parse2::<KrnlCacheInput>(input)?;
+    let span = input.module.span();
     let cache = CACHE
         .get_or_init(|| {
             let version = env!("CARGO_PKG_VERSION");
-            let data = syn::parse2::<KrnlCacheData>(iter.collect())?.data;
-            let cache_bytes: Vec<_> = data
-                .iter()
-                .flat_map(|ident| {
-                    let string = ident.to_string();
-                    let data = string.strip_prefix('x').expect("Expected x!");
-                    hex::decode(data).expect("Expected cache as hex string!")
-                })
-                .collect();
-            let krnlc_version: String =
-                bincode2::deserialize_from(GzDecoder::new(&*cache_bytes))
-                    .map_err(|_| Error::new_spanned(&data, "Expected krnlc version!"))?;
+            let mut cache_bytes = Vec::new();
+            for chunk in input.data.value().split('\n') {
+                ENGINE
+                    .decode_vec(chunk, &mut cache_bytes)
+                    .map_err(|e| Error::new(span, e))?;
+            }
+            let krnlc_version: String = bincode2::deserialize_from(GzDecoder::new(&*cache_bytes))
+                .map_err(|_| Error::new(span, "Expected krnlc version!"))?;
             if !krnlc_version_compatible(&krnlc_version, version) {
-                return Err(Error::new_spanned(
-                    &data,
+                return Err(Error::new(
+                    span,
                     format!("Cached krnlc version {krnlc_version} is not compatible!"),
                 ));
             }
             bincode2::deserialize_from::<_, KrnlcCache>(GzDecoder::new(&*cache_bytes))
-                .map_err(|e| Error::new_spanned(&data, e))
+                .map_err(|e| Error::new(span, e))
         })
         .as_ref()
-        .map_err(|e| e.clone())?;
-
+        .map_err(Clone::clone)?;
     let kernels = cache
         .kernels
         .iter()
