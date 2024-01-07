@@ -565,7 +565,7 @@ fn strip_debug_printf(module: &mut rspirv::dr::Module) {
             true
         }
     });
-    module.debug_string_source.clear();
+    //module.debug_string_source.clear();
     if ext_insts.is_empty() {
         return;
     }
@@ -578,7 +578,7 @@ fn strip_debug_printf(module: &mut rspirv::dr::Module) {
                         return false;
                     }
                 }
-                true
+                true // !matches!(inst.class.opcode, Op::Line | Op::NoLine)
             })
         }
     }

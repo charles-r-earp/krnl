@@ -1,7 +1,7 @@
 use super::{
     error::{DeviceIndexOutOfRange, DeviceUnavailable, OutOfDeviceMemory},
     DeviceEngine, DeviceEngineBuffer, DeviceEngineKernel, DeviceId, DeviceInfo, DeviceLost,
-    DeviceOptions, Features, KernelDesc, KernelKey, SliceDesc,
+    DeviceOptions, Features, KernelDesc, KernelKey,
 };
 
 use anyhow::{Error, Result};
@@ -33,7 +33,10 @@ use vulkano::{
         Device, DeviceCreateInfo, DeviceOwned, Queue, QueueCreateInfo, QueueFlags, QueueGuard,
     },
     instance::{
-        debug::{DebugUtilsMessageSeverity, DebugUtilsMessageType, DebugUtilsMessengerCreateInfo},
+        debug::{
+            DebugUtilsMessageSeverity, DebugUtilsMessageType, DebugUtilsMessenger,
+            DebugUtilsMessengerCreateInfo,
+        },
         Instance, InstanceCreateInfo, InstanceExtensions, Version,
     },
     library::VulkanLibrary,
@@ -79,10 +82,10 @@ impl Engine {
     }
     unsafe fn compute(
         &self,
+        kernel_desc: &Arc<KernelDesc>,
         pipeline: &Arc<ComputePipeline>,
         groups: u32,
         buffers: &[Arc<DeviceBuffer>],
-        slice_descs: &[SliceDesc],
         push_consts: &[u8],
     ) -> Result<()> {
         let mut frame_outer = self.frame_outer.lock();
@@ -102,12 +105,13 @@ impl Engine {
         }
         unsafe {
             frame_outer.compute(
+                kernel_desc,
                 &self.epoch,
                 pipeline,
                 groups,
                 buffers,
-                slice_descs,
                 push_consts,
+                self.info.debug_printf,
             )
         }
     }
@@ -305,7 +309,7 @@ impl DeviceEngine for Engine {
             features,
             debug_printf,
         });
-        let mut worker = Worker::new(queue.clone())?;
+        let mut worker = Worker::new(queue.clone(), index)?;
         let semaphore = worker.semaphore.clone();
         let epoch = AtomicU64::default();
         let pending = worker.pending.clone();
@@ -513,12 +517,13 @@ impl FrameOuter {
     }
     unsafe fn compute(
         &mut self,
+        kernel_desc: &Arc<KernelDesc>,
         epoch: &AtomicU64,
         pipeline: &Arc<ComputePipeline>,
         groups: u32,
         buffers: &[Arc<DeviceBuffer>],
-        slice_descs: &[SliceDesc],
         push_consts: &[u8],
+        debug_printf: bool,
     ) -> Result<()> {
         let new_descriptors: u32 = buffers.len().try_into().unwrap();
         let mut frame = self.frame.lock();
@@ -532,7 +537,14 @@ impl FrameOuter {
             self.empty.store(false, Ordering::SeqCst);
         }
         unsafe {
-            frame.compute(pipeline, groups, buffers, slice_descs, push_consts);
+            frame.compute(
+                kernel_desc,
+                pipeline,
+                groups,
+                buffers,
+                push_consts,
+                debug_printf,
+            );
         }
         self.kernels += 1;
         self.descriptors += new_descriptors;
@@ -548,6 +560,7 @@ struct Frame {
     descriptor_pool: DescriptorPool,
     buffers: Vec<Subbuffer<[u8]>>,
     epoch: u64,
+    debug_kernel_desc: Option<Arc<KernelDesc>>,
 }
 
 impl Frame {
@@ -594,6 +607,7 @@ impl Frame {
             descriptor_pool,
             buffers,
             epoch,
+            debug_kernel_desc: None,
         })
     }
     unsafe fn begin(&mut self) -> Result<()> {
@@ -636,11 +650,12 @@ impl Frame {
     }
     unsafe fn compute(
         &mut self,
+        kernel_desc: &Arc<KernelDesc>,
         pipeline: &Arc<ComputePipeline>,
         groups: u32,
         buffers: &[Arc<DeviceBuffer>],
-        slice_descs: &[crate::kernel::SliceDesc],
         push_consts: &[u8],
+        debug_printf: bool,
     ) {
         let builder = self.command_buffer_builder.as_mut().unwrap();
         unsafe {
@@ -690,14 +705,18 @@ impl Frame {
         }
         self.buffers
             .extend(buffers.iter().map(|x| x.inner.as_ref().unwrap().clone()));
-        for (buffer, slice_desc) in buffers.iter().zip(slice_descs) {
+        for (buffer, slice_desc) in buffers.iter().zip(kernel_desc.slice_descs.iter()) {
             if slice_desc.mutable {
                 buffer.epoch.store(self.epoch, Ordering::SeqCst);
             }
         }
+        if debug_printf {
+            self.debug_kernel_desc.replace(kernel_desc.clone());
+        }
     }
     unsafe fn finish(&mut self) {
         self.buffers.clear();
+        self.debug_kernel_desc.take();
     }
 }
 
@@ -712,6 +731,7 @@ impl Drop for Frame {
 
 struct Worker {
     queue: Arc<Queue>,
+    index: usize,
     semaphore: Arc<Semaphore>,
     empty: Arc<AtomicBool>,
     pending: Arc<AtomicU64>,
@@ -722,7 +742,7 @@ struct Worker {
 }
 
 impl Worker {
-    fn new(queue: Arc<Queue>) -> Result<Self> {
+    fn new(queue: Arc<Queue>, index: usize) -> Result<Self> {
         let semaphore = Arc::new(new_semaphore(queue.device())?);
         let empty = Arc::new(AtomicBool::new(true));
         let pending = Arc::new(AtomicU64::default());
@@ -734,6 +754,7 @@ impl Worker {
         let worker_exited = Arc::new(AtomicBool::default());
         Ok(Self {
             queue,
+            index,
             semaphore,
             empty,
             pending,
@@ -744,6 +765,10 @@ impl Worker {
         })
     }
     fn run(&mut self) {
+        let id = DeviceId {
+            index: self.index,
+            handle: self.queue.device().handle().as_raw().try_into().unwrap(),
+        };
         loop {
             while self.empty.load(Ordering::SeqCst) {
                 if self.engine_exited.load(Ordering::SeqCst) {
@@ -766,6 +791,35 @@ impl Worker {
                 .unwrap()
                 .build()
                 .unwrap();
+            let _messenger = if let Some(kernel_desc) = self.pending_frame.debug_kernel_desc.take()
+            {
+                Some(
+                    unsafe {
+                        DebugUtilsMessenger::new(
+                            self.queue.device().instance().clone(),
+                            DebugUtilsMessengerCreateInfo {
+                                message_severity: DebugUtilsMessageSeverity::INFO,
+                                message_type: DebugUtilsMessageType::VALIDATION,
+                                ..DebugUtilsMessengerCreateInfo::user_callback(Arc::new(
+                                    move |msg| {
+                                        if let Some(layer_prefix) = msg.layer_prefix.as_ref() {
+                                            if layer_prefix.contains("DEBUG-PRINTF") {
+                                                eprintln!(
+                                                    "[{id:?} {}] {}",
+                                                    kernel_desc.name, msg.description
+                                                );
+                                            }
+                                        }
+                                    },
+                                ))
+                            },
+                        )
+                    }
+                    .unwrap(),
+                )
+            } else {
+                None
+            };
             self.queue.with(|mut guard| unsafe {
                 queue_submit(
                     &self.queue,
@@ -1303,10 +1357,10 @@ impl DeviceEngineKernel for Kernel {
         }
         unsafe {
             engine.compute(
+                &self.desc,
                 &self.compute_pipeline,
                 groups,
                 buffers,
-                self.desc.slice_descs,
                 &push_consts,
             )
         }
