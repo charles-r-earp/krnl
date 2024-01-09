@@ -34,4 +34,5 @@ rustversion.workspace = true
 fxhash.workspace = true
 semver = "1.0.17"
 zero85 = "0.2.0"
+bytemuck.workspace = true
 

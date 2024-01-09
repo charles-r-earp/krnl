@@ -1515,17 +1515,19 @@ fn kernel_impl(item_tokens: TokenStream2) -> Result<TokenStream2> {
                 /// **Errors**
                 /// - The kernel wasn't compiled (with `#[krnl(no_build)]` applied to `#[module]`).
                 pub fn builder() -> Result<KernelBuilder> {
-                    #[doc(hidden)]
-                    static BUILDER: Lazy<Option<KernelBuilderBase>> = Lazy::new(|| {
+                    static BUILDER: Lazy<Result<KernelBuilderBase, String>> = Lazy::new(|| {
                         const DESC: Option<KernelDesc> = validate_kernel(__krnl_kernel!(#ident), #safety, &[#(#spec_descs),*], &[#(#slice_descs),*], &[#(#push_descs),*]);
-                        DESC.as_ref().map(|desc| KernelBuilderBase::from_desc(desc.clone()))
+                        if let Some(desc) = DESC.as_ref() {
+                            KernelBuilderBase::from_desc(desc.clone())
+                        } else {
+                            Err(format!("Kernel `{}` not compiled!", std::module_path!()))
+                        }
                     });
-                    if let Some(inner) = BUILDER.as_ref().cloned() {
-                        Ok(KernelBuilder {
-                            inner,
-                        })
-                    } else {
-                        Err(format_err!("Kernel `{}` not compiled!", std::module_path!()))
+                    match BUILDER.as_ref() {
+                        Ok(inner) => Ok(KernelBuilder {
+                            inner: inner.clone(),
+                        }),
+                        Err(err) => Err(format_err!("{err}")),
                     }
                 }
 
@@ -1629,8 +1631,13 @@ struct KrnlCacheInput {
 }
 
 fn __krnl_cache_impl(input: TokenStream2) -> Result<TokenStream2> {
-    use flate2::read::GzDecoder;
-    use proc_macro2::{Literal, TokenTree};
+    use flate2::{
+        read::{GzDecoder, GzEncoder},
+        Compression,
+    };
+    use std::io::Read;
+    use syn::LitByteStr;
+    //use proc_macro2::{Literal, TokenTree};
     use zero85::FromZ85;
 
     static CACHE: OnceLock<Result<KrnlcCache>> = OnceLock::new();
@@ -1682,14 +1689,15 @@ fn __krnl_cache_impl(input: TokenStream2) -> Result<TokenStream2> {
                 slice_descs,
                 push_descs,
             } = kernel;
-            let spirv = spirv
-                .iter()
-                .copied()
-                .map(|x| TokenTree::Literal(Literal::u32_unsuffixed(x)));
+            let mut bytes = Vec::new();
+            GzEncoder::new(bytemuck::cast_slice(spirv), Compression::best())
+                .read_to_end(&mut bytes)
+                .unwrap();
+            let spirv = LitByteStr::new(&bytes, span);
             quote! {
                 KernelDesc::from_args(KernelDescArgs {
                     name: #name,
-                    spirv: &[#(#spirv),*],
+                    spirv: #spirv,
                     features: #features,
                     safe: #safe,
                     spec_descs: &[#(#spec_descs),*],

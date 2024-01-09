@@ -442,7 +442,7 @@ use std::{collections::HashMap, hash::Hash};
 #[derive(Clone, Debug)]
 pub(crate) struct KernelDesc {
     pub(crate) name: Cow<'static, str>,
-    pub(crate) spirv: Cow<'static, [u32]>,
+    pub(crate) spirv: Vec<u32>,
     features: Features,
     pub(crate) threads: u32,
     spec_descs: &'static [SpecDesc],
@@ -607,7 +607,7 @@ pub mod __private {
     #[derive(Clone, Copy)]
     pub struct KernelDesc {
         name: &'static str,
-        spirv: &'static [u32],
+        spirv: &'static [u8],
         features: Features,
         safe: bool,
         spec_descs: &'static [SpecDesc],
@@ -618,7 +618,7 @@ pub mod __private {
     #[derive(Clone, Copy)]
     pub struct KernelDescArgs {
         pub name: &'static str,
-        pub spirv: &'static [u32],
+        pub spirv: &'static [u8],
         pub features: Features,
         pub safe: bool,
         pub spec_descs: &'static [SpecDesc],
@@ -803,6 +803,21 @@ pub mod __private {
         }
     }
 
+    fn decode_spirv(name: &str, input: &[u8]) -> Result<Vec<u32>, String> {
+        use flate2::read::GzDecoder;
+        use std::io::Read;
+
+        let mut output = Vec::new();
+        GzDecoder::new(bytemuck::cast_slice(input))
+            .read_to_end(&mut output)
+            .map_err(|e| format!("Kernel `{name}` failed to decode! {e}"))?;
+        let output = output
+            .chunks_exact(4)
+            .map(|x| u32::from_ne_bytes(x.try_into().unwrap()))
+            .collect();
+        Ok(output)
+    }
+
     #[cfg_attr(not(feature = "device"), allow(dead_code))]
     #[derive(Clone)]
     pub struct KernelBuilder {
@@ -813,7 +828,7 @@ pub mod __private {
     }
 
     impl KernelBuilder {
-        pub fn from_desc(desc: KernelDesc) -> Self {
+        pub fn from_desc(desc: KernelDesc) -> Result<Self, String> {
             let KernelDesc {
                 name,
                 spirv,
@@ -823,21 +838,22 @@ pub mod __private {
                 slice_descs,
                 push_descs,
             } = desc;
+            let spirv = decode_spirv(name, spirv)?;
             let desc = super::KernelDesc {
                 name: name.into(),
-                spirv: spirv.into(),
+                spirv,
                 features,
                 threads: 0,
                 spec_descs,
                 slice_descs,
                 push_descs,
             };
-            Self {
+            Ok(Self {
                 id: name.as_ptr() as usize,
                 desc: desc.into(),
                 spec_consts: Vec::new(),
                 threads: None,
-            }
+            })
         }
         pub fn with_threads(self, threads: u32) -> Self {
             Self {
