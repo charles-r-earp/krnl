@@ -40,7 +40,7 @@ serde_json = "1.0.96"
 bytemuck = "1.13.1"
 prettyplease = "0.1.25"
 walkdir = "2.4.0"
-base64 = "0.21.5"
+zero85 = "0.2.0"
 
 [features]
 default = ["use-compiled-tools"]

@@ -1,3 +1,5 @@
+#![forbid(unsafe_code)]
+
 /*!
 # **krnl-macros**
 Macros for [**krnl**](https://docs.rs/krnl).
@@ -1627,9 +1629,9 @@ struct KrnlCacheInput {
 }
 
 fn __krnl_cache_impl(input: TokenStream2) -> Result<TokenStream2> {
-    use base64::engine::{general_purpose::STANDARD as ENGINE, Engine};
     use flate2::read::GzDecoder;
     use proc_macro2::{Literal, TokenTree};
+    use zero85::FromZ85;
 
     static CACHE: OnceLock<Result<KrnlcCache>> = OnceLock::new();
 
@@ -1638,21 +1640,23 @@ fn __krnl_cache_impl(input: TokenStream2) -> Result<TokenStream2> {
     let cache = CACHE
         .get_or_init(|| {
             let version = env!("CARGO_PKG_VERSION");
-            let mut cache_bytes = Vec::new();
-            for chunk in input.data.value().split('\n') {
-                ENGINE
-                    .decode_vec(chunk, &mut cache_bytes)
-                    .map_err(|e| Error::new(span, e))?;
+            let data = input.data.value();
+            let decoded_len = data.split_ascii_whitespace().map(|x| x.len() * 4 / 5).sum();
+            let mut bytes = Vec::with_capacity(decoded_len);
+            for data in data.split_ascii_whitespace() {
+                let decoded = data.from_z85().map_err(|e| Error::new(span, e))?;
+                bytes.extend_from_slice(&decoded);
             }
-            let krnlc_version: String = bincode2::deserialize_from(GzDecoder::new(&*cache_bytes))
-                .map_err(|_| Error::new(span, "Expected krnlc version!"))?;
+            let krnlc_version: String =
+                bincode2::deserialize_from(GzDecoder::new(bytes.as_slice()))
+                    .map_err(|_| Error::new(span, "Expected krnlc version!"))?;
             if !krnlc_version_compatible(&krnlc_version, version) {
                 return Err(Error::new(
                     span,
                     format!("Cached krnlc version {krnlc_version} is not compatible!"),
                 ));
             }
-            bincode2::deserialize_from::<_, KrnlcCache>(GzDecoder::new(&*cache_bytes))
+            bincode2::deserialize_from::<_, KrnlcCache>(GzDecoder::new(bytes.as_slice()))
                 .map_err(|e| Error::new(span, e))
         })
         .as_ref()
