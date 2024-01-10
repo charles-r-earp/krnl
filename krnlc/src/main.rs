@@ -440,17 +440,11 @@ fn cache(
     let mut bytes = Vec::new();
     let encoder = GzEncoder::new(&mut bytes, Compression::best());
     bincode2::serialize_into(encoder, &cache)?;
-    let mut info = String::new();
-    if !env!("CARGO_PKG_VERSION_PRE").is_empty() {
-        info.push(' ');
-        info.push_str(env!("VERGEN_GIT_SHA"));
-    }
-    if debug_printf {
-        info.push_str(" debug-printf");
-    }
-    if !info.is_empty() {
-        info = format!("/*{info} */\n");
-    }
+    let info = if debug_printf {
+        "/* debug-printf */\n"
+    } else {
+        ""
+    };
     let prefix = format!("{info}__krnl_cache!({version:?}, \"\n");
     let suffix = "\");";
     let mut chunks = bytes.chunks_exact(800);
