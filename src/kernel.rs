@@ -528,7 +528,6 @@ impl KernelDesc {
                 }
             }
         }
-        module.debug_names.clear();
         if !debug_printf {
             strip_debug_printf(&mut module);
         }
@@ -547,6 +546,7 @@ impl KernelDesc {
 fn strip_debug_printf(module: &mut rspirv::dr::Module) {
     use rspirv::spirv::Op;
     use std::collections::HashSet;
+
     module.extensions.retain(|inst| {
         inst.operands.first().unwrap().unwrap_literal_string() != "SPV_KHR_non_semantic_info"
     });
@@ -565,10 +565,10 @@ fn strip_debug_printf(module: &mut rspirv::dr::Module) {
             true
         }
     });
-    //module.debug_string_source.clear();
     if ext_insts.is_empty() {
         return;
     }
+    module.debug_string_source.clear();
     for func in module.functions.iter_mut() {
         for block in func.blocks.iter_mut() {
             block.instructions.retain(|inst| {
@@ -578,7 +578,7 @@ fn strip_debug_printf(module: &mut rspirv::dr::Module) {
                         return false;
                     }
                 }
-                true // !matches!(inst.class.opcode, Op::Line | Op::NoLine)
+                !matches!(inst.class.opcode, Op::Line | Op::NoLine)
             })
         }
     }
