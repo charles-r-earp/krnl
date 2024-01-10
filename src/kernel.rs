@@ -532,7 +532,7 @@ impl KernelDesc {
         if !debug_printf {
             strip_debug_printf(&mut module);
         }
-        let spirv = module.assemble().into();
+        let spirv = module.assemble();
         Ok(Self {
             name,
             spirv,
