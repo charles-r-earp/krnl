@@ -65,4 +65,11 @@ fn main() {
         fs::create_dir_all(target_dir).unwrap();
         fs::write(rustc_codegen_spirv_path, []).unwrap();
     }
+    {
+        let short = true;
+        vergen::EmitBuilder::builder()
+            .git_sha(short)
+            .emit()
+            .unwrap();
+    }
 }
