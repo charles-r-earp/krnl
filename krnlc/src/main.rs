@@ -446,7 +446,7 @@ fn cache(
         info.push_str(env!("VERGEN_GIT_SHA"));
     }
     if debug_printf {
-        info.push_str(" debug_printf");
+        info.push_str(" debug-printf");
     }
     if !info.is_empty() {
         info = format!("/*{info} */\n");
