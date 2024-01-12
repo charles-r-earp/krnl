@@ -741,13 +741,16 @@ extern crate krnl_core;
     }
     visit_module(src_dir, "", &tree, module_sources, &mut files)?;
     fn cleanup_files(dir: &Path, keep: &FxHashSet<PathBuf>) -> Result<()> {
+        assert!(dir.to_string_lossy().contains("/krnlc/crates/"));
         for entry in walkdir::WalkDir::new(dir) {
             let entry = entry?;
-            if !keep.contains(entry.path()) {
+            let entry_path = entry.path();
+            assert!(entry_path.starts_with(dir));
+            if !keep.contains(entry_path) {
                 if entry.file_type().is_dir() {
-                    std::fs::remove_dir(entry.path())?;
+                    std::fs::remove_dir_all(entry_path)?;
                 } else {
-                    std::fs::remove_file(entry.path())?;
+                    std::fs::remove_file(entry_path)?;
                 }
             }
         }
