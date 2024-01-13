@@ -2,7 +2,9 @@
 use bytemuck::Pod;
 #[cfg(not(target_arch = "spirv"))]
 use derive_more::Display;
-use dry::{macro_for, macro_wrap};
+use dry::macro_for;
+#[cfg(not(target_arch = "spirv"))]
+use dry::macro_wrap;
 use half::{bf16, f16};
 use num_traits::{AsPrimitive, FromPrimitive, NumAssign, NumCast};
 use paste::paste;
@@ -374,8 +376,18 @@ macro_for!($T in [u8, i8, u16, i16, f16, bf16, u32, i32, f32, u64, i64, f64] {
     }
 });
 
-trait AsScalar<T>: Scalar {
+trait AsScalar<T>: Sized {
     fn as_scalar(self) -> T;
+}
+
+// For spirv arch, use min_specialization to strip branches before
+// hitting rust-gpu backend, reducing compile times.
+#[cfg(target_arch = "spirv")]
+impl<X, Y> AsScalar<Y> for X {
+    #[rustfmt::skip]
+    default fn as_scalar(self) -> Y {
+        unreachable!()
+    }
 }
 
 macro_for!($X in [u8, i8, u16, i16, u32, i32, f32, u64, i64, f64] {
@@ -488,45 +500,18 @@ macro_for!($X in [u8, i8, u16, i16, f16, bf16, u32, i32, f32, u64, i64, f64] {
             fn scalar_elem(self) -> ScalarElem {
                 ScalarElem::[<$X:upper>](self)
             }
+            #[cfg(not(target_arch = "spirv"))]
             fn cast<T: Scalar>(self) -> T {
                 macro_wrap!(match T::SCALAR_TYPE {
                     macro_for!($Y in [u8, i8, u16, i16, f16, bf16, u32, i32, f32, u64, i64, f64] {
-                        $Y::SCALAR_TYPE => {
-                            let y: $Y = self.as_scalar();
-                            #[cfg(not(target_arch = "spirv"))] {
-                                bytemuck::cast(y)
-                            }
-                            #[cfg(target_arch = "spirv")] {
-                                ScalarConvert::<T>::scalar_convert(y)
-                            }
-                        }
+                        $Y::SCALAR_TYPE => bytemuck::cast(AsScalar::<$Y>::as_scalar(self)),
                     })
                 })
             }
-        }
-    }
-});
-
-// For spirv arch, use min_specialization to strip branches before
-// hitting rust-gpu backend, reducing compile times.
-#[cfg(target_arch = "spirv")]
-trait ScalarConvert<T>: Sized {
-    fn scalar_convert(self) -> T;
-}
-
-#[cfg(target_arch = "spirv")]
-impl<X, Y> ScalarConvert<Y> for X {
-    #[rustfmt::skip]
-    default fn scalar_convert(self) -> Y {
-        unreachable!()
-    }
-}
-
-#[cfg(target_arch = "spirv")]
-macro_for!($T in [u8, i8, u16, i16, f16, bf16, u32, i32, f32, u64, i64, f64] {
-    impl ScalarConvert<$T> for $T {
-        fn scalar_convert(self) -> $T {
-            self
+            #[cfg(target_arch = "spirv")]
+            fn cast<T: Scalar>(self) -> T {
+                AsScalar::<T>::as_scalar(self)
+            }
         }
     }
 });
