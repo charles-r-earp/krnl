@@ -2,9 +2,7 @@
 use bytemuck::Pod;
 #[cfg(not(target_arch = "spirv"))]
 use derive_more::Display;
-use dry::macro_for;
-#[cfg(not(target_arch = "spirv"))]
-use dry::macro_wrap;
+use dry::{macro_for, macro_wrap};
 use half::{bf16, f16};
 use num_traits::{AsPrimitive, FromPrimitive, NumAssign, NumCast};
 use paste::paste;
@@ -440,6 +438,8 @@ pub trait Scalar:
     + Sealed
 {
     /// The [`ScalarType`] of the scalar.
+    const SCALAR_TYPE: ScalarType;
+    /// The [`ScalarType`] of the scalar.
     fn scalar_type() -> ScalarType;
     /// Casts `self as T`.
     fn cast<T: Scalar>(self) -> T;
@@ -466,6 +466,8 @@ pub trait Scalar:
     + Sealed
 {
     /// The [`ScalarType`] of the scalar.
+    const SCALAR_TYPE: ScalarType;
+    /// The [`ScalarType`] of the scalar.
     fn scalar_type() -> ScalarType;
     /// Converts to [`ScalarElem`].
     fn scalar_elem(self) -> ScalarElem;
@@ -476,9 +478,10 @@ pub trait Scalar:
 macro_for!($X in [u8, i8, u16, i16, f16, bf16, u32, i32, f32, u64, i64, f64] {
     paste! {
         impl Scalar for $X {
+            const SCALAR_TYPE: ScalarType = ScalarType::[<$X:upper>];
             #[inline(always)]
             fn scalar_type() -> ScalarType {
-                ScalarType::[<$X:upper>]
+                Self::SCALAR_TYPE
             }
             #[cfg(not(target_arch = "spirv"))]
             #[inline(always)]
@@ -486,14 +489,44 @@ macro_for!($X in [u8, i8, u16, i16, f16, bf16, u32, i32, f32, u64, i64, f64] {
                 ScalarElem::[<$X:upper>](self)
             }
             fn cast<T: Scalar>(self) -> T {
-                macro_for!($Y in [u8, i8, u16, i16, f16, bf16, u32, i32, f32, u64, i64, f64] {
-                    if T::scalar_type() == $Y::scalar_type() {
-                        let y: $Y = self.as_scalar();
-                        return NumCast::from(y).unwrap();
-                    }
-                });
-                unreachable!()
+                macro_wrap!(match T::SCALAR_TYPE {
+                    macro_for!($Y in [u8, i8, u16, i16, f16, bf16, u32, i32, f32, u64, i64, f64] {
+                        $Y::SCALAR_TYPE => {
+                            let y: $Y = self.as_scalar();
+                            #[cfg(not(target_arch = "spirv"))] {
+                                bytemuck::cast(y)
+                            }
+                            #[cfg(target_arch = "spirv")] {
+                                ScalarConvert::<T>::scalar_convert(y)
+                            }
+                        }
+                    })
+                })
             }
+        }
+    }
+});
+
+// For spirv arch, use min_specialization to strip branches before
+// hitting rust-gpu backend, reducing compile times.
+#[cfg(target_arch = "spirv")]
+trait ScalarConvert<T>: Sized {
+    fn scalar_convert(self) -> T;
+}
+
+#[cfg(target_arch = "spirv")]
+impl<X, Y> ScalarConvert<Y> for X {
+    #[rustfmt::skip]
+    default fn scalar_convert(self) -> Y {
+        unreachable!()
+    }
+}
+
+#[cfg(target_arch = "spirv")]
+macro_for!($T in [u8, i8, u16, i16, f16, bf16, u32, i32, f32, u64, i64, f64] {
+    impl ScalarConvert<$T> for $T {
+        fn scalar_convert(self) -> $T {
+            self
         }
     }
 });
