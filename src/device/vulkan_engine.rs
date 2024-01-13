@@ -181,6 +181,7 @@ impl DeviceEngine for Engine {
                 ext_debug_utils: true,
                 ..Default::default()
             },
+            enumerate_portability: true,
             ..InstanceCreateInfo::application_from_cargo_toml()
         };
         let instance = unsafe {
