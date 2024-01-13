@@ -367,7 +367,7 @@ macro_for!($T in [u8, i8, u16, i16, f16, bf16, u32, i32, f32, u64, i64, f64] {
     impl TryFrom<ScalarElem> for $T {
         type Error = ();
         fn try_from(elem: ScalarElem) -> Result<Self, ()> {
-            if Self::scalar_type() == elem.scalar_type() {
+            if Self::SCALAR_TYPE == elem.scalar_type() {
                 Ok(elem.cast())
             } else {
                 Err(())
@@ -451,7 +451,8 @@ pub trait Scalar:
 {
     /// The [`ScalarType`] of the scalar.
     const SCALAR_TYPE: ScalarType;
-    /// The [`ScalarType`] of the scalar.
+    #[doc(hidden)]
+    #[deprecated(since = "0.0.4", note = "replaced by Scalar::SCALAR_TYPE")]
     fn scalar_type() -> ScalarType;
     /// Casts `self as T`.
     fn cast<T: Scalar>(self) -> T;
@@ -479,7 +480,8 @@ pub trait Scalar:
 {
     /// The [`ScalarType`] of the scalar.
     const SCALAR_TYPE: ScalarType;
-    /// The [`ScalarType`] of the scalar.
+    #[doc(hidden)]
+    #[deprecated(since = "0.0.4", note = "replaced by Scalar::SCALAR_TYPE")]
     fn scalar_type() -> ScalarType;
     /// Converts to [`ScalarElem`].
     fn scalar_elem(self) -> ScalarElem;
