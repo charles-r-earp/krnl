@@ -621,8 +621,7 @@ crate-type = ["dylib"]
     std::fs::create_dir_all(&kernels_dir)?;
     let mut builder = SpirvBuilder::new(&device_crate_dir, "spirv-unknown-vulkan1.2")
         .spirv_metadata(SpirvMetadata::NameVariables)
-        .print_metadata(MetadataPrintout::None)
-        .deny_warnings(true);
+        .print_metadata(MetadataPrintout::None);
     if debug_printf {
         builder = builder
             .extension("SPV_KHR_non_semantic_info")
