@@ -740,7 +740,13 @@ extern crate krnl_core;
     }
     visit_module(src_dir, "", &tree, module_sources, &mut files)?;
     fn cleanup_files(dir: &Path, keep: &FxHashSet<PathBuf>) -> Result<()> {
-        assert!(dir.to_string_lossy().contains("/krnlc/crates/"));
+        assert!(dir.to_string_lossy().contains(
+            format!(
+                "{sep}krnlc{sep}crates{sep}",
+                sep = std::path::MAIN_SEPARATOR
+            )
+            .as_str()
+        ));
         for entry in walkdir::WalkDir::new(dir) {
             let entry = entry?;
             let entry_path = entry.path();
