@@ -51,10 +51,10 @@ mod kernels {
     #[kernel]
     pub fn saxpy_global(#[global] x: Slice<f32>, alpha: f32, #[global] y: UnsafeSlice<f32>) {
         use krnl_core::buffer::UnsafeIndex;
-        let mut index = kernel.global_id() as usize;
+        let mut index = kernel.global_id as usize;
         while index < x.len().min(y.len()) {
             saxpy_impl(x[index], alpha, unsafe { y.unsafe_index_mut(index) });
-            index += kernel.global_threads() as usize;
+            index += kernel.global_threads as usize;
         }
     }
 }
