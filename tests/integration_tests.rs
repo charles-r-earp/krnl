@@ -9,7 +9,7 @@ use krnl::{device::Features, scalar::ScalarType};
 use libtest_mimic::{Arguments, Trial};
 use paste::paste;
 #[cfg(not(target_arch = "wasm32"))]
-use std::str::FromStr;
+use std::{mem::size_of, str::FromStr};
 #[cfg(target_arch = "wasm32")]
 use wasm_bindgen_test::wasm_bindgen_test as test;
 
@@ -112,7 +112,7 @@ fn buffer_tests(device: &Device, device2: Option<&Device>) -> impl IntoIterator<
                 let ignore = if device.is_host() {
                     false
                 } else {
-                    match $T::scalar_type().size() {
+                    match size_of::<$T>() {
                         1 => !features.shader_int8(),
                         2 => !features.shader_int16(),
                         4 => false,
@@ -151,7 +151,7 @@ fn buffer_tests(device: &Device, device2: Option<&Device>) -> impl IntoIterator<
     macro_for!($X in [u8, i8, u16, i16, f16, bf16, u32, i32, f32, u64, i64, f64] {
         macro_for!($Y in [u8, i8, u16, i16, f16, bf16, u32, i32, f32, u64, i64, f64] {
             {
-                let ignore = !device.is_host() && !features.contains(&buffer_cast_features($X::scalar_type(), $Y::scalar_type()));
+                let ignore = !device.is_host() && !features.contains(&buffer_cast_features($X::SCALAR_TYPE, $Y::SCALAR_TYPE));
                 paste! {
                     let trial = device_test(device, stringify!([<buffer_cast_ $X _ $Y>]), [<buffer_cast>]::<$X, $Y>);
                     tests.push(trial.with_ignored_flag(ignore));
