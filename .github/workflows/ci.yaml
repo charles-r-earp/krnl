@@ -77,14 +77,14 @@ jobs:
           toolchain: nightly
       - uses: actions-rs/toolchain@v1
         with:
-          toolchain: nightly-2023-04-15
+          toolchain: nightly-2023-05-27
           components: rust-src, rustc-dev, llvm-tools-preview
       - name: check krnlc
         if: ${{ !cancelled() }}
-        run: cargo +nightly-2023-04-15 -Zunstable-options -C=krnlc check --locked --no-default-features --features use-installed-tools -vv
+        run: cargo +nightly-2023-05-27 -Zunstable-options -C=krnlc check --locked --no-default-features --features use-installed-tools -vv
       - name: install krnlc
         if: ${{ !cancelled() }}
-        run: cargo +nightly-2023-04-15 install --path krnlc --root . --locked --no-default-features --features use-installed-tools -vv --debug
+        run: cargo +nightly-2023-05-27 install --path krnlc --root . --locked --no-default-features --features use-installed-tools -vv --debug
       - name: krnlc check 
         if: ${{ !cancelled() }}
         run: ./bin/krnlc --check -p krnl -p krnlc-tests -p compute-benchmarks -v
@@ -124,7 +124,7 @@ jobs:
         components: rustfmt, clippy
     - uses: actions-rs/toolchain@v1
       with:
-        toolchain: nightly-2023-04-15
+        toolchain: nightly-2023-05-27
         components: rustfmt, clippy, rust-src, rustc-dev, llvm-tools-preview
     - name: fmt
       run: cargo fmt --check
@@ -133,10 +133,10 @@ jobs:
       run: cargo clippy -- -D warnings
     - name: krnlc fmt
       if: ${{ !cancelled() }}
-      run: cargo +nightly-2023-04-15 fmt --check --manifest-path krnlc/Cargo.toml
+      run: cargo +nightly-2023-05-27 fmt --check --manifest-path krnlc/Cargo.toml
     - name: krnlc clippy
       if: ${{ !cancelled() }}
-      run: cargo +nightly-2023-04-15 clippy --manifest-path krnlc/Cargo.toml --no-default-features --features use-installed-tools -v -- -D warnings
+      run: cargo +nightly-2023-05-27 clippy --manifest-path krnlc/Cargo.toml --no-default-features --features use-installed-tools -v -- -D warnings
   cargo-deny:    
     runs-on: ubuntu-latest    
     steps:
