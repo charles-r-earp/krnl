@@ -436,7 +436,11 @@ use dry::macro_wrap;
 use rspirv::{binary::Assemble, dr::Operand};
 use std::{borrow::Cow, sync::Arc};
 #[cfg(feature = "device")]
-use std::{collections::HashMap, hash::Hash, sync::atomic::{AtomicBool, Ordering}};
+use std::{
+    collections::HashMap,
+    hash::Hash,
+    sync::atomic::{AtomicBool, Ordering},
+};
 
 #[cfg_attr(not(feature = "device"), allow(dead_code))]
 #[derive(Clone, Debug)]
@@ -1042,12 +1046,17 @@ pub mod __private {
                     bail!("Kernel `{kernel_name}` global_threads or groups not provided!");
                 };
                 let debug_printf_panic = if info.debug_printf() {
-                    Some(Arc::new(AtomicBool::default()))  
+                    Some(Arc::new(AtomicBool::default()))
                 } else {
                     None
                 };
                 unsafe {
-                    self.inner.dispatch(groups, &buffers, push_bytes, debug_printf_panic.clone())?;
+                    self.inner.dispatch(
+                        groups,
+                        &buffers,
+                        push_bytes,
+                        debug_printf_panic.clone(),
+                    )?;
                 }
                 if let Some(debug_printf_panic) = debug_printf_panic {
                     device.wait()?;

@@ -713,7 +713,8 @@ impl Frame {
             }
         }
         if let Some(debug_printf_panic) = debug_printf_panic {
-            self.debug_kernel_desc_panic.replace((kernel_desc.clone(), debug_printf_panic));
+            self.debug_kernel_desc_panic
+                .replace((kernel_desc.clone(), debug_printf_panic));
         }
     }
     unsafe fn finish(&mut self) {
@@ -793,7 +794,8 @@ impl Worker {
                 .unwrap()
                 .build()
                 .unwrap();
-            let _messenger = if let Some((kernel_desc, panicked)) = self.pending_frame.debug_kernel_desc_panic.take()
+            let _messenger = if let Some((kernel_desc, panicked)) =
+                self.pending_frame.debug_kernel_desc_panic.take()
             {
                 Some(
                     unsafe {

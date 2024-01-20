@@ -32,12 +32,12 @@ One kernel can be queued while another is executing on that queue.
 use crate::kernel::{KernelDesc, KernelKey};
 use anyhow::Result;
 use serde::Deserialize;
-#[cfg(feature = "device")]
-use std::{ops::Range, sync::atomic::AtomicBool};
 use std::{
     fmt::{self, Debug},
     sync::Arc,
 };
+#[cfg(feature = "device")]
+use std::{ops::Range, sync::atomic::AtomicBool};
 
 #[cfg(all(not(target_arch = "wasm32"), feature = "device"))]
 mod vulkan_engine;
@@ -597,11 +597,15 @@ impl RawKernel {
         groups: u32,
         buffers: &[DeviceBuffer],
         push_consts: Vec<u8>,
-        debug_printf_panic: Option<Arc<AtomicBool>>
+        debug_printf_panic: Option<Arc<AtomicBool>>,
     ) -> Result<()> {
         unsafe {
-            self.inner
-                .dispatch(groups, cast_device_buffers(buffers), push_consts, debug_printf_panic)
+            self.inner.dispatch(
+                groups,
+                cast_device_buffers(buffers),
+                push_consts,
+                debug_printf_panic,
+            )
         }
     }
     pub(crate) fn device(&self) -> RawDevice {

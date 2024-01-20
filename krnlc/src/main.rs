@@ -652,7 +652,9 @@ crate-type = ["dylib"]
     let mut spirv_module = rspirv::dr::load_bytes(std::fs::read(spirv_path)?)
         .map_err(|e| Error::msg(e.to_string()))?;
     if debug_printf {
-        spirv_module.debug_string_source.retain(|inst| inst.class.opcode == rspirv::spirv::Op::String);
+        spirv_module
+            .debug_string_source
+            .retain(|inst| inst.class.opcode == rspirv::spirv::Op::String);
     }
     let entry_fns: FxHashSet<u32> = spirv_module
         .entry_points
@@ -1096,7 +1098,7 @@ fn kernel_post_process(
             }
         });
         let spirv = spirv_module.assemble();
-        let spirv = if !debug_printf { 
+        let spirv = if !debug_printf {
             spirv_opt(&spirv, SpirvOptKind::Performance)?
         } else {
             spirv
