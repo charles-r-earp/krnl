@@ -7,20 +7,6 @@ use core::{arch::asm, mem::MaybeUninit};
 #[cfg(target_arch = "spirv")]
 use spirv_std::arch::IndexUnchecked;
 
-#[cfg(all(
-    target_arch = "spirv",
-    target_feature = "ext:SPV_KHR_non_semantic_info"
-))]
-fn debug_index_out_of_bounds(index: usize, len: usize) {
-    unsafe {
-        spirv_std::macros::debug_printfln!(
-            "index out of bounds: the len is %u but the index is %u",
-            len as u32,
-            index as u32,
-        );
-    }
-}
-
 /** Unsafe Index trait.
 
 Like [`Index`], performs checked indexing, but the caller must ensure that there is no aliasing of a mutable reference.
@@ -116,9 +102,8 @@ impl<T: Scalar> Index<usize> for SliceRepr<'_, T> {
         if index < self.len {
             unsafe { self.inner.index_unchecked(self.offset + index) }
         } else {
-            #[cfg(feature = "ext:SPV_KHR_non_semantic_info")]
-            debug_index_out_of_bounds(index, self.len);
-            panic!()
+            let len = self.len;
+            panic!("index out of bounds: the len is {index} but the index is {len}")
         }
         #[cfg(not(target_arch = "spirv"))]
         self.inner.index(index)
@@ -165,22 +150,8 @@ impl<T: Scalar> UnsafeIndex<usize> for UnsafeSliceRepr<'_, T> {
                 &*self.ptr.add(index)
             }
         } else {
-            #[cfg(all(
-                target_arch = "spirv",
-                target_feature = "ext:SPV_KHR_non_semantic_info"
-            ))]
-            debug_index_out_of_bounds(index, self.len);
-            #[cfg(target_arch = "spirv")]
-            {
-                panic!()
-            }
-            #[cfg(not(target_arch = "spirv"))]
-            {
-                panic!(
-                    "index out of bounds: the len is {index} but the index is {len}",
-                    len = self.len
-                )
-            }
+            let len = self.len;
+            panic!("index out of bounds: the len is {index} but the index is {len}")
         }
     }
     unsafe fn unsafe_index_mut(&self, index: usize) -> &mut Self::Output {
@@ -194,22 +165,8 @@ impl<T: Scalar> UnsafeIndex<usize> for UnsafeSliceRepr<'_, T> {
                 &mut *self.ptr.add(index)
             }
         } else {
-            #[cfg(all(
-                target_arch = "spirv",
-                target_feature = "ext:SPV_KHR_non_semantic_info"
-            ))]
-            debug_index_out_of_bounds(index, self.len);
-            #[cfg(target_arch = "spirv")]
-            {
-                panic!()
-            }
-            #[cfg(not(target_arch = "spirv"))]
-            {
-                panic!(
-                    "index out of bounds: the len is {index} but the index is {len}",
-                    len = self.len
-                )
-            }
+            let len = self.len();
+            panic!("index out of bounds: the len is {index} but the index is {len}")
         }
     }
 }

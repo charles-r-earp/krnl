@@ -8,7 +8,7 @@ use fxhash::{FxHashMap, FxHashSet};
 use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
 use semver::{Version, VersionReq};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
-use spirv_builder::{MetadataPrintout, SpirvBuilder, SpirvMetadata};
+use spirv_builder::{MetadataPrintout, ShaderPanicStrategy, SpirvBuilder, SpirvMetadata};
 use std::{
     path::{Path, PathBuf},
     process::{Command, Stdio},
@@ -625,7 +625,10 @@ crate-type = ["dylib"]
     if debug_printf {
         builder = builder
             .extension("SPV_KHR_non_semantic_info")
-            .relax_logical_pointer(true);
+            .shader_panic_strategy(ShaderPanicStrategy::DebugPrintfThenExit {
+                print_inputs: true,
+                print_backtrace: true,
+            });
     }
     let capabilites = {
         use spirv_builder::Capability::*;
