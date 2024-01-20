@@ -87,6 +87,7 @@ impl Engine {
         groups: u32,
         buffers: &[Arc<DeviceBuffer>],
         push_consts: &[u8],
+        debug_printf_panic: Option<Arc<AtomicBool>>,
     ) -> Result<()> {
         let mut frame_outer = self.frame_outer.lock();
         let new_descriptors: u32 = buffers.len().try_into().unwrap();
@@ -111,7 +112,7 @@ impl Engine {
                 groups,
                 buffers,
                 push_consts,
-                self.info.debug_printf,
+                debug_printf_panic,
             )
         }
     }
@@ -515,6 +516,7 @@ impl FrameOuter {
         }
         Ok(())
     }
+    #[allow(clippy::too_many_arguments)]
     unsafe fn compute(
         &mut self,
         kernel_desc: &Arc<KernelDesc>,
@@ -523,7 +525,7 @@ impl FrameOuter {
         groups: u32,
         buffers: &[Arc<DeviceBuffer>],
         push_consts: &[u8],
-        debug_printf: bool,
+        debug_printf_panic: Option<Arc<AtomicBool>>,
     ) -> Result<()> {
         let new_descriptors: u32 = buffers.len().try_into().unwrap();
         let mut frame = self.frame.lock();
@@ -543,7 +545,7 @@ impl FrameOuter {
                 groups,
                 buffers,
                 push_consts,
-                debug_printf,
+                debug_printf_panic,
             );
         }
         self.kernels += 1;
@@ -560,7 +562,7 @@ struct Frame {
     descriptor_pool: DescriptorPool,
     buffers: Vec<Subbuffer<[u8]>>,
     epoch: u64,
-    debug_kernel_desc: Option<Arc<KernelDesc>>,
+    debug_kernel_desc_panic: Option<(Arc<KernelDesc>, Arc<AtomicBool>)>,
 }
 
 impl Frame {
@@ -607,7 +609,7 @@ impl Frame {
             descriptor_pool,
             buffers,
             epoch,
-            debug_kernel_desc: None,
+            debug_kernel_desc_panic: None,
         })
     }
     unsafe fn begin(&mut self) -> Result<()> {
@@ -655,7 +657,7 @@ impl Frame {
         groups: u32,
         buffers: &[Arc<DeviceBuffer>],
         push_consts: &[u8],
-        debug_printf: bool,
+        debug_printf_panic: Option<Arc<AtomicBool>>,
     ) {
         let builder = self.command_buffer_builder.as_mut().unwrap();
         unsafe {
@@ -710,13 +712,13 @@ impl Frame {
                 buffer.epoch.store(self.epoch, Ordering::SeqCst);
             }
         }
-        if debug_printf {
-            self.debug_kernel_desc.replace(kernel_desc.clone());
+        if let Some(debug_printf_panic) = debug_printf_panic {
+            self.debug_kernel_desc_panic.replace((kernel_desc.clone(), debug_printf_panic));
         }
     }
     unsafe fn finish(&mut self) {
         self.buffers.clear();
-        self.debug_kernel_desc.take();
+        self.debug_kernel_desc_panic.take();
     }
 }
 
@@ -791,7 +793,7 @@ impl Worker {
                 .unwrap()
                 .build()
                 .unwrap();
-            let _messenger = if let Some(kernel_desc) = self.pending_frame.debug_kernel_desc.take()
+            let _messenger = if let Some((kernel_desc, panicked)) = self.pending_frame.debug_kernel_desc_panic.take()
             {
                 Some(
                     unsafe {
@@ -808,6 +810,9 @@ impl Worker {
                                                     "[{id:?} {}] {}",
                                                     kernel_desc.name, msg.description
                                                 );
+                                                if msg.description.contains("[Rust panicked at ") {
+                                                    panicked.store(true, Ordering::SeqCst);
+                                                }
                                             }
                                         }
                                     },
@@ -1350,6 +1355,7 @@ impl DeviceEngineKernel for Kernel {
         groups: u32,
         buffers: &[Arc<Self::DeviceBuffer>],
         push_consts: Vec<u8>,
+        debug_printf_panic: Option<Arc<AtomicBool>>,
     ) -> Result<()> {
         let engine = &self.engine;
         if let Some(epoch) = buffers.iter().map(|x| x.epoch.load(Ordering::SeqCst)).max() {
@@ -1362,6 +1368,7 @@ impl DeviceEngineKernel for Kernel {
                 groups,
                 buffers,
                 &push_consts,
+                debug_printf_panic,
             )
         }
         /*

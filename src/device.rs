@@ -33,7 +33,7 @@ use crate::kernel::{KernelDesc, KernelKey};
 use anyhow::Result;
 use serde::Deserialize;
 #[cfg(feature = "device")]
-use std::ops::Range;
+use std::{ops::Range, sync::atomic::AtomicBool};
 use std::{
     fmt::{self, Debug},
     sync::Arc,
@@ -184,6 +184,7 @@ trait DeviceEngineKernel: Sized {
         groups: u32,
         buffers: &[Arc<Self::DeviceBuffer>],
         push_consts: Vec<u8>,
+        debug_printf_panic: Option<Arc<AtomicBool>>,
     ) -> Result<()>;
     fn engine(&self) -> &Arc<Self::Engine>;
     fn desc(&self) -> &Arc<KernelDesc>;
@@ -339,7 +340,7 @@ impl RawDevice {
     pub(crate) fn info(&self) -> &Arc<DeviceInfo> {
         self.engine.info()
     }
-    fn wait(&self) -> Result<(), DeviceLost> {
+    pub(crate) fn wait(&self) -> Result<(), DeviceLost> {
         self.engine.wait()
     }
 }
@@ -596,10 +597,11 @@ impl RawKernel {
         groups: u32,
         buffers: &[DeviceBuffer],
         push_consts: Vec<u8>,
+        debug_printf_panic: Option<Arc<AtomicBool>>
     ) -> Result<()> {
         unsafe {
             self.inner
-                .dispatch(groups, cast_device_buffers(buffers), push_consts)
+                .dispatch(groups, cast_device_buffers(buffers), push_consts, debug_printf_panic)
         }
     }
     pub(crate) fn device(&self) -> RawDevice {
