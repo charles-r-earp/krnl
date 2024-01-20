@@ -57,6 +57,7 @@ pub enum ScalarType {
 
 impl ScalarType {
     #[cfg(not(target_arch = "spirv"))]
+    #[inline]
     fn iter() -> impl Iterator<Item = Self> {
         use ScalarType::*;
         [U8, I8, U16, I16, F16, BF16, U32, I32, F32, U64, I64, F64].into_iter()
@@ -76,6 +77,7 @@ impl ScalarType {
     ///
     /// Lowercase, ie "f16", "i32", etc.
     #[cfg(not(target_arch = "spirv"))]
+    #[inline]
     pub fn name(&self) -> &'static str {
         use ScalarType::*;
         match self {
@@ -97,6 +99,7 @@ impl ScalarType {
     ///
     /// Uppercase, ie "F16", "I32", etc.
     #[cfg(not(target_arch = "spirv"))]
+    #[inline]
     pub fn as_str(&self) -> &'static str {
         use ScalarType::*;
         match self {
@@ -117,6 +120,7 @@ impl ScalarType {
 }
 
 impl From<ScalarType> for u32 {
+    #[inline]
     fn from(scalar_type: ScalarType) -> u32 {
         scalar_type as u32
     }
@@ -285,6 +289,7 @@ impl ScalarElem {
     /// Casts to `T`.
     ///
     /// See [`Scalar::cast`].
+    #[inline]
     pub fn cast<T: Scalar>(self) -> T {
         use ScalarElem::*;
         match self {
@@ -366,6 +371,7 @@ macro_for!($T in [u8, i8, u16, i16, f16, bf16, u32, i32, f32, u64, i64, f64] {
     #[cfg(not(target_arch = "spirv"))]
     impl TryFrom<ScalarElem> for $T {
         type Error = ();
+        #[inline]
         fn try_from(elem: ScalarElem) -> Result<Self, ()> {
             if Self::SCALAR_TYPE == elem.scalar_type() {
                 Ok(elem.cast())
@@ -503,6 +509,7 @@ macro_for!($X in [u8, i8, u16, i16, f16, bf16, u32, i32, f32, u64, i64, f64] {
                 ScalarElem::[<$X:upper>](self)
             }
             #[cfg(not(target_arch = "spirv"))]
+            #[inline]
             fn cast<T: Scalar>(self) -> T {
                 macro_wrap!(match T::SCALAR_TYPE {
                     macro_for!($Y in [u8, i8, u16, i16, f16, bf16, u32, i32, f32, u64, i64, f64] {
@@ -511,6 +518,7 @@ macro_for!($X in [u8, i8, u16, i16, f16, bf16, u32, i32, f32, u64, i64, f64] {
                 })
             }
             #[cfg(target_arch = "spirv")]
+            #[inline]
             fn cast<T: Scalar>(self) -> T {
                 AsScalar::<T>::as_scalar(self)
             }
