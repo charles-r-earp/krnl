@@ -76,6 +76,10 @@ pub mod kernels {
         n_times_4_plus_1(|n| (n * 4 + 1) as usize),
         n_div_2(|n| (n / 2) as usize),
     );
+    
+    #[allow(non_snake_case)]
+    #[kernel]
+    fn attribute(fooBar: u32) {}
 }
 
 macro_for!($T in [u8, i8, u16, i16, f16, bf16, u32, i32, f32, u64, i64, f64] {

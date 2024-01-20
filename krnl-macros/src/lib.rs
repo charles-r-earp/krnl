@@ -904,6 +904,7 @@ impl KernelMeta {
                 if let Some(len) = arg.len.as_ref() {
                     quote! {
                         const _: () = {
+                            #[allow(clippy::too_many_arguments)]
                             const fn __krnl_array_len(#spec_def_args) -> usize {
                                 #len
                             }
@@ -1294,6 +1295,7 @@ fn kernel_impl(item_tokens: TokenStream2) -> Result<TokenStream2> {
     let item: KernelItem = syn::parse2(item_tokens.clone())?;
     let kernel_meta = item.meta()?;
     let kernel_desc = kernel_meta.desc()?;
+    let item_attrs = &item.attrs;
     let unsafe_token = kernel_meta.unsafe_token;
     let ident = &kernel_meta.ident;
     let device_tokens = {
@@ -1386,6 +1388,7 @@ fn kernel_impl(item_tokens: TokenStream2) -> Result<TokenStream2> {
                 #kernel_data: &mut [u32],
                 #compute_def_args
             ) {
+                #(#item_attrs)*
                 #unsafe_token fn #ident(
                     #[allow(unused)]
                     kernel: ::krnl_core::kernel::#kernel_type,
@@ -1441,6 +1444,7 @@ fn kernel_impl(item_tokens: TokenStream2) -> Result<TokenStream2> {
             let spec_args = kernel_meta.spec_args();
             quote! {
                 /// Specializes the kernel.
+                #[allow(clippy::too_many_arguments)]
                 pub fn specialize(mut self, #spec_def_args) -> Self {
                     let inner = self.inner.specialize(&[#(#spec_args.into()),*]);
                     Self {
@@ -1474,10 +1478,9 @@ fn kernel_impl(item_tokens: TokenStream2) -> Result<TokenStream2> {
         } else {
             TokenStream2::new()
         };
-        let item_attrs = &item.attrs;
         quote! {
             #[cfg(not(target_arch = "spirv"))]
-            #(#[#item_attrs])*
+            #(#item_attrs)*
             #[automatically_derived]
             pub mod #ident {
                 #input_docs
