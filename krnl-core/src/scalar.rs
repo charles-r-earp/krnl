@@ -57,6 +57,7 @@ pub enum ScalarType {
 
 impl ScalarType {
     #[cfg(not(target_arch = "spirv"))]
+    #[inline]
     fn iter() -> impl Iterator<Item = Self> {
         use ScalarType::*;
         [U8, I8, U16, I16, F16, BF16, U32, I32, F32, U64, I64, F64].into_iter()
@@ -76,6 +77,7 @@ impl ScalarType {
     ///
     /// Lowercase, ie "f16", "i32", etc.
     #[cfg(not(target_arch = "spirv"))]
+    #[inline]
     pub fn name(&self) -> &'static str {
         use ScalarType::*;
         match self {
@@ -97,6 +99,7 @@ impl ScalarType {
     ///
     /// Uppercase, ie "F16", "I32", etc.
     #[cfg(not(target_arch = "spirv"))]
+    #[inline]
     pub fn as_str(&self) -> &'static str {
         use ScalarType::*;
         match self {
@@ -117,6 +120,7 @@ impl ScalarType {
 }
 
 impl From<ScalarType> for u32 {
+    #[inline]
     fn from(scalar_type: ScalarType) -> u32 {
         scalar_type as u32
     }
@@ -285,6 +289,7 @@ impl ScalarElem {
     /// Casts to `T`.
     ///
     /// See [`Scalar::cast`].
+    #[inline]
     pub fn cast<T: Scalar>(self) -> T {
         use ScalarElem::*;
         match self {
@@ -366,8 +371,9 @@ macro_for!($T in [u8, i8, u16, i16, f16, bf16, u32, i32, f32, u64, i64, f64] {
     #[cfg(not(target_arch = "spirv"))]
     impl TryFrom<ScalarElem> for $T {
         type Error = ();
+        #[inline]
         fn try_from(elem: ScalarElem) -> Result<Self, ()> {
-            if Self::scalar_type() == elem.scalar_type() {
+            if Self::SCALAR_TYPE == elem.scalar_type() {
                 Ok(elem.cast())
             } else {
                 Err(())
@@ -376,8 +382,19 @@ macro_for!($T in [u8, i8, u16, i16, f16, bf16, u32, i32, f32, u64, i64, f64] {
     }
 });
 
-trait AsScalar<T>: Scalar {
+trait AsScalar<T>: Sized {
+    #[allow(clippy::wrong_self_convention)]
     fn as_scalar(self) -> T;
+}
+
+// For spirv arch, use min_specialization to strip branches before
+// hitting rust-gpu backend, reducing compile times.
+#[cfg(target_arch = "spirv")]
+impl<X, Y> AsScalar<Y> for X {
+    #[rustfmt::skip]
+    default fn as_scalar(self) -> Y {
+        unreachable!()
+    }
 }
 
 macro_for!($X in [u8, i8, u16, i16, u32, i32, f32, u64, i64, f64] {
@@ -440,6 +457,9 @@ pub trait Scalar:
     + Sealed
 {
     /// The [`ScalarType`] of the scalar.
+    const SCALAR_TYPE: ScalarType;
+    #[doc(hidden)]
+    #[deprecated(since = "0.0.4", note = "replaced by Scalar::SCALAR_TYPE")]
     fn scalar_type() -> ScalarType;
     /// Casts `self as T`.
     fn cast<T: Scalar>(self) -> T;
@@ -466,6 +486,9 @@ pub trait Scalar:
     + Sealed
 {
     /// The [`ScalarType`] of the scalar.
+    const SCALAR_TYPE: ScalarType;
+    #[doc(hidden)]
+    #[deprecated(since = "0.0.4", note = "replaced by Scalar::SCALAR_TYPE")]
     fn scalar_type() -> ScalarType;
     /// Converts to [`ScalarElem`].
     fn scalar_elem(self) -> ScalarElem;
@@ -476,23 +499,29 @@ pub trait Scalar:
 macro_for!($X in [u8, i8, u16, i16, f16, bf16, u32, i32, f32, u64, i64, f64] {
     paste! {
         impl Scalar for $X {
+            const SCALAR_TYPE: ScalarType = ScalarType::[<$X:upper>];
             #[inline(always)]
             fn scalar_type() -> ScalarType {
-                ScalarType::[<$X:upper>]
+                Self::SCALAR_TYPE
             }
             #[cfg(not(target_arch = "spirv"))]
             #[inline(always)]
             fn scalar_elem(self) -> ScalarElem {
                 ScalarElem::[<$X:upper>](self)
             }
+            #[cfg(not(target_arch = "spirv"))]
+            #[inline]
             fn cast<T: Scalar>(self) -> T {
-                macro_for!($Y in [u8, i8, u16, i16, f16, bf16, u32, i32, f32, u64, i64, f64] {
-                    if T::scalar_type() == $Y::scalar_type() {
-                        let y: $Y = self.as_scalar();
-                        return NumCast::from(y).unwrap();
-                    }
-                });
-                unreachable!()
+                macro_wrap!(match T::SCALAR_TYPE {
+                    macro_for!($Y in [u8, i8, u16, i16, f16, bf16, u32, i32, f32, u64, i64, f64] {
+                        $Y::SCALAR_TYPE => bytemuck::cast(AsScalar::<$Y>::as_scalar(self)),
+                    })
+                })
+            }
+            #[cfg(target_arch = "spirv")]
+            #[inline]
+            fn cast<T: Scalar>(self) -> T {
+                AsScalar::<T>::as_scalar(self)
             }
         }
     }

@@ -325,7 +325,7 @@ impl<T: Scalar> From<BufferRepr<T>> for ScalarBufferRepr {
     fn from(buffer: BufferRepr<T>) -> Self {
         Self {
             raw: buffer.raw,
-            scalar_type: T::scalar_type(),
+            scalar_type: T::SCALAR_TYPE,
         }
     }
 }
@@ -409,7 +409,7 @@ impl<'a, T: Scalar> From<SliceRepr<'a, T>> for ScalarSliceRepr<'a> {
     fn from(slice: SliceRepr<'a, T>) -> Self {
         Self {
             raw: slice.raw,
-            scalar_type: T::scalar_type(),
+            scalar_type: T::SCALAR_TYPE,
             _m: PhantomData,
         }
     }
@@ -630,7 +630,7 @@ impl<'a, T: Scalar> From<SliceMutRepr<'a, T>> for ScalarSliceMutRepr<'a> {
     fn from(slice: SliceMutRepr<'a, T>) -> Self {
         Self {
             raw: slice.raw,
-            scalar_type: T::scalar_type(),
+            scalar_type: T::SCALAR_TYPE,
             _m: PhantomData,
         }
     }
@@ -673,7 +673,7 @@ impl<T: Scalar> From<ArcBufferRepr<T>> for ScalarArcBufferRepr {
     fn from(buffer: ArcBufferRepr<T>) -> Self {
         Self {
             raw: buffer.raw,
-            scalar_type: T::scalar_type(),
+            scalar_type: T::SCALAR_TYPE,
         }
     }
 }
@@ -1194,7 +1194,7 @@ impl<'a, T: Scalar> From<Slice<'a, T>> for ScalarSlice<'a> {
     fn from(slice: Slice<'a, T>) -> Self {
         let data = ScalarSliceRepr {
             raw: slice.data.raw,
-            scalar_type: T::scalar_type(),
+            scalar_type: T::SCALAR_TYPE,
             _m: PhantomData,
         };
         Self { data }
@@ -1205,7 +1205,7 @@ impl<'a, T: Scalar> From<SliceMut<'a, T>> for ScalarSliceMut<'a> {
     fn from(slice: SliceMut<'a, T>) -> Self {
         let data = ScalarSliceMutRepr {
             raw: slice.data.raw,
-            scalar_type: T::scalar_type(),
+            scalar_type: T::SCALAR_TYPE,
             _m: PhantomData,
         };
         Self { data }
@@ -1444,7 +1444,7 @@ impl<T: Scalar> ScalarData for BufferRepr<T> {
     fn as_scalar_slice(&self) -> ScalarSliceRepr {
         ScalarSliceRepr {
             raw: self.raw.clone(),
-            scalar_type: T::scalar_type(),
+            scalar_type: T::SCALAR_TYPE,
             _m: PhantomData,
         }
     }
@@ -1454,7 +1454,7 @@ impl<T: Scalar> ScalarDataMut for BufferRepr<T> {
     fn as_scalar_slice_mut(&mut self) -> ScalarSliceMutRepr {
         ScalarSliceMutRepr {
             raw: self.raw.clone(),
-            scalar_type: T::scalar_type(),
+            scalar_type: T::SCALAR_TYPE,
             _m: PhantomData,
         }
     }
@@ -1500,7 +1500,7 @@ impl<T: Scalar> DataOwned for BufferRepr<T> {
 impl<T: Scalar> TryFrom<ScalarBufferRepr> for BufferRepr<T> {
     type Error = ScalarBufferRepr;
     fn try_from(buffer: ScalarBufferRepr) -> Result<Self, Self::Error> {
-        if buffer.scalar_type() == T::scalar_type() {
+        if buffer.scalar_type() == T::SCALAR_TYPE {
             Ok(Self {
                 raw: buffer.raw,
                 _m: Default::default(),
@@ -1557,7 +1557,7 @@ impl<'a, T: Scalar> SliceRepr<'a, T> {
         Ok(output)
     }
     fn bitcast<Y: Scalar>(self) -> Result<SliceRepr<'a, Y>, bytemuck::PodCastError> {
-        let raw = self.raw.bitcast(Y::scalar_type())?;
+        let raw = self.raw.bitcast(Y::SCALAR_TYPE)?;
         Ok(SliceRepr {
             raw,
             _m: PhantomData,
@@ -1565,7 +1565,7 @@ impl<'a, T: Scalar> SliceRepr<'a, T> {
     }
     fn slice(self, range: impl RangeBounds<usize>) -> Option<Self> {
         Some(Self {
-            raw: self.raw.slice(range, T::scalar_type())?,
+            raw: self.raw.slice(range, T::SCALAR_TYPE)?,
             ..self
         })
     }
@@ -1575,7 +1575,7 @@ impl<'a, T: Scalar> ScalarData for SliceRepr<'a, T> {
     fn as_scalar_slice(&self) -> ScalarSliceRepr {
         ScalarSliceRepr {
             raw: self.raw.clone(),
-            scalar_type: T::scalar_type(),
+            scalar_type: T::SCALAR_TYPE,
             _m: PhantomData,
         }
     }
@@ -1591,7 +1591,7 @@ impl<T: Scalar> Data for SliceRepr<'_, T> {
 impl<'a, T: Scalar> TryFrom<ScalarSliceRepr<'a>> for SliceRepr<'a, T> {
     type Error = ScalarSliceRepr<'a>;
     fn try_from(slice: ScalarSliceRepr<'a>) -> Result<Self, Self::Error> {
-        if slice.scalar_type() == T::scalar_type() {
+        if slice.scalar_type() == T::SCALAR_TYPE {
             Ok(Self {
                 raw: slice.raw,
                 _m: Default::default(),
@@ -1670,7 +1670,7 @@ impl<'a, T: Scalar> SliceMutRepr<'a, T> {
         }
     }
     fn bitcast<Y: Scalar>(self) -> Result<SliceMutRepr<'a, Y>, bytemuck::PodCastError> {
-        let raw = self.raw.bitcast(Y::scalar_type())?;
+        let raw = self.raw.bitcast(Y::SCALAR_TYPE)?;
         Ok(SliceMutRepr {
             raw,
             _m: PhantomData,
@@ -1678,7 +1678,7 @@ impl<'a, T: Scalar> SliceMutRepr<'a, T> {
     }
     fn slice(self, range: impl RangeBounds<usize>) -> Option<Self> {
         Some(Self {
-            raw: self.raw.slice(range, T::scalar_type())?,
+            raw: self.raw.slice(range, T::SCALAR_TYPE)?,
             ..self
         })
     }
@@ -1688,7 +1688,7 @@ impl<T: Scalar> ScalarData for SliceMutRepr<'_, T> {
     fn as_scalar_slice(&self) -> ScalarSliceRepr {
         ScalarSliceRepr {
             raw: self.raw.clone(),
-            scalar_type: T::scalar_type(),
+            scalar_type: T::SCALAR_TYPE,
             _m: PhantomData,
         }
     }
@@ -1698,7 +1698,7 @@ impl<T: Scalar> ScalarDataMut for SliceMutRepr<'_, T> {
     fn as_scalar_slice_mut(&mut self) -> ScalarSliceMutRepr {
         ScalarSliceMutRepr {
             raw: self.raw.clone(),
-            scalar_type: T::scalar_type(),
+            scalar_type: T::SCALAR_TYPE,
             _m: PhantomData,
         }
     }
@@ -1726,7 +1726,7 @@ impl<T: Scalar> DataMut for SliceMutRepr<'_, T> {
 impl<'a, T: Scalar> TryFrom<ScalarSliceMutRepr<'a>> for SliceMutRepr<'a, T> {
     type Error = ScalarSliceMutRepr<'a>;
     fn try_from(slice: ScalarSliceMutRepr<'a>) -> Result<Self, Self::Error> {
-        if slice.scalar_type() == T::scalar_type() {
+        if slice.scalar_type() == T::SCALAR_TYPE {
             Ok(Self {
                 raw: slice.raw,
                 _m: Default::default(),
@@ -1757,7 +1757,7 @@ impl<T: Scalar> From<BufferRepr<T>> for ArcBufferRepr<T> {
 impl<T: Scalar> TryFrom<ScalarArcBufferRepr> for ArcBufferRepr<T> {
     type Error = ScalarArcBufferRepr;
     fn try_from(buffer: ScalarArcBufferRepr) -> Result<Self, Self::Error> {
-        if T::scalar_type() == buffer.scalar_type {
+        if T::SCALAR_TYPE == buffer.scalar_type {
             Ok(Self {
                 raw: buffer.raw,
                 _m: PhantomData,
@@ -2397,7 +2397,7 @@ impl<T: Scalar, S: Data<Elem = T>> BufferBase<S> {
 
     See [`.cast()`](BufferBase::cast). */
     pub fn cast_into<Y: Scalar>(self) -> Result<Buffer<Y>> {
-        if T::scalar_type() == Y::scalar_type() {
+        if T::SCALAR_TYPE == Y::SCALAR_TYPE {
             let buffer = self.into_owned()?;
             Ok(ScalarBuffer::from(buffer).try_into().ok().unwrap())
         } else {
@@ -2408,7 +2408,7 @@ impl<T: Scalar, S: Data<Elem = T>> BufferBase<S> {
 
     See [`.cast()`](BufferBase::cast). */
     pub fn cast_shared<Y: Scalar>(&self) -> Result<ArcBuffer<Y>> {
-        if T::scalar_type() == Y::scalar_type() {
+        if T::SCALAR_TYPE == Y::SCALAR_TYPE {
             let buffer = self.to_shared()?;
             Ok(ScalarArcBuffer::from(buffer).try_into().ok().unwrap())
         } else {
@@ -2477,24 +2477,19 @@ impl<T: Scalar> Slice<'_, T> {
         if let Some((x, y)) = self.as_host_slice().zip(output.as_host_slice_mut()) {
             {
                 use half::slice::HalfFloatSliceExt;
-                if T::scalar_type() == ScalarType::F16 && Y::scalar_type() == ScalarType::F32 {
+                if T::SCALAR_TYPE == ScalarType::F16 && Y::SCALAR_TYPE == ScalarType::F32 {
                     bytemuck::cast_slice::<_, f16>(x)
                         .convert_to_f32_slice(bytemuck::cast_slice_mut(y));
                     return Ok(());
-                } else if T::scalar_type() == ScalarType::BF16
-                    && Y::scalar_type() == ScalarType::F32
-                {
+                } else if T::SCALAR_TYPE == ScalarType::BF16 && Y::SCALAR_TYPE == ScalarType::F32 {
                     bytemuck::cast_slice::<_, bf16>(x)
                         .convert_to_f32_slice(bytemuck::cast_slice_mut(y));
                     return Ok(());
-                } else if T::scalar_type() == ScalarType::F16 && Y::scalar_type() == ScalarType::F64
-                {
+                } else if T::SCALAR_TYPE == ScalarType::F16 && Y::SCALAR_TYPE == ScalarType::F64 {
                     bytemuck::cast_slice::<_, f16>(x)
                         .convert_to_f64_slice(bytemuck::cast_slice_mut(y));
                     return Ok(());
-                } else if T::scalar_type() == ScalarType::BF16
-                    && Y::scalar_type() == ScalarType::F64
-                {
+                } else if T::SCALAR_TYPE == ScalarType::BF16 && Y::SCALAR_TYPE == ScalarType::F64 {
                     bytemuck::cast_slice::<_, bf16>(x)
                         .convert_to_f64_slice(bytemuck::cast_slice_mut(y));
                     return Ok(());
@@ -2571,7 +2566,7 @@ impl<'de, T: Scalar, S: DataOwned<Elem = T>> Deserialize<'de> for BufferBase<S> 
         let buffer = BufferRepr::try_from(scalar_buffer).map_err(|e| {
             D::Error::custom(format!(
                 "Expected {:?}, found {:?}!",
-                T::scalar_type(),
+                T::SCALAR_TYPE,
                 e.scalar_type()
             ))
         })?;

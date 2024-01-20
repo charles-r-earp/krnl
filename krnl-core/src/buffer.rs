@@ -245,9 +245,10 @@ impl<S: DataBase> BufferBase<S> {
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
-    /// The scalar type.
+    #[doc(hidden)]
+    #[deprecated(since = "0.0.4", note = "use S::Elem::SCALAR_TYPE")]
     pub fn scalar_type(&self) -> ScalarType {
-        S::Elem::scalar_type()
+        S::Elem::SCALAR_TYPE
     }
 }
 
