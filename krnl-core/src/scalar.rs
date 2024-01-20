@@ -383,6 +383,7 @@ macro_for!($T in [u8, i8, u16, i16, f16, bf16, u32, i32, f32, u64, i64, f64] {
 });
 
 trait AsScalar<T>: Sized {
+    #[allow(clippy::wrong_self_convention)]
     fn as_scalar(self) -> T;
 }
 
