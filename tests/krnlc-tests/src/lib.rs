@@ -76,7 +76,7 @@ pub mod kernels {
         n_times_4_plus_1(|n| (n * 4 + 1) as usize),
         n_div_2(|n| (n / 2) as usize),
     );
-    
+
     #[allow(non_snake_case)]
     #[kernel]
     fn attribute(fooBar: u32) {}
