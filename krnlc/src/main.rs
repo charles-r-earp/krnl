@@ -42,9 +42,10 @@ struct Cli {
     /// Check mode.
     #[arg(long = "check")]
     check: bool,
-    #[arg(long = "debug-printf", hide = true)]
+    /// Enable DebugPrintf
+    #[arg(long = "debug-printf")]
     debug_printf: bool,
-    /// Use verbose output.
+    /// Use verbose output
     #[arg(short = 'v', long = "verbose")]
     verbose: bool,
 }
@@ -628,7 +629,8 @@ crate-type = ["dylib"]
             .shader_panic_strategy(ShaderPanicStrategy::DebugPrintfThenExit {
                 print_inputs: true,
                 print_backtrace: true,
-            });
+            })
+            .spirv_metadata(SpirvMetadata::Full);
     }
     let capabilites = {
         use spirv_builder::Capability::*;
@@ -647,8 +649,13 @@ crate-type = ["dylib"]
     }
     let output = builder.build()?;
     let spirv_path = output.module.unwrap_single();
-    let spirv_module = rspirv::dr::load_bytes(std::fs::read(spirv_path)?)
+    let mut spirv_module = rspirv::dr::load_bytes(std::fs::read(spirv_path)?)
         .map_err(|e| Error::msg(e.to_string()))?;
+    if debug_printf {
+        spirv_module
+            .debug_string_source
+            .retain(|inst| inst.class.opcode == rspirv::spirv::Op::String);
+    }
     let entry_fns: FxHashSet<u32> = spirv_module
         .entry_points
         .iter()
@@ -664,6 +671,7 @@ crate-type = ["dylib"]
                 entry_point,
                 &spirv_module,
                 &entry_fns,
+                debug_printf,
             )
         })
         .collect()
@@ -773,6 +781,7 @@ fn kernel_post_process(
     entry_point: &rspirv::dr::Instruction,
     spirv_module: &rspirv::dr::Module,
     entry_fns: &FxHashSet<u32>,
+    debug_printf: bool,
 ) -> Result<KernelDesc> {
     use rspirv::{
         binary::Assemble,
@@ -1089,7 +1098,11 @@ fn kernel_post_process(
             }
         });
         let spirv = spirv_module.assemble();
-        let spirv = spirv_opt(&spirv, SpirvOptKind::Performance)?;
+        let spirv = if !debug_printf {
+            spirv_opt(&spirv, SpirvOptKind::Performance)?
+        } else {
+            spirv
+        };
         {
             let path = kernels_dir.join(kernel_desc.name.replace("::", "/"));
             std::fs::create_dir_all(path.parent().unwrap())?;

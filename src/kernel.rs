@@ -436,7 +436,11 @@ use dry::macro_wrap;
 use rspirv::{binary::Assemble, dr::Operand};
 use std::{borrow::Cow, sync::Arc};
 #[cfg(feature = "device")]
-use std::{collections::HashMap, hash::Hash};
+use std::{
+    collections::HashMap,
+    hash::Hash,
+    sync::atomic::{AtomicBool, Ordering},
+};
 
 #[cfg_attr(not(feature = "device"), allow(dead_code))]
 #[derive(Clone, Debug)]
@@ -528,7 +532,6 @@ impl KernelDesc {
                 }
             }
         }
-        module.debug_names.clear();
         if !debug_printf {
             strip_debug_printf(&mut module);
         }
@@ -547,6 +550,7 @@ impl KernelDesc {
 fn strip_debug_printf(module: &mut rspirv::dr::Module) {
     use rspirv::spirv::Op;
     use std::collections::HashSet;
+
     module.extensions.retain(|inst| {
         inst.operands.first().unwrap().unwrap_literal_string() != "SPV_KHR_non_semantic_info"
     });
@@ -565,10 +569,10 @@ fn strip_debug_printf(module: &mut rspirv::dr::Module) {
             true
         }
     });
-    module.debug_string_source.clear();
     if ext_insts.is_empty() {
         return;
     }
+    module.debug_string_source.clear();
     for func in module.functions.iter_mut() {
         for block in func.blocks.iter_mut() {
             block.instructions.retain(|inst| {
@@ -578,7 +582,7 @@ fn strip_debug_printf(module: &mut rspirv::dr::Module) {
                         return false;
                     }
                 }
-                true
+                !matches!(inst.class.opcode, Op::Line | Op::NoLine)
             })
         }
     }
@@ -1041,8 +1045,27 @@ pub mod __private {
                 } else {
                     bail!("Kernel `{kernel_name}` global_threads or groups not provided!");
                 };
+                let debug_printf_panic = if info.debug_printf() {
+                    Some(Arc::new(AtomicBool::default()))
+                } else {
+                    None
+                };
                 unsafe {
-                    self.inner.dispatch(groups, &buffers, push_bytes)?;
+                    self.inner.dispatch(
+                        groups,
+                        &buffers,
+                        push_bytes,
+                        debug_printf_panic.clone(),
+                    )?;
+                }
+                if let Some(debug_printf_panic) = debug_printf_panic {
+                    device.wait()?;
+                    while Arc::strong_count(&debug_printf_panic) > 1 {
+                        std::thread::yield_now();
+                    }
+                    if debug_printf_panic.load(Ordering::SeqCst) {
+                        bail!("Kernel `{kernel_name}` panicked!");
+                    }
                 }
                 Ok(())
             }
