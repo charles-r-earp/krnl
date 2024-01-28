@@ -1,140 +1,331 @@
 /*!
 
-Kernels are functions that can be executed repeatedly and or concurrently. For example:
-```
-fn fill_ones_impl(index: usize, y: &mut [u32]) {
-    y[index] = 1;
+[Kernels](#kernels) are functions dispatched from the host that execute on the device. They
+are declared within [modules](#modules), which create a shared scope between host and device.
+[krnlc](#krnlc) collects all modules and compiles them.
+
+```no_run
+use krnl::{
+    macros::module,
+    anyhow::Result,
+    device::Device,
+    buffer::{Buffer, Slice, SliceMut},
+};
+
+#[module]
+# #[krnl(no_build)]
+mod kernels {
+    #[cfg(not(target_arch = "spirv"))]
+    use krnl::krnl_core;
+    use krnl_core::macros::kernel;
+
+    pub fn saxpy_impl(alpha: f32, x: f32, y: &mut f32) {
+        *y += alpha * x;
+    }
+
+    // Item kernels for iterator patterns.
+    #[kernel]
+    pub fn saxpy(alpha: f32, #[item] x: f32, #[item] y: &mut f32) {
+        saxpy_impl(alpha, x, y);
+    }
+
+    // General purpose kernels like CUDA / OpenCL.
+    #[kernel]
+    pub fn saxpy_global(alpha: f32, #[global] x: Slice<f32>, #[global] y: UnsafeSlice<f32>) {
+        use krnl_core::buffer::UnsafeIndex;
+
+        let global_id = kernel.global_id as usize;
+        if global_id < x.len().min(y.len()) {
+            saxpy_impl(alpha, &x[global_id], unsafe { y.unsafe_index_mut(global_id) });
+        }
+    }
 }
 
-fn ones(len: usize) -> Vec<u32> {
-    let mut y = vec![0; len];
-    for index in 0 .. y.len() {
-        fill_ones_impl(index, y.as_mut_slice());
+fn saxpy(alpha: f32, x: Slice<f32>, mut y: SliceMut<f32>) -> Result<()> {
+    if let Some((x, y)) = x.as_host_slice().zip(y.as_host_slice_mut()) {
+        x.iter()
+            .copied()
+            .zip(y.iter_mut())
+            .for_each(|(x, y)| kernels::saxpy_impl(alpha, x, y));
+        return Ok(());
     }
-    y
+    # if true {
+    kernels::saxpy::builder()?
+        .build(y.device())?
+        .dispatch(alpha, x, y)
+    # } else {
+    // or
+    kernels::saxpy_global::builder()?
+        .build(y.device())?
+        .with_global_threads(y.len() as u32)
+        .dispatch(alpha, x, y)
+    # }
 }
-```
-This can be executed concurrently with [`rayon`](https://docs.rs/rayon/latest/rayon/).
-```
-use krnl_core::buffer::{UnsafeSlice, UnsafeIndex};
 
-unsafe fn fill_ones_impl(index: usize, y: UnsafeSlice<u32>) {
-    unsafe {
-        *y.unsafe_index_mut(index);
-    }
-}
-
-fn ones(len: usize) -> Vec<u32> {
-    let mut y = vec![0; len];
-    {
-        let y = UnsafeSlice::from(y.as_mut_slice());
-        rayon::broadcast(|context| {
-            unsafe {
-                fill_ones_impl(context.index(), y);
-            }
-        });
-    }
-    y
+fn main() -> Result<()> {
+    let alpha = 2f32;
+    let x = vec![1f32];
+    let y = vec![0f32];
+    let device = Device::builder().build().ok().unwrap_or(Device::host());
+    let x = Buffer::from(x).into_device(device.clone())?;
+    let mut y = Buffer::from(y).into_device(device.clone())?;
+    saxpy(alpha, x.as_slice(), y.as_slice_mut())?;
+    let y = y.into_vec()?;
+    println!("{y:?}");
+    Ok(())
 }
 ```
-To execute on a device, implement a kernel like this:
+
+# **krnlc**
+[Kernels](#kernels) are compiled with **krnlc**.
+
+Compile with `krnlc` or `krnlc -p my-crate`.
+
+1. Runs the equivalent of [`cargo expand`](https://github.com/dtolnay/cargo-expand) to locate all modules.
+2. Generates a device crate under \<target-dir\>/krnlc/crates/\<my-crate\>.
+3. Compiles the device crate with [spirv-builder](https://docs.rs/crate/spirv-builder).
+4. Processes the output, validates and optimizes with [spirv-tools](https://docs.rs/spirv-tools).
+5. Writes out to "krnl-cache.rs", which is imported by [`module`](#modules) and [`kernel`](#kernels) macros.
+
+The cache allows packages to build with stable Rust, without recompiling kernels downstream:
+```text
+__krnl_cache!("0.0.4", "
+abZy8000000@}Rn2yGJu{w.WVIuQ#sT$h4DaGh)Tk%#sdtgN ..
+..
+");
+```
+
+If the version of **krnlc** is incompatible with the **krnl** version, [`module`](#modules)
+will emit a compiler error.
+
+## Toolchains
+To locate [modules](#modules), **krnlc** will use the nightly toolchain. Install it with:
+```text
+rustup toolchain install nightly
+```
+To compile kernels with [spirv-builder](https://docs.rs/crate/spirv-builder), a specific nightly is required:
+```text
+rustup toolchain install nightly-2023-05-27
+rustup component add --toolchain nightly-2023-05-27 rust-src rustc-dev llvm-tools-preview
+```
+
+## Installing
+With spirv-tools from the [LunarG Vulkan SDK](https://www.lunarg.com/vulkan-sdk/) installed (will save significant compile time):
+```text
+cargo +nightly-2023-05-27 install krnlc --locked --no-default-features
+  --features use-installed-tools
+```
+Otherwise:
+```text
+cargo +nightly-2023-05-27 install krnlc --locked
+```
+
+## Metadata
+**krnlc** can read metadata from Cargo.toml:
+```toml
+[package.metadata.krnlc]
+# enable default features when locating modules
+default-features = false
+# features to enable when locating modules
+features = ["zoom", "zap"]
+
+[package.metadata.krnlc.dependencies]
+# source is inherited from host target
+foo = { default-features = false, features = ["foo"] }
+# keys are inherited if not provided
+bar = {}
+# private dependency
+baz = { path = "baz" }
+```
+
+# Modules
+The `module` macro declares a shared host and device scope that is visible to [krnlc](#krnlc).
+The [spirv](#spirv) arch will be used by **krnlc** when compiling modules to for the device.
 ```no_run
 use krnl::macros::module;
 
 #[module]
 # #[krnl(no_build)]
 mod kernels {
-    // The device crate will be linked to krnl-core.
     #[cfg(not(target_arch = "spirv"))]
     use krnl::krnl_core;
     use krnl_core::macros::kernel;
-    use krnl_core::buffer::{UnsafeSlice, UnsafeIndex};
-
-    pub unsafe fn fill_ones_impl(index: usize, y: UnsafeSlice<u32>) {
-        if index < y.len() {
-            unsafe {
-                *y.unsafe_index_mut(index) = 1;
-            }
-        }
-    }
 
     #[kernel]
-    pub fn fill_ones(#[global] y: UnsafeSlice<u32>) {
-        let index = kernel.global_index() as usize;
-        unsafe {
-            fill_ones_impl(index, y);
-        }
+    pub fn foo() {}
+}
+```
+Modules mut be within a module hierarchy, not within fn's or impl blocks.
+
+## Attributes
+Additonal options can be passed via attributes:
+```no_run
+# use krnl::macros::module;
+# mod foo { pub(crate) use krnl; }
+#[module]
+// Does not compile the module with krnlc, used for krnl's docs.
+#[krnl(no_build)]
+ // Override path to krnl when it isn't a dependency.
+#[krnl(crate=foo::krnl)]
+mod kernels {
+    /* .. */
+}
+```
+
+## Imports
+Functions and other items are visible to other modules, and can be imported:
+```no_run
+mod foo {
+    # use krnl::macros::module;
+    #[module]
+    # #[krnl(no_build)]
+    pub mod bar {
+        pub struct Bar;
     }
 }
 
-use krnl::{anyhow::Result, device::Device, buffer::Buffer, krnl_core::buffer::UnsafeSlice};
-
-pub fn fill_ones(device: Device, len: usize) -> Result<Buffer<u32>> {
-    let mut y = Buffer::zeros(device.clone(), len)?;
-    if let Some(y) = y.as_host_slice_mut() {
-        let y = UnsafeSlice::from(y);
-        rayon::broadcast(|context| unsafe {
-            kernels::fill_ones_impl(context.index(), y);
-        });
-    } else {
-        kernels::fill_ones::builder()?
-            // optionally set threads per group
-            // chooses a reasonable default if not provided
-            .with_threads(128)
-            .build(y.device())?
-            .with_global_threads(y.len().try_into().unwrap())
-            .dispatch(y.as_slice_mut())?;
-    }
-    Ok(y)
-}
-```
-Each kernel is called with a hidden kernel: [`Kernel`](krnl_core::kernel::Kernel) argument.
-
-## *But wait! This is Rust, we can use iterators!*
-Item kernels are a safe, zero cost abstraction for iterator patterns:
-```
-use krnl::macros::module;
-
+# use krnl::macros::module;
 #[module]
 # #[krnl(no_build)]
-mod kernels {
-    #[cfg(not(target_arch = "spirv"))]
-    use krnl::krnl_core;
-    use krnl_core::macros::kernel;
-
-    pub fn fill_ones_impl(y: &mut u32) {
-        *y = 1;
-    }
-
-    #[kernel]
-    pub fn fill_ones(#[item] y: &mut u32) {
-        fill_ones_impl(y);
-    }
+mod baz {
+    use super::foo::bar::Bar;
 }
 
-use krnl::{anyhow::Result, device::Device, buffer::Buffer, krnl_core::buffer::UnsafeSlice};
-use rayon::iter::{IntoParallelRefMutIterator, ParallelIterator};
-
-pub fn fill_ones(device: Device, len: usize) -> Result<Buffer<u32>> {
-    let mut y = Buffer::zeros(device.clone(), len)?;
-    if let Some(y) = y.as_host_slice_mut() {
-        y.par_iter_mut().for_each(kernels::fill_ones_impl);
-    } else {
-        kernels::fill_ones::builder()?
-            .build(y.device())?
-            /* global_threads is inferred if not provided */
-            .dispatch(y.as_slice_mut())?;
-    }
-    Ok(y)
-}
+# fn main() {}
 ```
-Item kernels are called with a hidden kernel: [`ItemKernel`](krnl_core::kernel::ItemKernel) argument.
 
 # Kernels
-The kernel macro generates a module like this:
-```text
+The `kernel` macro declares a function that executes on the device, dispatched from the host.
+```no_run
+# #[krnl::macros::module] #[krnl(no_build)] mod kernels {
+# use krnl::macros::kernel;
+#[kernel]
+fn foo<
+    // Specialization Constants
+    const U: i32,
+    const V: f32,
+    const W: u32,
+>(
+    // Kernel
+    /* kernel: Kernel or ItemKernel */
+    // Global Buffers
+    #[global] a: Slice<f32>,
+    #[global] b: UnsafeSlice<i32>,
+    // Items
+    #[item] c: f64,
+    #[item] d: &mut u64,
+    // Push Constants
+    e: u8,
+    f: i32,
+    // Group Buffers
+    #[group] g: UnsafeSlice<f32, 100>,
+    #[group] h: UnsafeSlice<i32, { (W * 10 + 1) as usize }>,
+) {
+    /* .. */
+}
+# }
+```
 
-pub mod fill_ones {
+# Items
+Item kernels are a simple and safe abstraction for iterator patterns. Item kernels
+have an implcit [ItemKernel](krnl_core::kernel::ItemKernel) argument.
+
+Mapping a buffer with a fn:
+```no_run
+# #[krnl::macros::module] #[krnl(no_build)] mod kernels {
+# use krnl::{macros::kernel, buffer::{Buffer, Slice}, anyhow::Result};
+fn scale_to_f32_impl(x: u8) -> f32 {
+    x as f32 / 255.
+}
+
+#[kernel]
+fn scale_to_f32(#[item] x: u8, #[item] y: &mut f32) {
+    *y = scale_to_f32_impl(x);
+}
+
+# fn foo(x: Slice<u8>) -> Result<Buffer<f32>> {
+if let Some(x) = x.as_host_slice() {
+    let y: Vec<f32> = x.iter().copied().map(scale_to_f32_impl).collect();
+    Ok(Buffer::from(y))
+} else {
+    let mut y = Buffer::zeros(x.device(), x.len())?;
+    scale_to_f32::builder()?
+        .build(x.device())?
+        .dispatch(x, y.as_slice_mut())?;
+    Ok(y)
+}
+# }
+# }
+```
+
+# Groups, Subgroups, and Threads
+Kernels without [items](#items) have an implicit [Kernel](krnl_core::kernel::Kernel) argument that uniquely
+identifies the group, subgroup, and thread.
+
+Kernels are dispatched with groups of threads (CUDA thread blocks). Threads in a group are executed together,
+typically on the same processor with a shared L1 cache. This is exposed via [Group Buffers](#group-buffers).
+
+Thread groups are composed of subgroups of threads (CUDA warps), similar to SIMD vector registers on a CPU.
+The number of threads per subgroup is a power of 2 between 1 and 128. Typical values are 32 for NVIDIA and 64
+for AMD. It can be accessed in a kernel via [`Kernel::subgroup_threads`](krnl_core::kernel::Kernel::subgroup_threads),
+or on the host via [`DeviceInfo::subgroup_threads()`](crate::device::DeviceInfo::subgroup_threads).
+
+# Global Buffers
+Visible to all threads. [Slice](krnl_core::buffer::Slice) binds to [Slice](crate::buffer::Slice), [UnsafeSlice](krnl_core::buffer::UnsafeSlice) binds
+to [SliceMut](crate::buffer::SliceMut).
+
+For best performance, consecutive threads should access consecutive elements, allowing loads and stores to be coalesced
+into fewer memory transactions.
+
+# Group Buffers
+Shared with all threads in the group, initialized with zeros. Can be used to minimize accesses
+to [global buffers](#global-buffers).
+
+The maximum amount of memory that can be used for group buffers depends on the device. Kernels
+exceeding this will fail to [build](KernelBuilder).
+
+Barriers should be used as necessary to synchronize access.
+```no_run
+# #[krnl::macros::module] #[krnl(no_build)] mod kernels {
+# use krnl::macros::kernel;
+#[kernel]
+fn group_sum(
+    #[global] x: Slice<f32>,
+    #[group] x_group: UnsafeSlice<f32, 64>,
+    #[global] y: UnsafeSlice<f32>,
+) {
+    use krnl_core::{buffer::UnsafeIndex, spirv_std::arch::workgroup_memory_barrier_with_group_sync as group_barrier};
+
+    let global_id = kernel.global_id as usize;
+    let group_id = kernel.group_id as usize;
+    let thread_id = kernel.thread_id as usize;
+    unsafe {
+        *x_group.unsafe_index_mut(thread_id) = x[global_id];
+        // Barriers are used to synchronize access to group memory.
+        // This call must be reached by all active threads in the group!
+        group_barrier();
+    }
+    if thread_id == 0 {
+        let mut acc = 0f32;
+        for i in 0 .. 64 {
+            unsafe {
+                acc += *x_group.unsafe_index(i);
+            }
+        }
+        unsafe {
+            *y.unsafe_index_mut(group_id) = acc;
+        }
+    }
+}
+# }
+```
+
+# KernelBuilder
+A [kernel declaration](#kernels) is expanded to a `mod` with a custom KernelBuilder and Kernel.
+
+```
+# #[cfg(target_arch = "spirv")]
+pub mod saxpy {
     /// Builder for creating a [`Kernel`].
     ///
     /// See [`builder()`](builder).
@@ -146,7 +337,6 @@ pub mod fill_ones {
     ///
     /// **Errors**
     /// - The kernel wasn't compiled (with `#[krnl(no_build)]` applied to `#[module]`).
-    /// - The kernel could not be deserialized. For stable releases, this is a bug, as `#[module]` should produce a compile error.
     pub fn builder() -> Result<KernelBuilder>;
 
     impl KernelBuilder {
@@ -190,239 +380,151 @@ pub mod fill_ones {
         /// **Errors**
         /// - DeviceLost: The device was lost.
         /// - The kernel could not be queued.
-        pub fn dispatch(&self, y: SliceMut<u32>) -> Result<()>;
+        pub fn dispatch(&self, alpha: f32, x: Slice<f32>, y: SliceMut<f32>) -> Result<()>;
     }
 }
+# fn main() {}
 ```
-
 View the generated code and documentation with `cargo doc --open`.
 Also use `--document-private-items` if the item is private.
 
-# Modules
-The module macro supports additional arguments within `krnl(..)`:
-```no_run
-# use krnl::macros::module;
-# mod path { pub(super) mod to { pub(crate) use krnl; } }
-#[module]
-#[krnl(crate=path::to::krnl)]
-#[krnl(no_build)] // Will skip compiling, used for krnl's docs.
-pub mod foo {
-    use super::*;
-}
-```
+The `builder()` method returns a KernelBuilder for creating a Kernel. This will fail if the
+kernel wasn't compiled with [no_build](#attributes). The builder is cached so
+that subsequent calls are trivial.
 
-Modules mut be within a module hierarchy, not within fn's or impl blocks.
+The number of threads per group can be set via `.with_threads(..)`. It will default to
+[`DeviceInfo::default_threads()`](crate::device::DeviceInfo::default_threads) if not provided.
 
-Functions and items can be shared between modules:
-```no_run
-use krnl::macros::module;
-
-mod util {
-    use krnl::macros::module;
-
-    #[module]
-    # #[krnl(no_build)]
-    pub mod functional {
-        #[cfg(not(target_arch = "spirv"))]
-        use krnl::krnl_core;
-        use krnl_core::scalar::Scalar;
-
-        pub fn add<T: Scalar>(a: T, b: T) -> T {
-            a + b
-        }
-    }
-}
-
-#[module]
-# #[krnl(no_build)]
-mod kernels {
-    #[cfg(not(target_arch = "spirv"))]
-    use krnl::krnl_core;
-    use krnl_core::macros::kernel;
-    #[cfg(target_arch = "spirv")]
-    use crate::util::functional::add;
-
-    #[kernel]
-    fn add_i32(#[item] a: i32, #[item] b: i32, #[item] c: &mut i32) {
-        *c = add(a, b);
-    }
-}
-```
-
-# Macros
-Kernels can be generated via macro_rules! and procedural macros. For example, [dry](https://docs.rs/dry/latest/dry/) and [paste](https://docs.rs/paste/latest/paste/)
-can be very useful:
-```
-# use krnl::macros::module;
-# #[module] #[krnl(no_build)] mod kernels {
-# use krnl::macros::kernel;
-use dry::macro_for;
-use paste::paste;
-macro_for!($T in [i32, u32, f32] {
-    paste! {
-        #[kernel]
-        fn [<add_ $T>](
-            #[item] a: $T,
-            #[item] b: $T,
-            #[item] c: &mut $T,
-        ) {
-            *c = a + b;
-        }
-    }
-});
-# }
-```
-
-# Groups
-Kernels are dispatched in groups of threads (CUDA thread blocks). The threads provided to `.with_threads(..)`
-sets the number of threads per group, which defaults to [`DeviceInfo::default_threads()`](crate::device::DeviceInfo::default_threads).
-
-For simple kernels, threads can be arbitrary, typically 128, 256, or 512. This can be tuned for optimal performance. It must be less than
-[`DeviceInfo::max_threads()`](crate::device::DeviceInfo::max_threads).
-
-Item kernels can infer the global_threads by the sizes of the item arguments. This is functionally equivalent
-to `.iter().zip(..)`, where the number of items is the minimum of the lengths of the buffers.
-
-Note that `global_threads = groups * threads`. When provided to `.with_global_threads()` prior to dispatch, global_threads
-are rounded up to the next multiple of threads. Because of this, it is typical to check that the global_id is
-in bounds as implemented above in `fill_ones_impl`.
-
-Kernels can declare group shared memory:
-```no_run
-# use krnl::macros::module;
-# #[module]
-# #[krnl(no_build)]
-# mod kernels {
-# use krnl::krnl_core;
-# use krnl_core::macros::kernel;
-#[kernel]
-fn group_sum(
-    #[global] x: Slice<f32>,
-    #[group] x_group: UnsafeSlice<f32, 64>,
-    #[global] y: UnsafeSlice<f32>,
-) {
-    use krnl_core::{buffer::UnsafeIndex, spirv_std::arch::workgroup_memory_barrier_with_group_sync as group_barrier};
-
-    let global_id = kernel.global_id as usize;
-    let group_id = kernel.group_id as usize;
-    let thread_id = kernel.thread_id as usize;
-    unsafe {
-        x_group.unsafe_index_mut(thread_id) = x[global_id];
-        // Barriers are used to synchronize access to group memory.
-        // This call must be reached by all active threads in the group!
-        group_barrier();
-    }
-    if thread_id == 0 {
-        for i in 0 .. kernel.threads() as usize {
-            unsafe {
-                y.unsafe_index_mut(group_index) += x_group.unsafe_index(i);
-            }
-        }
-    }
-}
-# }
-```
-Group memory is zeroed.
-
-# Subgroups
-Thread groups are composed of subgroups of threads (CUDA warps). The number of threads per subgroup is at
-most 128. Typical values are:
-- 32: NVIDIA
-- 64: AMD
-
-Note that it must be at least 1 and not greater than 128. It can be accessed in a kernel via [`Kernel::subgroup_threads()`](krnl_core::kernel::Kernel::subgroup_threads),
-or on the host via [`DeviceInfo::subgroup_threads()`](crate::device::DeviceInfo::subgroup_threads).
+Building a kernel is an expensive operation, so it is cached within [Device](crate::device::Device). Subsequent
+calls to `.build(..)` with identical builders (threads and [spec constants](#specialization)) may avoid recompiling.
 
 # Features
 Kernels implicitly declare [`Features`](device::Features) based on types and or operations used.
-If the [device](device::Device) does not support these features, `.build()` will return an
+If the [device](device::Device) does not support these features, `.build(..)` will return an
 error.
 
 See [`DeviceInfo::features()`](device::DeviceInfo::features).
 
 # Specialization
-SpecConstants are constants that are set when the kernel is compiled via `.specialize(..)`.
+SpecConstants are declared like const generic parameters, but are not const when compiling
+in Rust. They may be used to define the length of a [Group Buffer](#group-buffers). At runtime,
+SpecConstants are provided to the [builder](#KernelBuilder) via `.specialize(..)`. During `.build(..)`,
+they are converted to constants.
+```no_run
+# #[krnl::macros::module] #[krnl(no_build)] mod kernels {
+# use krnl::macros::kernel;
+#[repr(u32)]
+enum Op {
+    Add = 1,
+    Sub = 2,
+}
+
+#[kernel]
+fn binary<const OP: u32>(
+    #[item] a: f32,
+    #[item] b: f32,
+    #[item] c: &mut f32,
+) {
+    if OP == Op::Add as u32 {
+        *c = a + b
+    } else if OP == Op::Sub as u32 {
+        *c = a - b
+    } else {
+        panic!("Invalid op: {OP}");
+    }
+}
+
+# fn build(device: krnl::device::Device) -> krnl::anyhow::Result<()> {
+binary::builder()?
+    .specialize(Op::Add as u32)
+    .build(device)?;
+# Ok(())
+# }
+# }
+# fn main() {}
+```
+
+# Dispatch
+Once [built](#KernelBuilder), the groups to dispatch may be set via `.with_groups(..)`,
+or `.with_global_threads(..)` which rounds up to the next multiple of threads. [Item kernels](#items)
+infer the global_threads based on the number of items.
+
+The `.dispatch(..)` method blocks until the kernel is queued. One kernel can be queued
+while another is executing.
+
+When a kernel begins executing, the device will begin processing one or more [groups](#groups-subgroups-and-threads)
+in parallel, untill all groups have finished.
+
+Synchronization is automatically performed as necessary between kernels and when transfering buffers
+to and from devices. [`Device::wait()`](crate::device::Device::wait) can be used to explicitly wait for prior operations to complete.
+
+# SPIR-V
+[Binary intermediate representation](https://www.khronos.org/spir) for graphics shaders that can be used with [Vulkan](https://www.vulkan.org).
+[Kernels](#Kernels) are implemented as compute shaders targeting Vulkan 1.2.
+
+[spirv-std](krnl_core::spirv_std) is a std library for the spirv arch, for use with [RustGPU](https://github.com/EmbarkStudios/rust-gpu).
+
+## Asm
+The [`asm!`](core::arch::asm) macro can be used with the spirv arch, see [inline-asm](https://github.com/EmbarkStudios/rust-gpu/blob/v0.9.0/docs/src/inline-asm.md).
+
+# DebugPrintf
+[debug_printf!](krnl_core::spirv_std::macros::debug_printfln) and [debug_printfln!](krnl_core::spirv_std::macros::debug_printfln)
+will print formatted output to stderr.
 
 ```no_run
-# use krnl::{macros::module, anyhow::Result, device::Device};
-# #[module]
-# #[krnl(no_build)]
-# mod kernels {
-# use krnl::krnl_core;
-# use krnl_core::macros::kernel;
+# #[krnl::macros::module] #[krnl(no_build)] mod kernels {
+# use krnl::macros::kernel;
 #[kernel]
-pub fn group_sum<const N: u32 /*, ...additional spec constants */>(
-    #[global] x: Slice<f32>,
-    #[group] x_group: UnsafeSlice<f32, { 2 * N as usize }>,
-    #[global] y: UnsafeSlice<f32>,
-) {
-    /* N is available here, but isn't const. */
+fn foo(x: f32) {
+    use krnl_core::spirv_std; // spirv_std must be in scope
+    use spirv_std::macros::debug_printfln;
+
+    unsafe {
+        debug_printfln!("Hello World!");
+    }
 }
 # }
-# fn foo(device: Device) -> Result<()> {
-# use kernels::group_sum;
-let n = 128;
-let kernel = group_sum::builder()?
-    .with_threads(n)
-    .specialize(n /*, ...additional spec constants */)
-    .build(device)?;
-# todo!()
-# }
 ```
+
+Pass `--debug-printf` to [krnlc](#krnlc) to enable.  DebugPrintf will prevent most optimization and preserve additonal debug info
+ like file names and line numbers, significantly increasing the size of both the cache and the kernel. In some cases it may prevent
+ optimizations that are necessary for legalization.
+
+The [DebugPrintf Validation Layer](https://github.com/KhronosGroup/Vulkan-ValidationLayers/blob/main/docs/debug_printf.md)
+must be active when the [device](crate::device::Device) is created or DebugPrintf instructions will be removed.
+
+`[Device(0@7f6f3c9724d0) crate::kernels::foo<threads=1>] Validation Information: [ UNASSIGNED-DEBUG-PRINTF ]
+Object 0: handle = 0x7f6f3c9724d0, type = VK_OBJECT_TYPE_DEVICE; | MessageID = 0x92394c89 | Hello World!`
 
 # Panics
-Panics will abort the thread, but this will not be caught from the host.
 
-# Compiling
-Kernels are compiled with **krnlc**.
+## Without [DebugPrintf](#DebugPrintf)
+Panics in [kernels](#Kernels) will abort the thread. This will not stop other threads from continuing,
+and the panic will not be caught from the host.
 
-## Toolchains
-To locate modules, **krnlc** will use the nightly toolchain. Install it with:
-```text
-rustup toolchain install nightly
-```
-To compile kernels with [spirv-builder](https://docs.rs/crate/spirv-builder), a specific nightly is required:
-```text
-rustup component add --toolchain nightly-2023-04-15 rust-src rustc-dev llvm-tools-preview
-```
+## With [DebugPrintf](#DebugPrintf)
+Kernels will block on completion, and return an error on panic. When a kernel thread panics,
+a message will be printed to stderr, including the device, the name, the panic message, and
+a backtrace of calls leading to the panic.
 
-## Installing
-With spirv-tools installed (will save significant compile time):
-```text
-cargo +nightly-2023-04-15 install krnlc --locked --no-default-features --features use-installed-tools
-```
-Otherwise:
-```text
-cargo +nightly-2023-04-15 install krnlc --locked
-```
+`[Device(0@7f89289724d0) crate::kernels::foo<threads=2, N=4>] Validation Information: [ UNASSIGNED-DEBUG-PRINTF ] Object 0: handle = 0x7f89289b6070, type = VK_OBJECT_TYPE_QUEUE; | MessageID = 0x92394c89 | Command buffer (0x7f892896d7f0). Compute Dispatch Index 0. Pipeline (0x7f8928a95fb0). Shader Module (0x7f8928a9d500). Shader Instruction Index = 137.  Stage = Compute.  Global invocation ID (x, y, z) = (1, 0, 0 )
+[Rust panicked at ~/.cargo/git/checkouts/krnl-699626729fecae20/db00d07/krnl-core/src/buffer.rs:169:20]
+ index out of bounds: the len is 1 but the index is 1
+      in <krnl_core::buffer::UnsafeSliceRepr<u32> as krnl_core::buffer::UnsafeIndex<usize>>::unsafe_index_mut
+        called at ~/.cargo/git/checkouts/krnl-699626729fecae20/db00d07/krnl-core/src/buffer.rs:229:18
+      by <krnl_core::buffer::BufferBase<krnl_core::buffer::UnsafeSliceRepr<u32>> as krnl_core::buffer::UnsafeIndex<usize>>::unsafe_index_mut
+        called at src/kernels.rs:15:10
+      by crate::kernels::foo::foo
+        called at src/kernels.rs:11:1
+      by crate::kernels::foo
+        called at src/kernels.rs:12:8
+      by crate::kernels::foo(__krnl_global_id = vec3(1, 0, 0), __krnl_groups = vec3(1, 1, 1), __krnl_group_id = vec3(0, 0, 0), __krnl_subgroups = 1, __krnl_subgroup_id = 0, __krnl_subgroup_threads = 32, __krnl_subgroup_thread_id = 1, __krnl_thread_id = vec3(1, 0, 0))
+ Unable to find SPIR-V OpLine for source information.  Build shader with debug info to get source information.
+thread 'foo' panicked at src/lib.rs:50:10:
+called `Result::unwrap()` on an `Err` value: Kernel `crate::kernels::foo<threads=2, N=4>` panicked!`
 
-## Metadata
-**krnlc** can read metadata from Cargo.toml:
-```toml
-[package.metadata.krnlc]
-# enable default features when locating modules
-default-features = false
-# features to enable when locating modules
-features = ["zoom", "zap"]
-
-[package.metadata.krnlc.dependencies]
-# source is inherited from host target
-foo = { default-features = false, features = ["foo"] }
-# keys are inherited if not provided
-bar = {}
-# private dependency
-baz = { path = "baz" }
-```
-
-## Compiling your kernels!
-Compile with `krnlc` or `krnlc -p my-crate`:
-1. Runs the equivalent of [`cargo expand`](https://github.com/dtolnay/cargo-expand) to locate all modules.
-2. Generates a device crate under \<target-dir\>/krnlc/crates/\<my-crate\>.
-3. Compiles the device crate with [spirv-builder](https://docs.rs/crate/spirv-builder).
-4. Processes the output, validates and optimizes with [spirv-tools](https://docs.rs/spirv-tools).
-5. Writes out to "krnl-cache.rs".
-
-Note: Can also run with `--check` which will check that the cache is up to date without writing to it.
+Note: The validation layer can be configured to redirect messages to stdout. This will prevent krnl from receiving a callback
+and returning an error in case of a panic.
 */
 
 use crate::{

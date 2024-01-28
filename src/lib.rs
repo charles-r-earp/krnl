@@ -18,10 +18,11 @@ Kernel compiler for **krnl**.
 - Compiles to "krnl-cache.rs", so the crate will build on stable Rust.
 
 # Installing
-For device functionality (kernels), install Vulkan for your platform.
+For device functionality (kernels), install [Vulkan](https://www.vulkan.org) for your platform.
 - For development, it's recomended to install the [LunarG Vulkan SDK](https://www.lunarg.com/vulkan-sdk/), which includes additional tools:
     - vulkaninfo
     - Validation layers
+        - DebugPrintf
     - spirv-tools
         - This is used by **krnlc** for spirv validation and optimization.
             - **krnlc** builds by default without needing spirv-tools to be installed.
@@ -29,7 +30,7 @@ For device functionality (kernels), install Vulkan for your platform.
 ## Test
 - Check that `vulkaninfo --summary` shows your devices.
     - Instance version should be >= 1.2.
-- Alternatively, clone [**krnl**](https://github.com/charles-r-earp/krnl/releases/tag/v0.0.1).
+- Alternatively, clone [**krnl**](https://github.com/charles-r-earp/krnl/releases/tag/v0.0.3).
     - Check that `cargo test --test integration_tests -- --exact none` shows your devices.
     - You can run all the tests with `cargo test`.
 

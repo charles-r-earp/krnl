@@ -39,7 +39,7 @@ struct Cli {
     /// Directory for all generated artifacts
     #[arg(long = "target-dir")]
     target_dir: Option<PathBuf>,
-    /// Check mode.
+    /// Check mode
     #[arg(long = "check")]
     check: bool,
     /// Enable DebugPrintf
