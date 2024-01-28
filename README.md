@@ -117,7 +117,7 @@ fn main() -> Result<()> {
 # Performance 
 *NVIDIA GeForce GTX 1060 with Max-Q Design*
 
-[compute-benches](benches/compute-benches)
+[benches/compute-benches](benches/compute-benches)
 
 ## alloc
 
@@ -158,6 +158,7 @@ fn main() -> Result<()> {
 | **`1,000,000`**  | `88.59 us` (✅ **1.00x**)  | `81.25 us` (✅ **1.09x faster**)  | `89.24 us` (✅ **1.01x slower**)   |
 | **`10,000,000`** | `742.25 us` (✅ **1.00x**) | `770.35 us` (✅ **1.04x slower**) | `780.49 us` (✅ **1.05x slower**)  |
 | **`64,000,000`** | `4.68 ms` (✅ **1.00x**)   | `4.91 ms` (✅ **1.05x slower**)   | `4.92 ms` (✅ **1.05x slower**)    |
+
 
 # Recent Changes 
 See [Releases.md](https://github.com/charles-r-earp/krnl/blob/main/Releases.md)
