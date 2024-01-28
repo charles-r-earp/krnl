@@ -12,7 +12,9 @@ Developed for [**autograph**](https://github.com/charles-r-earp/autograph).
 - Supports GPU's and other Vulkan 1.2 capable devices.
 - MacOS / iOS supported via [MoltenVK](https://github.com/KhronosGroup/MoltenVK).
 - Kernels are written inline, entirely in Rust.
-- Simple iterator patterns can be implemented without unsafe.
+    - Simple iterator patterns can be implemented without unsafe.
+    - Supports inline [SPIR-V](https://www.khronos.org/spir) assembly.
+    - DebugPrintf integration, generates backtraces for panics.
 - Buffers on the host can be accessed natively as Vecs and slices.
 
 # **krnlc**
@@ -21,6 +23,8 @@ Kernel compiler for **krnl**.
 - Supports dependencies defined in Cargo.toml. 
 - Uses [spirv-tools](https://github.com/EmbarkStudios/spirv-tools-rs) to validate and optimize. 
 - Compiles to "krnl-cache.rs", so the crate will build on stable Rust.
+
+See the docs for installation and usage instructions.
 
 # Installing
 For device functionality (kernels), install [Vulkan](https://www.vulkan.org) for your platform.
@@ -35,8 +39,7 @@ For device functionality (kernels), install [Vulkan](https://www.vulkan.org) for
 ## Test
 - Check that `vulkaninfo --summary` shows your devices.
     - Instance version should be >= 1.2.
-- Alternatively, clone [**krnl**](https://github.com/charles-r-earp/krnl/tags/v0.0.3).
-    - Check that `cargo test --test integration_tests -- --exact none` shows your devices.
+- Alternatively, check that `cargo test --test integration_tests -- --exact none` shows your devices.
     - You can run all the tests with `cargo test`.
 
 # Getting Started

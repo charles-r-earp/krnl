@@ -486,15 +486,16 @@ fn foo(x: f32) {
 # }
 ```
 
-Pass `--debug-printf` to [krnlc](#krnlc) to enable.  DebugPrintf will prevent most optimization and preserve additonal debug info
- like file names and line numbers, significantly increasing the size of both the cache and the kernel. In some cases it may prevent
- optimizations that are necessary for legalization.
+Pass `--debug-printf` to [krnlc](#krnlc) to enable.  DebugPrintf will disable many optimizations and include
+debug info, significantly increasing the size of both the cache and kernels at runtime.
 
 The [DebugPrintf Validation Layer](https://github.com/KhronosGroup/Vulkan-ValidationLayers/blob/main/docs/debug_printf.md)
 must be active when the [device](crate::device::Device) is created or DebugPrintf instructions will be removed.
 
-`[Device(0@7f6f3c9724d0) crate::kernels::foo<threads=1>] Validation Information: [ UNASSIGNED-DEBUG-PRINTF ]
+```text
+[Device(0@7f6f3c9724d0) crate::kernels::foo<threads=1>] Validation Information: [ UNASSIGNED-DEBUG-PRINTF ]
 Object 0: handle = 0x7f6f3c9724d0, type = VK_OBJECT_TYPE_DEVICE; | MessageID = 0x92394c89 | Hello World!`
+```
 
 # Panics
 
@@ -507,7 +508,8 @@ Kernels will block on completion, and return an error on panic. When a kernel th
 a message will be printed to stderr, including the device, the name, the panic message, and
 a backtrace of calls leading to the panic.
 
-`[Device(0@7f89289724d0) crate::kernels::foo<threads=2, N=4>] Validation Information: [ UNASSIGNED-DEBUG-PRINTF ] Object 0: handle = 0x7f89289b6070, type = VK_OBJECT_TYPE_QUEUE; | MessageID = 0x92394c89 | Command buffer (0x7f892896d7f0). Compute Dispatch Index 0. Pipeline (0x7f8928a95fb0). Shader Module (0x7f8928a9d500). Shader Instruction Index = 137.  Stage = Compute.  Global invocation ID (x, y, z) = (1, 0, 0 )
+```text
+[Device(0@7f89289724d0) crate::kernels::foo<threads=2, N=4>] Validation Information: [ UNASSIGNED-DEBUG-PRINTF ] Object 0: handle = 0x7f89289b6070, type = VK_OBJECT_TYPE_QUEUE; | MessageID = 0x92394c89 | Command buffer (0x7f892896d7f0). Compute Dispatch Index 0. Pipeline (0x7f8928a95fb0). Shader Module (0x7f8928a9d500). Shader Instruction Index = 137.  Stage = Compute.  Global invocation ID (x, y, z) = (1, 0, 0 )
 [Rust panicked at ~/.cargo/git/checkouts/krnl-699626729fecae20/db00d07/krnl-core/src/buffer.rs:169:20]
  index out of bounds: the len is 1 but the index is 1
       in <krnl_core::buffer::UnsafeSliceRepr<u32> as krnl_core::buffer::UnsafeIndex<usize>>::unsafe_index_mut
@@ -521,7 +523,8 @@ a backtrace of calls leading to the panic.
       by crate::kernels::foo(__krnl_global_id = vec3(1, 0, 0), __krnl_groups = vec3(1, 1, 1), __krnl_group_id = vec3(0, 0, 0), __krnl_subgroups = 1, __krnl_subgroup_id = 0, __krnl_subgroup_threads = 32, __krnl_subgroup_thread_id = 1, __krnl_thread_id = vec3(1, 0, 0))
  Unable to find SPIR-V OpLine for source information.  Build shader with debug info to get source information.
 thread 'foo' panicked at src/lib.rs:50:10:
-called `Result::unwrap()` on an `Err` value: Kernel `crate::kernels::foo<threads=2, N=4>` panicked!`
+called `Result::unwrap()` on an `Err` value: Kernel `crate::kernels::foo<threads=2, N=4>` panicked!
+```
 
 Note: The validation layer can be configured to redirect messages to stdout. This will prevent krnl from receiving a callback
 and returning an error in case of a panic.
