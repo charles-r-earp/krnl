@@ -2,7 +2,8 @@
 
 [Kernels](#kernels) are functions dispatched from the host that execute on the device. They
 are declared within [modules](#modules), which create a shared scope between host and device.
-[krnlc](#krnlc) collects all modules and compiles them.
+[krnlc](#krnlc) collects all modules and compiles them. [krnl-core](krnl_core) is a shared core library
+between both host and device.
 
 ```no_run
 use krnl::{
@@ -36,7 +37,7 @@ mod kernels {
 
         let global_id = kernel.global_id as usize;
         if global_id < x.len().min(y.len()) {
-            saxpy_impl(alpha, &x[global_id], unsafe { y.unsafe_index_mut(global_id) });
+            saxpy_impl(alpha, x[global_id], unsafe { y.unsafe_index_mut(global_id) });
         }
     }
 }
@@ -137,6 +138,8 @@ bar = {}
 # private dependency
 baz = { path = "baz" }
 ```
+
+[krnl-core](krnl_core) is automatically included as a dependency.
 
 # Modules
 The `module` macro declares a shared host and device scope that is visible to [krnlc](#krnlc).
@@ -258,6 +261,13 @@ if let Some(x) = x.as_host_slice() {
 # }
 ```
 
+# Push Constants
+Scalar arguments without an attribute. Unlike [SpecConstants](#Specialization), they are
+provided to [`.dispatch(..)`](#dispatch), and do not require rebuilding the kernel.
+
+At least 128 bytes of push constants can be used, depending on the device. Each [item](#items) or
+[global](#global-buffers)  argument requires 8 bytes of push constants.
+
 # Groups, Subgroups, and Threads
 Kernels without [items](#items) have an implicit [Kernel](krnl_core::kernel::Kernel) argument that uniquely
 identifies the group, subgroup, and thread.
@@ -272,7 +282,7 @@ or on the host via [`DeviceInfo::subgroup_threads()`](crate::device::DeviceInfo:
 
 # Global Buffers
 Visible to all threads. [Slice](krnl_core::buffer::Slice) binds to [Slice](crate::buffer::Slice), [UnsafeSlice](krnl_core::buffer::UnsafeSlice) binds
-to [SliceMut](crate::buffer::SliceMut).
+to [SliceMut](crate::buffer::SliceMut), provided to [`.dispatch(..)`](#dispatch).
 
 For best performance, consecutive threads should access consecutive elements, allowing loads and stores to be coalesced
 into fewer memory transactions.
@@ -294,7 +304,10 @@ fn group_sum(
     #[group] x_group: UnsafeSlice<f32, 64>,
     #[global] y: UnsafeSlice<f32>,
 ) {
-    use krnl_core::{buffer::UnsafeIndex, spirv_std::arch::workgroup_memory_barrier_with_group_sync as group_barrier};
+    use krnl_core::{
+        buffer::UnsafeIndex,
+        spirv_std::arch::workgroup_memory_barrier_with_group_sync as group_barrier
+    };
 
     let global_id = kernel.global_id as usize;
     let group_id = kernel.group_id as usize;
@@ -445,14 +458,14 @@ binary::builder()?
 ```
 
 # Dispatch
-Once [built](#KernelBuilder), the groups to dispatch may be set via `.with_groups(..)`,
+Once [built](#KernelBuilder), the [groups](#groups-subgroups-and-threads) to dispatch may be set via `.with_groups(..)`,
 or `.with_global_threads(..)` which rounds up to the next multiple of threads. [Item kernels](#items)
 infer the global_threads based on the number of items.
 
 The `.dispatch(..)` method blocks until the kernel is queued. One kernel can be queued
 while another is executing.
 
-When a kernel begins executing, the device will begin processing one or more [groups](#groups-subgroups-and-threads)
+When a kernel begins executing, the device will begin processing one or more groups
 in parallel, untill all groups have finished.
 
 Synchronization is automatically performed as necessary between kernels and when transfering buffers
@@ -494,7 +507,7 @@ must be active when the [device](crate::device::Device) is created or DebugPrint
 
 ```text
 [Device(0@7f6f3c9724d0) crate::kernels::foo<threads=1>] Validation Information: [ UNASSIGNED-DEBUG-PRINTF ]
-Object 0: handle = 0x7f6f3c9724d0, type = VK_OBJECT_TYPE_DEVICE; | MessageID = 0x92394c89 | Hello World!`
+Object 0: handle = 0x7f6f3c9724d0, type = VK_OBJECT_TYPE_DEVICE; | MessageID = 0x92394c89 | Hello World!
 ```
 
 # Panics
@@ -526,7 +539,7 @@ thread 'foo' panicked at src/lib.rs:50:10:
 called `Result::unwrap()` on an `Err` value: Kernel `crate::kernels::foo<threads=2, N=4>` panicked!
 ```
 
-Note: The validation layer can be configured to redirect messages to stdout. This will prevent krnl from receiving a callback
+Note: The validation layer can be configured to redirect messages to stdout. This will prevent **krnl** from receiving a callback
 and returning an error in case of a panic.
 */
 

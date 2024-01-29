@@ -43,12 +43,12 @@ For device functionality (kernels), install [Vulkan](https://www.vulkan.org) for
 - See [kernel](kernel) for compute kernels.
 
 # Example
-```
- use krnl::{
-    anyhow::Result,
-    buffer::{Buffer, Slice, SliceMut},
-    device::Device,
+```no_run
+use krnl::{
     macros::module,
+    anyhow::Result,
+    device::Device,
+    buffer::{Buffer, Slice, SliceMut},
 };
 
 #[module]
@@ -58,51 +58,57 @@ mod kernels {
     use krnl::krnl_core;
     use krnl_core::macros::kernel;
 
-    pub fn saxpy_impl(x: f32, alpha: f32, y: &mut f32) {
+    pub fn saxpy_impl(alpha: f32, x: f32, y: &mut f32) {
         *y += alpha * x;
     }
 
     // Item kernels for iterator patterns.
     #[kernel]
-    pub fn saxpy(#[item] x: f32, alpha: f32, #[item] y: &mut f32) {
-        saxpy_impl(x, alpha, y);
+    pub fn saxpy(alpha: f32, #[item] x: f32, #[item] y: &mut f32) {
+        saxpy_impl(alpha, x, y);
     }
 
     // General purpose kernels like CUDA / OpenCL.
     #[kernel]
-    pub fn saxpy_global(#[global] x: Slice<f32>, alpha: f32, #[global] y: UnsafeSlice<f32>) {
+    pub fn saxpy_global(alpha: f32, #[global] x: Slice<f32>, #[global] y: UnsafeSlice<f32>) {
         use krnl_core::buffer::UnsafeIndex;
-        let mut index = kernel.global_index() as usize;
-        while index < x.len().min(y.len()) {
-            saxpy_impl(x[index], alpha, unsafe { y.unsafe_index_mut(index) });
-            index += kernel.global_threads() as usize;
+
+        let global_id = kernel.global_id as usize;
+        if global_id < x.len().min(y.len()) {
+            saxpy_impl(alpha, x[global_id], unsafe { y.unsafe_index_mut(global_id) });
         }
     }
 }
 
-fn saxpy(x: Slice<f32>, alpha: f32, mut y: SliceMut<f32>) -> Result<()> {
+fn saxpy(alpha: f32, x: Slice<f32>, mut y: SliceMut<f32>) -> Result<()> {
     if let Some((x, y)) = x.as_host_slice().zip(y.as_host_slice_mut()) {
-        for (x, y) in x.iter().copied().zip(y) {
-            kernels::saxpy_impl(x, alpha, y);
-        }
+        x.iter()
+            .copied()
+            .zip(y.iter_mut())
+            .for_each(|(x, y)| kernels::saxpy_impl(alpha, x, y));
         return Ok(());
     }
+    # if true {
     kernels::saxpy::builder()?
         .build(y.device())?
-        .dispatch(x, alpha, y)
+        .dispatch(alpha, x, y)
+    # } else {
+    // or
+    kernels::saxpy_global::builder()?
+        .build(y.device())?
+        .with_global_threads(y.len() as u32)
+        .dispatch(alpha, x, y)
+    # }
 }
 
 fn main() -> Result<()> {
-    let x = vec![1f32];
     let alpha = 2f32;
+    let x = vec![1f32];
     let y = vec![0f32];
-    # if false {
     let device = Device::builder().build().ok().unwrap_or(Device::host());
-    # }
-    # let device = Device::host();
     let x = Buffer::from(x).into_device(device.clone())?;
     let mut y = Buffer::from(y).into_device(device.clone())?;
-    saxpy(x.as_slice(), alpha, y.as_slice_mut())?;
+    saxpy(alpha, x.as_slice(), y.as_slice_mut())?;
     let y = y.into_vec()?;
     println!("{y:?}");
     Ok(())
