@@ -137,6 +137,9 @@ jobs:
     - name: krnlc clippy
       if: ${{ !cancelled() }}
       run: cargo +nightly-2023-05-27 clippy --manifest-path krnlc/Cargo.toml --no-default-features --features use-installed-tools -v -- -D warnings
+    - name: rustdoc
+      if: ${{ !cancelled() }}
+      run: cargo rustdoc -- --D warnings
   cargo-deny:    
     runs-on: ubuntu-latest    
     steps:
