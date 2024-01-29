@@ -72,6 +72,12 @@ jobs:
         run: cargo build -v
       - name: test
         run: cargo test --no-default-features -p krnl -p krnlc-tests -v -- --format=terse
+      - name: test docs
+        run: cargo test --docs
+      - name: test krnlc-tests
+        run: cargo test -p krnlc-tests
+      - name: check compute-benches
+        run: cargo check -p compute-benches --benches
       - uses: actions-rs/toolchain@v1
         with:
           toolchain: nightly
