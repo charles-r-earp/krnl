@@ -121,7 +121,7 @@ pub mod builder {
         ///
         /// **errors**
         ///
-        /// - [`DeviceUnavailable`](super::error::DeviceUnavailable)
+        /// - [`DeviceUnavailable`]
         /// - [`DeviceIndexOutofRange`](super::error::DeviceIndexOutOfRange)
         /// - The device could not be created.
         pub fn build(self) -> Result<Device> {

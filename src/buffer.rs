@@ -1935,7 +1935,7 @@ impl<'a, T: Scalar> DataOwned for CowBufferRepr<'a, T> {
 
 /** A buffer.
 
-Use [`TryFrom`](core::convert::TryFrom) to convert from [`ScalarBufferBase`].
+Use [`TryFrom`] to convert from [`ScalarBufferBase`].
 */
 #[derive(Clone)]
 pub struct BufferBase<S: Data> {

@@ -38,9 +38,9 @@ For device functionality (kernels), install [Vulkan](https://www.vulkan.org) for
     - You can run all the tests with `cargo test`.
 
 # Getting Started
-- See [device](device) for creating devices.
-- See [buffer](buffer) for creating buffers.
-- See [kernel](kernel) for compute kernels.
+- See [device] for creating devices.
+- See [buffer] for creating buffers.
+- See [kernel] for compute kernels.
 
 # Example
 ```no_run
@@ -116,7 +116,7 @@ fn main() -> Result<()> {
 ```
 */
 
-#![forbid(unsafe_op_in_unsafe_fn)]
+#![deny(unsafe_op_in_unsafe_fn)]
 #![warn(missing_docs)]
 
 /// anyhow
