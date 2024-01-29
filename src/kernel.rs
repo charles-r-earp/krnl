@@ -292,7 +292,7 @@ Shared with all threads in the group, initialized with zeros. Can be used to min
 to [global buffers](#global-buffers).
 
 The maximum amount of memory that can be used for group buffers depends on the device. Kernels
-exceeding this will fail to [build](KernelBuilder).
+exceeding this will fail to [build](#kernel-builder).
 
 Barriers should be used as necessary to synchronize access.
 ```no_run
