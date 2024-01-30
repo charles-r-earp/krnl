@@ -12,9 +12,6 @@ krnl = { workspace = true, default-features = false }
 paste.workspace = true
 dry.workspace = true
 
-[features]
-krnlc = []
-
 [package.metadata.krnlc.dependencies]
 paste = {}
 dry = {}
