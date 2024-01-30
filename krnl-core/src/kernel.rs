@@ -3,13 +3,6 @@
 pub mod __private {
     use super::{ItemKernel, Kernel};
 
-    #[repr(simd)]
-    pub struct UVec3 {
-        pub x: u32,
-        pub y: u32,
-        pub z: u32,
-    }
-
     pub struct KernelArgs {
         pub global_threads: u32,
         pub global_id: u32,

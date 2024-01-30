@@ -1361,13 +1361,13 @@ fn kernel_impl(item_tokens: TokenStream2) -> Result<TokenStream2> {
                 __krnl_push_consts: &#push_consts_ident,
                 #[allow(unused)]
                 #[spirv(global_invocation_id)]
-                __krnl_global_id: ::krnl_core::kernel::__private::UVec3,
+                __krnl_global_id: ::krnl_core::spirv_std::glam::UVec3,
                 #[allow(unused)]
                 #[spirv(num_workgroups)]
-                __krnl_groups: ::krnl_core::kernel::__private::UVec3,
+                __krnl_groups: ::krnl_core::spirv_std::glam::UVec3,
                 #[allow(unused)]
                 #[spirv(workgroup_id)]
-                __krnl_group_id: ::krnl_core::kernel::__private::UVec3,
+                __krnl_group_id: ::krnl_core::spirv_std::glam::UVec3,
                 #[allow(unused)]
                 #[spirv(num_subgroups)]
                 __krnl_subgroups: u32,
@@ -1382,7 +1382,7 @@ fn kernel_impl(item_tokens: TokenStream2) -> Result<TokenStream2> {
                 __krnl_subgroup_thread_id: u32,
                 #[allow(unused)]
                 #[spirv(local_invocation_id)]
-                __krnl_thread_id: ::krnl_core::kernel::__private::UVec3,
+                __krnl_thread_id: ::krnl_core::spirv_std::glam::UVec3,
                 #[allow(unused)]
                 #[spirv(storage_buffer, descriptor_set = 1, binding = 0)]
                 #kernel_data: &mut [u32],

@@ -8,7 +8,7 @@ Shared core library for [**krnl**](https://docs.rs/krnl).
 #![cfg_attr(
     target_arch = "spirv",
     no_std,
-    feature(asm_experimental_arch, repr_simd, min_specialization)
+    feature(asm_experimental_arch, min_specialization)
 )]
 #![deny(unsafe_op_in_unsafe_fn)]
 
