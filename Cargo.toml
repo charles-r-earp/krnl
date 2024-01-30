@@ -67,7 +67,6 @@ dry.workspace = true
 derive_more = { workspace = true, features = ["unwrap", "deref", "deref_mut"] }
 thiserror.workspace = true
 parking_lot = "0.12.1"
-once_cell = { version = "1.13.0", default-features = false, features = ["std", "alloc"] }
 bytemuck.workspace = true
 flate2.workspace = true
 dashmap = { version = "5.3.4", optional = true }

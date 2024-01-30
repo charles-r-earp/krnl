@@ -1495,9 +1495,9 @@ fn kernel_impl(item_tokens: TokenStream2) -> Result<TokenStream2> {
                     device::Device,
                     scalar::ScalarType,
                     kernel::__private::{Kernel as KernelBase, KernelBuilder as KernelBuilderBase, KernelDesc, SliceDesc, SpecDesc, PushDesc, Safety, validate_kernel},
-                    once_cell::sync::Lazy,
                     anyhow::format_err,
                 };
+                use ::std::sync::OnceLock;
                 #[cfg(not(krnlc))]
                 #[doc(hidden)]
                 use __krnl::macros::__krnl_cache;
@@ -1521,15 +1521,16 @@ fn kernel_impl(item_tokens: TokenStream2) -> Result<TokenStream2> {
                 /// **Errors**
                 /// - The kernel wasn't compiled (with `#[krnl(no_build)]` applied to `#[module]`).
                 pub fn builder() -> Result<KernelBuilder> {
-                    static BUILDER: Lazy<Result<KernelBuilderBase, String>> = Lazy::new(|| {
+                    static BUILDER: OnceLock<Result<KernelBuilderBase, String>> = OnceLock::new();
+                    let builder = BUILDER.get_or_init(|| {
                         const DESC: Option<KernelDesc> = validate_kernel(__krnl_kernel!(#ident), #safety, &[#(#spec_descs),*], &[#(#slice_descs),*], &[#(#push_descs),*]);
                         if let Some(desc) = DESC.as_ref() {
                             KernelBuilderBase::from_desc(desc.clone())
                         } else {
-                            Err(format!("Kernel `{}` not compiled!", std::module_path!()))
+                            Err(format!("Kernel `{}` not compiled!", ::std::module_path!()))
                         }
                     });
-                    match BUILDER.as_ref() {
+                    match builder {
                         Ok(inner) => Ok(KernelBuilder {
                             inner: inner.clone(),
                         }),

@@ -10,7 +10,7 @@ Shared core library for [**krnl**](https://docs.rs/krnl).
     no_std,
     feature(asm_experimental_arch, repr_simd, min_specialization)
 )]
-#![forbid(unsafe_op_in_unsafe_fn)]
+#![deny(unsafe_op_in_unsafe_fn)]
 
 /// half
 pub extern crate half;

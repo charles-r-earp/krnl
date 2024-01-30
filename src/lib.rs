@@ -125,8 +125,6 @@ pub extern crate anyhow;
 pub extern crate krnl_core;
 /// krnl-macros
 pub extern crate krnl_macros as macros;
-#[doc(hidden)]
-pub extern crate once_cell;
 
 /// half
 pub use krnl_core::half;
