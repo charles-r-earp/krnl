@@ -43,7 +43,7 @@ For device functionality (kernels), install [Vulkan](https://www.vulkan.org) for
     - You can run all the tests with `cargo test`.
 
 # Getting Started
-See the [docs](https://docs.rs/krnl) or build them locally with `cargo doc --open`.
+See the [docs](https://docs.rs/krnl) or build them locally with `cargo doc --all-features --open`.
 
 # Example
 ```rust

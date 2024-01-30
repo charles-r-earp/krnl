@@ -31,7 +31,6 @@ One kernel can be queued while another is executing on that queue.
 #[cfg(feature = "device")]
 use crate::kernel::{KernelDesc, KernelKey};
 use anyhow::Result;
-use serde::Deserialize;
 use std::{
     fmt::{self, Debug},
     sync::Arc,
@@ -454,7 +453,7 @@ if features.shader_int8() {
 ```
 
 */
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Features {
     shader_int8: bool,
     shader_int16: bool,

@@ -50,6 +50,7 @@ use half::{bf16, f16};
 #[cfg(feature = "device")]
 use krnl_macros::module;
 use paste::paste;
+#[cfg(feature = "serde")]
 use serde::{de::Deserializer, ser::Serializer, Deserialize, Serialize};
 use std::{
     fmt::{self, Debug},
@@ -429,6 +430,7 @@ impl ScalarData for ScalarSliceRepr<'_> {
     }
 }
 
+#[cfg(feature = "serde")]
 impl Serialize for ScalarSliceRepr<'_> {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
@@ -481,6 +483,7 @@ impl Serialize for ScalarSliceRepr<'_> {
     }
 }
 
+#[cfg(feature = "serde")]
 impl<'de> Deserialize<'de> for ScalarBufferRepr {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
@@ -1266,6 +1269,7 @@ impl<S: ScalarData> Debug for ScalarBufferBase<S> {
     }
 }
 
+#[cfg(feature = "serde")]
 impl<S1: ScalarData> Serialize for ScalarBufferBase<S1> {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
@@ -1275,6 +1279,7 @@ impl<S1: ScalarData> Serialize for ScalarBufferBase<S1> {
     }
 }
 
+#[cfg(feature = "serde")]
 impl<'de, S: ScalarDataOwned> Deserialize<'de> for ScalarBufferBase<S> {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
@@ -2551,6 +2556,7 @@ impl<S: Data> Debug for BufferBase<S> {
     }
 }
 
+#[cfg(feature = "serde")]
 impl<S1: Data> Serialize for BufferBase<S1> {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
@@ -2560,6 +2566,7 @@ impl<S1: Data> Serialize for BufferBase<S1> {
     }
 }
 
+#[cfg(feature = "serde")]
 impl<'de, T: Scalar, S: DataOwned<Elem = T>> Deserialize<'de> for BufferBase<S> {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
@@ -2616,7 +2623,7 @@ mod kernels {
     });
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "serde"))]
 mod tests {
     use super::*;
     use serde_test::{assert_tokens, Token};

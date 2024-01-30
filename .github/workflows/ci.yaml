@@ -71,7 +71,7 @@ jobs:
       - name: build
         run: cargo build -v
       - name: test
-        run: cargo test --no-default-features -p krnl -p krnlc-tests -v -- --format=terse
+        run: cargo test --no-default-features --features serde -p krnl -p krnlc-tests -v -- --format=terse
       - name: test krnlc-tests
         run: cargo test -p krnlc-tests
       - name: check compute-benches

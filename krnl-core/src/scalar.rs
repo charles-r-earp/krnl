@@ -8,7 +8,7 @@ use dry::macro_wrap;
 use half::{bf16, f16};
 use num_traits::{AsPrimitive, FromPrimitive, NumAssign, NumCast};
 use paste::paste;
-#[cfg(not(target_arch = "spirv"))]
+#[cfg(feature = "serde")]
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 #[cfg(not(target_arch = "spirv"))]
 use std::{
@@ -161,7 +161,7 @@ impl FromStr for ScalarType {
     }
 }
 
-#[cfg(not(target_arch = "spirv"))]
+#[cfg(feature = "serde")]
 impl Serialize for ScalarType {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
@@ -171,7 +171,7 @@ impl Serialize for ScalarType {
     }
 }
 
-#[cfg(not(target_arch = "spirv"))]
+#[cfg(feature = "serde")]
 impl<'de> Deserialize<'de> for ScalarType {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
@@ -205,7 +205,8 @@ impl<'de> Deserialize<'de> for ScalarType {
 #[allow(missing_docs)]
 #[cfg(not(target_arch = "spirv"))]
 #[non_exhaustive]
-#[derive(Clone, Copy, PartialEq, Debug, Serialize, Deserialize)]
+#[derive(Clone, Copy, PartialEq, Debug)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub enum ScalarElem {
     U8(u8),
     I8(i8),
@@ -465,7 +466,36 @@ pub trait Scalar:
     fn cast<T: Scalar>(self) -> T;
 }
 
-#[cfg(not(target_arch = "spirv"))]
+#[cfg(all(not(target_arch = "spirv"), not(feature = "serde")))]
+/// Base trait for numerical types.
+pub trait Scalar:
+    Default
+    + Copy
+    + 'static
+    + Send
+    + Sync
+    + NumCast
+    + FromPrimitive
+    + NumAssign
+    + PartialEq
+    + PartialOrd
+    + Pod
+    + Debug
+    + Display
+    + Sealed
+{
+    /// The [`ScalarType`] of the scalar.
+    const SCALAR_TYPE: ScalarType;
+    #[doc(hidden)]
+    #[deprecated(since = "0.0.4", note = "replaced by Scalar::SCALAR_TYPE")]
+    fn scalar_type() -> ScalarType;
+    /// Converts to [`ScalarElem`].
+    fn scalar_elem(self) -> ScalarElem;
+    /// Casts `self as T`.
+    fn cast<T: Scalar>(self) -> T;
+}
+
+#[cfg(all(not(target_arch = "spirv"), feature = "serde"))]
 /// Base trait for numerical types.
 pub trait Scalar:
     Default

@@ -18,15 +18,15 @@ autobenches = false
 
 [dependencies]
 krnl-macros.workspace = true
-spirv-std = "=0.9.0"
+spirv-std =  "=0.9.0"
 paste.workspace = true
 dry.workspace = true
 
 [target.'cfg(not(target_arch = "spirv"))'.dependencies]
 num-traits.workspace = true
-half = { workspace = true, features = ["bytemuck", "serde"] }
+half = { workspace = true, features = ["bytemuck"] }
 bytemuck.workspace = true
-serde = { version = "1.0.143", features = ["derive"] }
+serde = { version = "1.0.143", features = ["derive"], optional = true }
 thiserror = "1.0.32"
 derive_more = { version = "0.99.11", default-features = false, features = ["display", "is_variant"] }
 paste.workspace = true
@@ -34,3 +34,6 @@ paste.workspace = true
 [target.'cfg(target_arch = "spirv")'.dependencies]
 num-traits = { workspace = true, default-features = false, features = ["libm"] }
 half.workspace = true
+
+[features]
+serde = ["dep:serde", "half/serde"]
