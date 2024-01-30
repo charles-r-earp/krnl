@@ -73,7 +73,7 @@ mod kernels {
     pub fn saxpy_global(alpha: f32, #[global] x: Slice<f32>, #[global] y: UnsafeSlice<f32>) {
         use krnl_core::buffer::UnsafeIndex;
 
-        let global_id = kernel.global_id as usize;
+        let global_id = kernel.global_id();
         if global_id < x.len().min(y.len()) {
             saxpy_impl(alpha, x[global_id], unsafe { y.unsafe_index_mut(global_id) });
         }

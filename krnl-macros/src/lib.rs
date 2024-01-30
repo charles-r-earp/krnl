@@ -129,8 +129,10 @@ pub fn module(attr: TokenStream, item: TokenStream) -> TokenStream {
                 const __krnl_module_source: &'static str = #source;
             }
             #[cfg(not(krnlc))]
+            #[doc(hidden)]
             macro_rules! __krnl_cache {
                 ($v:literal, $x:literal) => {
+                    #[doc(hidden)]
                     macro_rules! __krnl_kernel {
                         ($k:ident) => {
                             Some(#krnl::macros::__krnl_cache!($v, #ident, $k, $x))
@@ -860,10 +862,10 @@ impl KernelMeta {
                         }
                     })
                     .collect();
-                let group_init = quote! {
+                /*let group_init = quote! {
                     {
                         use ::krnl_core::spirv_std::arch::IndexUnchecked;
-                        let mut __krnl_i = kernel.thread_id as usize;
+                        let mut __krnl_i = kernel.thread_id();
                         let __krnl_group_stride = __krnl_threads as usize;
                         if __krnl_i < __krnl_group_stride { // <- Needed for some reason? or else zeroing fails
                             while __krnl_i < #len {
@@ -874,7 +876,7 @@ impl KernelMeta {
                             }
                         }
                     }
-                };
+                };*/
                 quote! {
                     let #ident = #ident_with_id;
                     let mut #offset = 0usize;
@@ -884,7 +886,9 @@ impl KernelMeta {
                         use ::krnl_core::spirv_std::arch::IndexUnchecked;
                         *__krnl_kernel_data.index_unchecked_mut(#id_lit) = if #len > 0 { #len as u32 } else { 1 };
                     }
-                    #group_init
+                    unsafe {
+                        ::krnl_core::kernel::__private::zero_group_buffer(&kernel, #ident, #len);
+                    }
                 }
             })
             .chain(group_barrier)
@@ -930,21 +934,15 @@ impl KernelMeta {
             .filter(|arg| arg.kind.is_item())
             .map(|arg| &arg.ident);
         if let Some(first) = items.next() {
-            let ident = format_ident!("__krnl_len_{first}");
             quote! {
-                __krnl_push_consts.#ident
+                #first.len()
             }
             .into_iter()
             .chain(items.flat_map(|item| {
-                let ident = format_ident!("__krnl_len_{item}");
                 quote! {
-                    .max(__krnl_push_consts.#ident)
+                    .max(#item.len())
                 }
             }))
-            .chain(quote! {
-                as u32
-            })
-            .chain([])
             .collect()
         } else {
             quote! {
@@ -1330,16 +1328,18 @@ fn kernel_impl(item_tokens: TokenStream2) -> Result<TokenStream2> {
         if kernel_meta.itemwise {
             device_fn_call = quote! {
                 let __krnl_items = #items;
-                let mut __krnl_item_id = kernel.global_id;
+                let mut __krnl_item_id = kernel.global_id();
                 while __krnl_item_id < __krnl_items {
                     {
-                        let kernel = ::krnl_core::kernel::ItemKernel {
-                            item_id: __krnl_item_id,
-                            items: __krnl_items,
+                        let kernel = unsafe {
+                            ::krnl_core::kernel::__private::ItemKernelArgs {
+                                item_id: __krnl_item_id as u32,
+                                items: __krnl_items as u32,
+                            }.into_item_kernel()
                         };
                         #device_fn_call
                     }
-                    __krnl_item_id += kernel.global_threads;
+                    __krnl_item_id += kernel.global_threads();
                 }
             };
         }
@@ -1402,17 +1402,19 @@ fn kernel_impl(item_tokens: TokenStream2) -> Result<TokenStream2> {
                     }
                     #declare_specs
                     #declare_threads
-                    let mut kernel = ::krnl_core::kernel::Kernel {
-                        global_threads: __krnl_groups.x * __krnl_threads,
-                        global_id: __krnl_global_id.x,
-                        groups: __krnl_groups.x,
-                        group_id: __krnl_group_id.x,
-                        subgroups: __krnl_subgroups,
-                        subgroup_id: __krnl_subgroup_id,
-                        subgroup_threads: __krnl_subgroup_threads,
-                        subgroup_thread_id: __krnl_subgroup_thread_id,
-                        threads: __krnl_threads,
-                        thread_id: __krnl_thread_id.x,
+                    let mut kernel = unsafe {
+                        ::krnl_core::kernel::__private::KernelArgs {
+                            global_threads: __krnl_groups.x * __krnl_threads,
+                            global_id: __krnl_global_id.x,
+                            groups: __krnl_groups.x,
+                            group_id: __krnl_group_id.x,
+                            subgroups: __krnl_subgroups,
+                            subgroup_id: __krnl_subgroup_id,
+                            subgroup_threads: __krnl_subgroup_threads,
+                            subgroup_thread_id: __krnl_subgroup_thread_id,
+                            threads: __krnl_threads,
+                            thread_id: __krnl_thread_id.x,
+                        }.into_kernel()
                     };
                     #device_arrays
                     #device_slices
@@ -1497,6 +1499,7 @@ fn kernel_impl(item_tokens: TokenStream2) -> Result<TokenStream2> {
                     anyhow::format_err,
                 };
                 #[cfg(not(krnlc))]
+                #[doc(hidden)]
                 use __krnl::macros::__krnl_cache;
                 #[cfg(doc)]
                 use __krnl::{kernel, device::{DeviceInfo, error::DeviceLost}};

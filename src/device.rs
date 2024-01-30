@@ -66,7 +66,7 @@ pub mod error {
     pub struct DeviceUnavailable;
 
     /// The device index is greater than or equal to the number of devices.
-    #[cfg(feature = "device")]
+    #[cfg(any(doc, feature = "device"))]
     #[derive(Clone, Copy, Debug, thiserror::Error)]
     #[cfg_attr(
         feature = "device",
@@ -82,7 +82,11 @@ pub mod error {
 
     /// The Device was lost.
     #[derive(Clone, Copy, Debug, thiserror::Error)]
-    pub struct DeviceLost(#[cfg(feature = "device")] pub(super) DeviceId);
+    pub struct DeviceLost(
+        #[cfg(feature = "device")]
+        #[allow(unused)]
+        pub(super) DeviceId,
+    );
 
     impl Display for DeviceLost {
         fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
@@ -119,10 +123,10 @@ pub mod builder {
         }
         /// Creates a device.
         ///
-        /// **errors**
+        /// **Errors**
         ///
-        /// - [`DeviceUnavailable`]
-        /// - [`DeviceIndexOutofRange`](super::error::DeviceIndexOutOfRange)
+        /// - [DeviceUnavailable]
+        /// - [DeviceIndexOutOfRange]
         /// - The device could not be created.
         pub fn build(self) -> Result<Device> {
             #[cfg(feature = "device")]
@@ -262,7 +266,8 @@ impl Device {
 
     This is primarily for benchmarking, manual synchronization is unnecessary.
 
-    **errors**
+    **Errors**
+
     Returns an error if the device was lost while waiting. */
     pub fn wait(&self) -> Result<(), DeviceLost> {
         match self.inner() {

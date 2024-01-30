@@ -35,7 +35,7 @@ mod kernels {
     pub fn saxpy_global(alpha: f32, #[global] x: Slice<f32>, #[global] y: UnsafeSlice<f32>) {
         use krnl_core::buffer::UnsafeIndex;
 
-        let global_id = kernel.global_id as usize;
+        let global_id = kernel.global_id();
         if global_id < x.len().min(y.len()) {
             saxpy_impl(alpha, x[global_id], unsafe { y.unsafe_index_mut(global_id) });
         }
@@ -309,9 +309,9 @@ fn group_sum(
         spirv_std::arch::workgroup_memory_barrier_with_group_sync as group_barrier
     };
 
-    let global_id = kernel.global_id as usize;
-    let group_id = kernel.group_id as usize;
-    let thread_id = kernel.thread_id as usize;
+    let global_id = kernel.global_id();
+    let group_id = kernel.group_id();
+    let thread_id = kernel.thread_id();
     unsafe {
         *x_group.unsafe_index_mut(thread_id) = x[global_id];
         // Barriers are used to synchronize access to group memory.

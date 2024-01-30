@@ -70,7 +70,11 @@ pub mod error {
 
     /// No more memory on the device.
     #[derive(Clone, Copy, Debug, thiserror::Error)]
-    pub struct OutOfDeviceMemory(#[cfg(feature = "device")] pub(crate) DeviceId);
+    pub struct OutOfDeviceMemory(
+        #[cfg(feature = "device")]
+        #[allow(unused)]
+        pub(crate) DeviceId,
+    );
 
     impl Display for OutOfDeviceMemory {
         fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
@@ -2071,7 +2075,7 @@ impl<T: Scalar, S: DataOwned<Elem = T>> BufferBase<S> {
     /// # Safety
     /// The buffer will not be initialized.
     ///
-    /// **errors**
+    /// **Errors**
     ///
     /// - [`DeviceLost`]
     /// - [`DeviceBufferTooLarge`]
@@ -2082,9 +2086,9 @@ impl<T: Scalar, S: DataOwned<Elem = T>> BufferBase<S> {
         let data = S::from_buffer(unsafe { BufferRepr::uninit(device, len)? });
         Ok(Self { data })
     }
-    /** Create a buffer filled with `elem'
+    /** Create a buffer filled with `elem`
 
-    **errors**
+    **Errors**
     - [`DeviceLost`]
     - [`DeviceBufferTooLarge`]
     - [`OutOfDeviceMemory`]
@@ -2222,7 +2226,7 @@ impl<T: Scalar, S: Data<Elem = T>> BufferBase<S> {
     }
     /** Copies to a buffer.
 
-    **errors**
+    **Errors**
 
     - [`DeviceLost`]
     - [`OutOfDeviceMemory`]
@@ -2269,7 +2273,7 @@ impl<T: Scalar, S: Data<Elem = T>> BufferBase<S> {
     }
     /** Copies to the device.
 
-    **errors**
+    **Errors**
 
     - [`DeviceLost`]
     - [`OutOfDeviceMemory`]
@@ -2319,7 +2323,7 @@ impl<T: Scalar, S: Data<Elem = T>> BufferBase<S> {
     }
     /** Fills with `elem`.
 
-    **errors**
+    **Errors**
     - [`DeviceLost`]
     - The kernel could not be dispatched.
         - This may require [`Features`](crate::device::Features) for the type. */
@@ -2384,7 +2388,7 @@ impl<T: Scalar, S: Data<Elem = T>> BufferBase<S> {
     }
     /** Casts to `Y`.
 
-    **errors**
+    **Errors**
     - DeviceLost
     - The kernel could not be dispatched.
         - This may require [`Features`](crate::device::Features) for the type. */
@@ -2434,7 +2438,7 @@ impl<T: Scalar, S: Data<Elem = T>> BufferBase<S> {
     }
     /** Copies from src.
 
-    **errors**
+    **Errors**
     - `src` is not the same length.
     - [`DeviceLost`]
     - The kernel could not be dispatched.
@@ -2605,7 +2609,6 @@ mod kernels {
             paste! {
                 #[kernel]
                 pub fn [<cast_ $X _ $Y>](#[item] x: $X, #[item] y: &mut $Y) {
-                    *y = Default::default();
                     *y = x.cast();
                 }
             }
