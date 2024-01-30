@@ -18,6 +18,7 @@ pub mod __private {
 
     #[allow(deprecated)]
     impl KernelArgs {
+        #[inline]
         pub unsafe fn into_kernel(self) -> Kernel {
             let Self {
                 global_threads,
@@ -46,6 +47,7 @@ pub mod __private {
         }
     }
 
+    #[inline]
     pub unsafe fn zero_group_buffer<T: Default + Copy>(
         kernel: &Kernel,
         buffer: &mut [T; 1],
@@ -72,6 +74,7 @@ pub mod __private {
 
     #[allow(deprecated)]
     impl ItemKernelArgs {
+        #[inline]
         pub unsafe fn into_item_kernel(self) -> ItemKernel {
             let Self { items, item_id } = self;
             ItemKernel { items, item_id }
@@ -117,28 +120,34 @@ impl Kernel {
     /// The number of global threads.
     ///
     /// `global_threads = groups * threads`
+    #[inline]
     pub fn global_threads(&self) -> usize {
         self.global_threads as usize
     }
     /// The global thread id.
     ///
     /// `global_id = group_id * threads + thread_id`
+    #[inline]
     pub fn global_id(&self) -> usize {
         self.global_id as usize
     }
     /// The number of thread groups.
+    #[inline]
     pub fn groups(&self) -> usize {
         self.groups as usize
     }
     /// The group id.
+    #[inline]
     pub fn group_id(&self) -> usize {
         self.group_id as usize
     }
     /// The number of subgroups per group.
+    #[inline]
     pub fn subgroups(&self) -> usize {
         self.subgroups as usize
     }
     /// The subgroup id.
+    #[inline]
     pub fn subgroup_id(&self) -> usize {
         self.subgroup_id as usize
     }
@@ -146,19 +155,23 @@ impl Kernel {
     // Fixed in https://github.com/charles-r-earp/krnl/tree/update-vulkano
     /*
     /// The number of threads per subgroup.
+    #[inline]
     pub fn subgroup_threads(&self) -> usize {
         self.subgroup_threads as usize
     }
     */
     /// The subgroup thread id.
+    #[inline]
     pub fn subgroup_thread_id(&self) -> usize {
         self.subgroup_thread_id as usize
     }
     /// The number of threads per group.
+    #[inline]
     pub fn threads(&self) -> usize {
         self.threads as usize
     }
     /// The thread id.
+    #[inline]
     pub fn thread_id(&self) -> usize {
         self.thread_id as usize
     }
@@ -179,10 +192,12 @@ impl ItemKernel {
     /// The number of items.
     ///
     /// This will be the minimum length of buffers with `#[item]`.
+    #[inline]
     pub fn items(&self) -> usize {
         self.items as usize
     }
     /// The id of the item.
+    #[inline]
     pub fn item_id(&self) -> usize {
         self.item_id as usize
     }

@@ -32,6 +32,7 @@ trait IndexUncheckedMutExt<T> {
 
 #[cfg(target_arch = "spirv")]
 impl<T, const N: usize> IndexUncheckedMutExt<T> for [T; N] {
+    #[inline]
     unsafe fn index_unchecked_mut_ext(&self, index: usize) -> &mut T {
         let mut output = MaybeUninit::uninit();
         unsafe {
@@ -88,10 +89,12 @@ impl<T> Sealed for SliceRepr<'_, T> {}
 impl<T: Scalar> DataBase for SliceRepr<'_, T> {
     type Elem = T;
     #[cfg(not(target_arch = "spirv"))]
+    #[inline]
     fn len(&self) -> usize {
         self.inner.len()
     }
     #[cfg(target_arch = "spirv")]
+    #[inline]
     fn len(&self) -> usize {
         self.len
     }
@@ -99,6 +102,7 @@ impl<T: Scalar> DataBase for SliceRepr<'_, T> {
 
 impl<T: Scalar> Index<usize> for SliceRepr<'_, T> {
     type Output = T;
+    #[inline]
     fn index(&self, index: usize) -> &Self::Output {
         #[cfg(target_arch = "spirv")]
         if index < self.len {
@@ -134,6 +138,7 @@ impl<T> Sealed for UnsafeSliceRepr<'_, T> {}
 
 impl<T: Scalar> DataBase for UnsafeSliceRepr<'_, T> {
     type Elem = T;
+    #[inline]
     fn len(&self) -> usize {
         self.len
     }
@@ -141,6 +146,7 @@ impl<T: Scalar> DataBase for UnsafeSliceRepr<'_, T> {
 
 impl<T: Scalar> UnsafeIndex<usize> for UnsafeSliceRepr<'_, T> {
     type Output = T;
+    #[inline]
     unsafe fn unsafe_index(&self, index: usize) -> &Self::Output {
         if index < self.len {
             #[cfg(target_arch = "spirv")]
@@ -156,6 +162,7 @@ impl<T: Scalar> UnsafeIndex<usize> for UnsafeSliceRepr<'_, T> {
             panic!("index out of bounds: the len is {index} but the index is {len}")
         }
     }
+    #[inline]
     unsafe fn unsafe_index_mut(&self, index: usize) -> &mut Self::Output {
         if index < self.len {
             #[cfg(target_arch = "spirv")]
@@ -197,15 +204,18 @@ pub type UnsafeSlice<'a, T> = BufferBase<UnsafeSliceRepr<'a, T>>;
 
 impl<S: DataBase> BufferBase<S> {
     /// The length of the buffer.
+    #[inline]
     pub fn len(&self) -> usize {
         self.data.len()
     }
     /// Whether the buffer is empty.
+    #[inline]
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
     #[doc(hidden)]
     #[deprecated(since = "0.0.4", note = "use S::Elem::SCALAR_TYPE")]
+    #[inline]
     pub fn scalar_type(&self) -> ScalarType {
         S::Elem::SCALAR_TYPE
     }
@@ -213,6 +223,7 @@ impl<S: DataBase> BufferBase<S> {
 
 impl<S: Data> Index<usize> for BufferBase<S> {
     type Output = S::Elem;
+    #[inline]
     fn index(&self, index: usize) -> &Self::Output {
         self.data.index(index)
     }
@@ -222,11 +233,13 @@ impl<S: UnsafeData> UnsafeIndex<usize> for BufferBase<S> {
     type Output = S::Elem;
     /// # Safety
     /// The caller must ensure that the returned reference is not aliased by a mutable borrow, ie by a call to `.unsafe_index_mut()` with the same index.
+    #[inline]
     unsafe fn unsafe_index(&self, index: usize) -> &Self::Output {
         unsafe { self.data.unsafe_index(index) }
     }
     /// # Safety
     /// The caller must ensure that the returned reference is not aliased by another borrow, ie by a call to `.unsafe_index()` or `.unsafe_index_mut()` with the same index.
+    #[inline]
     unsafe fn unsafe_index_mut(&self, index: usize) -> &mut Self::Output {
         unsafe { self.data.unsafe_index_mut(index) }
     }
@@ -236,12 +249,14 @@ impl<'a, T: Scalar> Slice<'a, T> {
     // For kernel macro.
     #[doc(hidden)]
     #[cfg(target_arch = "spirv")]
+    #[inline]
     pub unsafe fn from_raw_parts(inner: &'a [T; 1], offset: usize, len: usize) -> Self {
         let data = SliceRepr { inner, offset, len };
         Self { data }
     }
     /// A pointer to the buffer's data.
     #[cfg(not(target_arch = "spirv"))]
+    #[inline]
     pub fn as_ptr(&self) -> *const T {
         self.data.inner.as_ptr()
     }
@@ -251,6 +266,7 @@ impl<'a, T: Scalar> UnsafeSlice<'a, T> {
     // For kernel macro.
     #[doc(hidden)]
     #[cfg(target_arch = "spirv")]
+    #[inline]
     pub unsafe fn from_unsafe_raw_parts(inner: &'a [T; 1], offset: usize, len: usize) -> Self {
         let data = UnsafeSliceRepr {
             inner: &*inner,
@@ -261,6 +277,7 @@ impl<'a, T: Scalar> UnsafeSlice<'a, T> {
     }
     /// A mutable pointer to the buffer's data.
     #[cfg(not(target_arch = "spirv"))]
+    #[inline]
     pub fn as_mut_ptr(&self) -> *mut T {
         self.data.ptr
     }
@@ -268,6 +285,7 @@ impl<'a, T: Scalar> UnsafeSlice<'a, T> {
 
 #[cfg(not(target_arch = "spirv"))]
 impl<'a, T: Scalar> From<&'a [T]> for Slice<'a, T> {
+    #[inline]
     fn from(slice: &'a [T]) -> Self {
         let data = SliceRepr { inner: slice };
         Self { data }
@@ -276,6 +294,7 @@ impl<'a, T: Scalar> From<&'a [T]> for Slice<'a, T> {
 
 #[cfg(not(target_arch = "spirv"))]
 impl<'a, T: Scalar> From<Slice<'a, T>> for &'a [T] {
+    #[inline]
     fn from(slice: Slice<'a, T>) -> &'a [T] {
         slice.data.inner
     }
@@ -283,6 +302,7 @@ impl<'a, T: Scalar> From<Slice<'a, T>> for &'a [T] {
 
 #[cfg(not(target_arch = "spirv"))]
 impl<'a, T: Scalar> From<&'a mut [T]> for UnsafeSlice<'a, T> {
+    #[inline]
     fn from(slice: &'a mut [T]) -> Self {
         let data = UnsafeSliceRepr {
             ptr: slice.as_mut_ptr(),
