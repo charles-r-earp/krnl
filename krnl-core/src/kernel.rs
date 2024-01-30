@@ -99,9 +99,8 @@ pub struct Kernel {
     #[doc(hidden)]
     #[deprecated(since = "0.0.4", note = "replaced with subgroup_id()")]
     pub subgroup_id: u32,
-    #[doc(hidden)]
-    #[deprecated(since = "0.0.4", note = "replaced with subgroup_threads()")]
-    pub subgroup_threads: u32,
+    #[allow(unused)]
+    subgroup_threads: u32,
     #[doc(hidden)]
     #[deprecated(since = "0.0.4", note = "replaced with subgroup_thread_id()")]
     pub subgroup_thread_id: u32,
@@ -143,10 +142,14 @@ impl Kernel {
     pub fn subgroup_id(&self) -> usize {
         self.subgroup_id as usize
     }
+    // TODO: Intel Mesa driver uses variable subgroup size
+    // Fixed in https://github.com/charles-r-earp/krnl/tree/update-vulkano
+    /*
     /// The number of threads per subgroup.
     pub fn subgroup_threads(&self) -> usize {
         self.subgroup_threads as usize
     }
+    */
     /// The subgroup thread id.
     pub fn subgroup_thread_id(&self) -> usize {
         self.subgroup_thread_id as usize

@@ -277,8 +277,14 @@ typically on the same processor with a shared L1 cache. This is exposed via [Gro
 
 Thread groups are composed of subgroups of threads (CUDA warps), similar to SIMD vector registers on a CPU.
 The number of threads per subgroup is a power of 2 between 1 and 128. Typical values are 32 for NVIDIA and 64
-for AMD. It can be accessed in a kernel via [`Kernel::subgroup_threads`](krnl_core::kernel::Kernel::subgroup_threads),
-or on the host via [`DeviceInfo::subgroup_threads()`](crate::device::DeviceInfo::subgroup_threads).
+for AMD.
+*/
+//
+// TODO: Intel Mesa driver uses variable subgroup size
+// Fixed in https://github.com/charles-r-earp/krnl/tree/update-vulkano
+// It can be accessed in a kernel via [`Kernel::subgroup_threads`](krnl_core::kernel::Kernel::subgroup_threads),
+// or on the host via [`DeviceInfo::subgroup_threads()`](crate::device::DeviceInfo::subgroup_threads).
+/*!
 
 # Global Buffers
 Visible to all threads. [Slice](krnl_core::buffer::Slice) binds to [Slice](crate::buffer::Slice), [UnsafeSlice](krnl_core::buffer::UnsafeSlice) binds

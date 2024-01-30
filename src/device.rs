@@ -1,9 +1,6 @@
 /*!
 
 A [`Device`](crate::device::Device) is used to create [buffers](crate::buffer) and [kernels](crate::kernel).
-[`Device::host()`](crate::device::Device::host) method creates the host, which is merely the lack of a device.
-
-Note: Kernels can not be created for the host.
 
 Creating a device and printing out useful info:
 ```no_run
@@ -16,16 +13,6 @@ dbg!(device.info());
 Ok(())
 # }
 ```
-
-# Queues
-Devices can support multiple compute queues and a dedicated transfer queue.
-
-Dispatching a kernel:
-- Waits for immutable access to slice arguments.
-- Waits for mutable access to mutable slice arguments.
-- Blocks until the kernel is queued.
-
-One kernel can be queued while another is executing on that queue.
 */
 
 #[cfg(feature = "device")]
@@ -435,7 +422,7 @@ impl DeviceBuffer {
 
 Features supported by a device. See [`DeviceInfo::features`].
 
-Kernels can not be compiled unless the device supports all features used.
+[Kernels](crate::kernel) can not be compiled unless the device supports all features used.
 
 This is a subset of [vulkano::device::Features](https://docs.rs/vulkano/latest/vulkano/device/struct.Features.html).
 
@@ -561,10 +548,14 @@ impl DeviceInfo {
     pub fn max_threads(&self) -> u32 {
         self.max_threads
     }
+    // TODO: Intel Mesa driver uses variable subgroup size
+    // Fixed in https://github.com/charles-r-earp/krnl/tree/update-vulkano
+    /*
     /// Subgroup threads.
     pub fn subgroup_threads(&self) -> u32 {
         self.subgroup_threads
     }
+    */
     /// Device features.
     pub fn features(&self) -> Features {
         self.features
