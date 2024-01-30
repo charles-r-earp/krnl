@@ -9,16 +9,18 @@ use spirv_std::arch::IndexUnchecked;
 
 /** Unsafe Index trait.
 
-Like [`Index`], performs checked indexing, but the caller must ensure that there is no aliasing of a mutable reference.
-**/
+Like [Index], performs checked indexing, but the caller must ensure that there is no aliasing of a mutable reference.
+*/
 pub trait UnsafeIndex<Idx> {
     /// The returned type after indexing.
     type Output;
-    /** # Safety
-    The caller must ensure that the returned reference is not aliased by a mutable borrow, ie by a call to `.unsafe_index_mut()` with the same index.**/
+    /// Immutably indexes with `index`.
+    /// # Safety
+    /// The caller must ensure that the returned reference is not aliased by a mutable borrow, ie by a call to `.unsafe_index_mut()` with the same index.
     unsafe fn unsafe_index(&self, index: Idx) -> &Self::Output;
-    /** # Safety
-    The caller must ensure that the returned reference is not aliased by another borrow, ie by a call to `.unsafe_index()` or `.unsafe_index_mut()` with the same index.**/
+    /// Mutably indexes with `index`.
+    /// # Safety
+    /// The caller must ensure that the returned reference is not aliased by another borrow, ie by a call to `.unsafe_index()` or `.unsafe_index_mut()` with the same index.
     #[allow(clippy::mut_from_ref)]
     unsafe fn unsafe_index_mut(&self, index: Idx) -> &mut Self::Output;
 }
@@ -218,13 +220,13 @@ impl<S: Data> Index<usize> for BufferBase<S> {
 
 impl<S: UnsafeData> UnsafeIndex<usize> for BufferBase<S> {
     type Output = S::Elem;
-    /** # Safety
-    The caller must ensure that the returned reference is not aliased by a mutable borrow, ie by a call to `.unsafe_index_mut()` with the same index. */
+    /// # Safety
+    /// The caller must ensure that the returned reference is not aliased by a mutable borrow, ie by a call to `.unsafe_index_mut()` with the same index.
     unsafe fn unsafe_index(&self, index: usize) -> &Self::Output {
         unsafe { self.data.unsafe_index(index) }
     }
-    /** # Safety
-    The caller must ensure that the returned reference is not aliased by another borrow, ie by a call to `.unsafe_index()` or `.unsafe_index_mut()` with the same index. */
+    /// # Safety
+    /// The caller must ensure that the returned reference is not aliased by another borrow, ie by a call to `.unsafe_index()` or `.unsafe_index_mut()` with the same index.
     unsafe fn unsafe_index_mut(&self, index: usize) -> &mut Self::Output {
         unsafe { self.data.unsafe_index_mut(index) }
     }

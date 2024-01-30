@@ -169,7 +169,6 @@ pub struct ItemKernel {
     #[doc(hidden)]
     #[deprecated(since = "0.0.4", note = "replaced with items()")]
     pub items: u32,
-
     #[doc(hidden)]
     #[deprecated(since = "0.0.4", note = "replaced with item_id()")]
     pub item_id: u32,
