@@ -113,8 +113,8 @@ rustup component add --toolchain nightly-2023-05-27 rust-src rustc-dev llvm-tool
 ## Installing
 With spirv-tools from the [LunarG Vulkan SDK](https://www.lunarg.com/vulkan-sdk/) installed (will save significant compile time):
 ```text
-cargo +nightly-2023-05-27 install krnlc --locked --no-default-features
-  --features use-installed-tools
+cargo +nightly-2023-05-27 install krnlc --locked --no-default-features \
+ --features use-installed-tools
 ```
 Otherwise:
 ```text
