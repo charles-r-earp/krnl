@@ -21,4 +21,5 @@
 1. Set publish to false for workspace / krnlc.
 2. Bump all versions to the next version with prerelease "alpha", ie "=0.1.1-alpha".
 3. Update krnlc lockfile. 
-3. Commit and push to main.
+4. Recompile with the new krnlc version. 
+5. Commit and push to main.
