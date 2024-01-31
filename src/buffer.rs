@@ -1,7 +1,7 @@
 /*!
 
 Buffers store data, and can be arguments to [kernels](crate::kernel). Buffers on the [host](crate::device::Device::host)
-store data inline, essentially as a [`Vec`] or `[_]`.
+store data inline, essentially as a [`Vec`] or [slice](https://doc.rust-lang.org/std/primitive.slice.html).
 
 [`BufferBase`](crate::buffer::BufferBase) is a generic buffer. [`ScalarBufferBase`](crate::buffer::ScalarBufferBase) is a dynamically typed buffer.
 
@@ -860,7 +860,7 @@ impl<S: ScalarDataOwned> ScalarBufferBase<S> {
     /// # Safety
     /// The buffer will not be initialized.
     ///
-    /// **errors**
+    /// **Errors**
     /// - [`DeviceLost`]
     /// - [`DeviceBufferTooLarge`]
     /// - [`OutOfDeviceMemory`]
@@ -878,7 +878,7 @@ impl<S: ScalarDataOwned> ScalarBufferBase<S> {
     }
     /** Create a scalar buffer filled with `elem'.
 
-    **errors**
+    **Errors**
     - [`DeviceLost`]
     - [`DeviceBufferTooLarge`]
     - [`OutOfDeviceMemory`]
@@ -974,7 +974,7 @@ impl<S: ScalarData> ScalarBufferBase<S> {
     }
     /** Copies to an owned scalar buffer.
 
-    **errors**
+    **Errors**
 
     - [`DeviceLost`]
     - [`OutOfDeviceMemory`]
@@ -1041,7 +1041,7 @@ impl<S: ScalarData> ScalarBufferBase<S> {
     }
     /** Copies to the device in place.
 
-    **errors**
+    **Errors**
 
     See [`.to_device()`](BufferBase::to_device). */
     pub fn to_device_mut(&mut self, device: Device) -> Result<()>
@@ -2289,7 +2289,7 @@ impl<T: Scalar, S: Data<Elem = T>> BufferBase<S> {
     }
     /** Copies to the device in place.
 
-    **errors**
+    **Errors**
 
     See [`.to_device()`](BufferBase::to_device). */
     pub fn to_device_mut(&mut self, device: Device) -> Result<()>
