@@ -10,7 +10,7 @@ let device = Device::builder()
     .index(1)
     .build()?;
 dbg!(device.info());
-Ok(())
+# Ok(())
 # }
 ```
 */
