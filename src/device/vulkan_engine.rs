@@ -374,42 +374,6 @@ fn new_semaphore(device: &Arc<Device>) -> Result<Semaphore> {
     }
 }
 
-/*
-unsafe fn queue_submit(
-    queue: &Queue,
-    _guard: &mut QueueGuard,
-    command_buffer: &UnsafeCommandBuffer,
-    semaphore: &Semaphore,
-    epoch: u64,
-) -> Result<(), ash::vk::Result> {
-    let command_buffers = &[command_buffer.handle()];
-    //let wait_semaphore_values = &[epoch];
-    let signal_semaphore_values = &[epoch + 1];
-    let mut semaphore_submit_info = ash::vk::TimelineSemaphoreSubmitInfo::builder()
-        //.wait_semaphore_values(wait_semaphore_values)
-        .signal_semaphore_values(signal_semaphore_values);
-    //let wait_semaphores = &[semaphore.handle()];
-    let signal_semaphores = &[semaphore.handle()];
-    //let wait_dst_stage_mask = &[ash::vk::PipelineStageFlags::ALL_COMMANDS];
-    let submit_info = ash::vk::SubmitInfo::builder()
-        .command_buffers(command_buffers)
-        //.wait_semaphores(wait_semaphores)
-        //.wait_dst_stage_mask(wait_dst_stage_mask)
-        .signal_semaphores(signal_semaphores)
-        .push_next(&mut semaphore_submit_info);
-    let device = queue.device();
-    unsafe {
-        (device.fns().v1_0.queue_submit)(
-            queue.handle(),
-            1,
-            [submit_info].as_ptr() as _,
-            ash::vk::Fence::null(),
-        )
-        .result()?;
-    }
-    Ok(())
-}*/
-
 unsafe fn queue_submit(
     queue: &Queue,
     _guard: &mut QueueGuard,
@@ -438,20 +402,6 @@ unsafe fn queue_submit(
     }
     Ok(())
 }
-
-/*
-unsafe fn semaphore_value(device: &Device, semaphore: &Semaphore) -> Result<u64, ash::vk::Result> {
-    let mut value = 0;
-    unsafe {
-        (device.fns().v1_2.get_semaphore_counter_value)(
-            device.handle(),
-            semaphore.handle(),
-            &mut value,
-        )
-        .result_with_success(value)
-    }
-}
-*/
 
 unsafe fn wait_semaphore(device: &Device, semaphore: &Semaphore, value: u64) -> ash::vk::Result {
     let semaphores = &[semaphore.handle()];
@@ -953,33 +903,6 @@ impl DeviceEngineBuffer for DeviceBuffer {
                 .bind_memory(memory_alloc)
                 .map_err(|(e, _, _)| e)?;
             Some(Subbuffer::new(Arc::new(buffer)))
-            /*match Buffer::new_slice(
-                &engine.memory_allocator,
-                buffer_info,
-                allocation_info,
-                len.try_into().unwrap(),
-            ) {
-                Ok(inner) => {
-                    use vulkano::buffer::BufferMemory;
-                    let buffer = inner.buffer();
-                    let alloc = match buffer.memory() {
-                        BufferMemory::Normal(x) => x,
-                        _ => todo!(),
-                    };
-                    if alloc.is_root() {
-                        panic!("{:?}", (alloc.size(), alloc.device_memory().memory_type_index()));
-                    }
-                    Some(inner)
-                },
-                Err(
-                    e @ BufferError::AllocError(AllocationCreationError::VulkanError(
-                        VulkanError::OutOfDeviceMemory,
-                    )),
-                ) => return Err(Error::new(OutOfDeviceMemory(engine.id())).context(e)),
-                Err(e) => {
-                    return Err(e.into());
-                }
-            }*/
         } else {
             None
         };
@@ -1373,78 +1296,6 @@ impl DeviceEngineKernel for Kernel {
                 debug_printf_panic,
             )
         }
-        /*
-        let mut frame_outer = engine.frame_outer.lock();
-        unsafe {
-            frame_outer.compute(
-                engine.id(),
-                &engine.worker_exited,
-                &self.compute_pipeline,
-                groups,
-                buffers,
-                &self.desc.slice_descs,
-                &push_consts,
-            )
-        }*/
-        //let pipeline = &self.compute_pipeline;
-        //let descriptors = buffers.len() as u32;
-        /*engine.encode_with_descriptors(descriptors, |frame| {
-            let builder = frame.command_buffer_builder.as_mut().unwrap();
-            unsafe {
-                builder.bind_pipeline_compute(pipeline);
-            }
-            let pipeline_layout = pipeline.layout();
-            if !buffers.is_empty() {
-                let descriptor_set_layout = pipeline_layout.set_layouts().first().unwrap();
-                let write_descriptor_set = WriteDescriptorSet::buffer_array(
-                    0,
-                    0,
-                    buffers.iter().map(|x| x.inner.as_ref().unwrap().clone()),
-                );
-                unsafe {
-                    let mut descriptor_set = frame
-                        .descriptor_pool
-                        .allocate_descriptor_sets([DescriptorSetAllocateInfo {
-                            layout: descriptor_set_layout,
-                            variable_descriptor_count: 0,
-                        }])
-                        .unwrap()
-                        .next()
-                        .unwrap();
-                    descriptor_set.write(descriptor_set_layout, [&write_descriptor_set]);
-                    builder.bind_descriptor_sets(
-                        PipelineBindPoint::Compute,
-                        pipeline_layout,
-                        0,
-                        &[descriptor_set],
-                        [],
-                    );
-                }
-            }
-            if !push_consts.is_empty() {
-                unsafe {
-                    builder.push_constants(
-                        pipeline_layout,
-                        ShaderStages::COMPUTE,
-                        0,
-                        push_consts.len() as u32,
-                        push_consts.as_slice(),
-                    );
-                }
-            }
-            unsafe {
-                builder.dispatch(groups);
-            }
-            for (buffer, slice_desc) in buffers.iter().zip(self.desc.slice_descs.iter()) {
-                if slice_desc.mutable {
-                    buffer.epoch.store(frame.epoch, Ordering::SeqCst);
-                }
-            }
-            frame
-                .buffers
-                .extend(buffers.iter().map(|x| x.inner.as_ref().unwrap().clone()));
-        })?;*/
-        //Ok(())
     }
     fn desc(&self) -> &Arc<KernelDesc> {
         &self.desc

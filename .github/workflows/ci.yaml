@@ -69,13 +69,11 @@ jobs:
       # end install spirv-tools
       - uses: actions/checkout@v2
       - name: build
-        run: cargo build -v
+        run: cargo build --all-features -v
       - name: test
-        run: cargo test --no-default-features --features serde -p krnl -p krnlc-tests -v -- --format=terse
-      - name: test krnlc-tests
-        run: cargo test -p krnlc-tests
-      - name: check compute-benches
-        run: cargo check -p compute-benches --benches
+        run: cargo test --workspace --no-default-features --features serde  -v -- --format=terse
+      - name: build compute-benches
+        run: cargo build -p compute-benches --benches -v
       - uses: actions-rs/toolchain@v1
         with:
           toolchain: nightly
@@ -104,7 +102,7 @@ jobs:
         toolchain: nightly
         components: miri
     - name: miri test
-      run: cargo +nightly miri test --no-default-features -v -- --format=terse
+      run: cargo +nightly miri test --no-default-features --features serde -v -- --format=terse
   wasm: 
     runs-on: ubuntu-latest
     env:
