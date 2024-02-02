@@ -22,7 +22,7 @@ use syn::{
         And, Brace, Bracket, Colon, Comma, Const, Eq as SynEq, Fn, Gt, Lt, Mod, Mut, Paren, Pound,
         Unsafe,
     },
-    Attribute, Block, Error, Ident, LitInt, Visibility,
+    Attribute, Block, Error, Ident, LitInt, LitStr, Visibility,
 };
 
 type Result<T, E = Error> = std::result::Result<T, E>;
@@ -1626,8 +1626,6 @@ pub fn __krnl_cache(input: TokenStream) -> TokenStream {
     .into()
 }
 
-use syn::LitStr;
-
 #[derive(Parse)]
 struct KrnlCacheInput {
     version: LitStr,
@@ -1648,7 +1646,7 @@ fn __krnl_cache_impl(input: TokenStream2) -> Result<TokenStream2> {
     use syn::LitByteStr;
     use zero85::FromZ85;
 
-    static CACHE: OnceLock<Result<KrnlcCache>> = OnceLock::new();
+    static CACHE: OnceLock<std::result::Result<KrnlcCache, String>> = OnceLock::new();
 
     let input = syn::parse2::<KrnlCacheInput>(input)?;
     let span = input.module.span();
@@ -1657,26 +1655,25 @@ fn __krnl_cache_impl(input: TokenStream2) -> Result<TokenStream2> {
             let version = env!("CARGO_PKG_VERSION");
             let krnlc_version = input.version.value();
             if !krnlc_version_compatible(&krnlc_version, version) {
-                return Err(Error::new(
-                    span,
-                    format!("Cached krnlc version {krnlc_version} is not compatible!"),
+                return Err(format!(
+                    "Cache created by krnlc {krnlc_version} is not compatible with krnl {version}!"
                 ));
             }
             let data = input.data.value();
             let decoded_len = data.split_ascii_whitespace().map(|x| x.len() * 4 / 5).sum();
             let mut bytes = Vec::with_capacity(decoded_len);
             for data in data.split_ascii_whitespace() {
-                let decoded = data.from_z85().map_err(|e| Error::new(span, e))?;
+                let decoded = data.from_z85().map_err(|e| e.to_string())?;
                 bytes.extend_from_slice(&decoded);
             }
             let cache =
                 bincode2::deserialize_from::<_, KrnlcCache>(GzDecoder::new(bytes.as_slice()))
-                    .map_err(|e| Error::new(span, e))?;
+                    .map_err(|e| e.to_string())?;
             assert_eq!(krnlc_version, cache.version);
             Ok(cache)
         })
         .as_ref()
-        .map_err(Clone::clone)?;
+        .map_err(|e| Error::new(input.version.span(), e))?;
     let kernels = cache
         .kernels
         .iter()
