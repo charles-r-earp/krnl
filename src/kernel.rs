@@ -672,13 +672,13 @@ impl KernelDesc {
 
 #[cfg(feature = "device")]
 fn strip_debug_printf(module: &mut rspirv::dr::Module) {
+    use fxhash::FxHashSet;
     use rspirv::spirv::Op;
-    use std::collections::HashSet;
 
     module.extensions.retain(|inst| {
         inst.operands.first().unwrap().unwrap_literal_string() != "SPV_KHR_non_semantic_info"
     });
-    let mut ext_insts = HashSet::new();
+    let mut ext_insts = FxHashSet::default();
     module.ext_inst_imports.retain(|inst| {
         if inst
             .operands

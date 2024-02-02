@@ -163,13 +163,12 @@ struct KrnlcMetadata {
 
 impl KrnlcMetadata {
     fn new(metadata: &Metadata, package: &Package) -> Result<Self> {
-        use std::collections::HashSet;
         use std::fmt::Write;
 
         fn find_krnl_core<'a>(
             metadata: &'a Metadata,
             root: &'a PackageId,
-            searched: &mut HashSet<&'a PackageId>,
+            searched: &mut FxHashSet<&'a PackageId>,
         ) -> Option<&'a Package> {
             searched.insert(root);
             let node = metadata
@@ -193,7 +192,7 @@ impl KrnlcMetadata {
             }
             None
         }
-        let mut searched = HashSet::new();
+        let mut searched = FxHashSet::default();
         let krnl_core_package =
             if let Some(package) = find_krnl_core(metadata, &package.id, &mut searched) {
                 package
@@ -1208,8 +1207,7 @@ fn add_spec_constant_ops(module: &mut rspirv::dr::Module) {
         dr::{Instruction, Operand},
         spirv::Op,
     };
-    use std::collections::HashSet;
-    let mut constants = HashSet::new();
+    let mut constants = FxHashSet::default();
     for inst in module.types_global_values.iter() {
         if matches!(
             inst.class.opcode,
@@ -1274,7 +1272,7 @@ fn add_spec_constant_ops(module: &mut rspirv::dr::Module) {
                         | Op::QuantizeToF16
                 ) {
                     if let Some(result_id) = inst.result_id {
-                        let mut used_constants = HashSet::new();
+                        let mut used_constants = FxHashSet::default();
                         for operand in inst.operands.iter() {
                             if let Operand::IdRef(id) = operand {
                                 if !constants.contains(id) {
