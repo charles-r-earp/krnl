@@ -814,6 +814,10 @@ fn kernel_post_process(
         let spirv = spirv_module.assemble();
         let spirv = spirv_opt(&spirv, SpirvOptKind::DeadCodeElimination)?;
         let mut spirv_module = rspirv::dr::load_words(&spirv).map_err(|e| Error::msg(e.to_string())).unwrap();
+        if debug_printf {
+            strip_unused_debug_strings(&mut spirv_module);
+            strip_unused_types(&mut spirv_module);
+        }
         let mut kernel_desc: KernelDesc = {
             let mut kernel_data_var = None;
             for inst in spirv_module.annotations.iter() {
@@ -1311,6 +1315,93 @@ fn add_spec_constant_ops(module: &mut rspirv::dr::Module) {
         }
     }
 }
+
+fn strip_unused_types(module: &mut rspirv::dr::Module) {
+    use rspirv::{dr::Operand, spirv::Op};
+    let mut used = FxHashSet::default();
+    for func in module.functions.iter() {
+        if let Some(inst) = func.def.as_ref() {
+            let func_type = inst.operands.last().unwrap().unwrap_id_ref();
+            used.insert(func_type);
+        }
+        for block in func.blocks.iter() {
+            for inst in block.instructions.iter() {
+                if let Some(result_type) = inst.result_type {
+                    used.insert(result_type);
+                }
+            }
+        }
+    }
+
+    for inst in module.types_global_values.iter().rev() {
+        match inst.class.opcode {
+            Op::TypeVoid | Op::TypeBool | Op::TypeInt | Op::TypeFloat => {
+                used.extend(inst.result_id);
+            }
+            Op::TypeArray | Op::TypeVector | Op::TypeMatrix | Op::TypeStruct | Op::TypeFunction => {
+                used.extend(inst.result_id);
+                used.extend(inst.operands.iter().filter_map(|operand| {
+                    if let Operand::IdRef(id) = operand {
+                        Some(*id)
+                    } else {
+                        None
+                    }
+                }));
+            }
+            _ => {
+                used.extend(inst.result_id);
+                used.extend(inst.result_type);
+            }
+        }
+    }
+    module
+        .types_global_values
+        .retain(|inst| used.contains(&inst.result_id.unwrap()));
+    module
+        .debug_names
+        .retain(|inst| used.contains(&inst.operands.first().unwrap().unwrap_id_ref()));
+    module
+        .annotations
+        .retain(|inst| used.contains(&inst.operands.first().unwrap().unwrap_id_ref()));
+}
+
+fn strip_unused_debug_strings(module: &mut rspirv::dr::Module) {
+    use rspirv::spirv::Op;
+    let debug_printf_imports: Vec<_> = module
+        .ext_inst_imports
+        .iter()
+        .filter_map(|inst| {
+            if inst.operands.first().unwrap().unwrap_literal_string() == "NonSemantic.DebugPrintf" {
+                Some(inst.result_id.unwrap())
+            } else {
+                None
+            }
+        })
+        .collect();
+    let mut debug_strings = FxHashSet::default();
+    for func in module.functions.iter() {
+        for block in func.blocks.iter() {
+            for inst in block.instructions.iter() {
+                if inst.class.opcode == Op::ExtInst {
+                    let set = inst.operands[0].unwrap_id_ref();
+                    if debug_printf_imports.iter().any(|x| *x == set) {
+                        debug_strings.insert(inst.operands[2].unwrap_id_ref());
+                    }
+                } else if inst.class.opcode == Op::Line {
+                    debug_strings.insert(inst.operands.first().unwrap().unwrap_id_ref());
+                }
+            }
+        }
+    }
+    module.debug_string_source.retain(|inst| {
+        if inst.class.opcode == Op::String {
+            debug_strings.contains(&inst.result_id.unwrap())
+        } else {
+            true
+        }
+    })
+}
+
 /*
 fn unroll_loops(module: &mut rspirv::dr::Module) {
     use rspirv::{
