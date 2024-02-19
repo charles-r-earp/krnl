@@ -377,19 +377,22 @@ pub mod saxpy {
     }
 
     /// Kernel.
-    pub struct Kernel { /* .. */ }
+    pub struct Kernel<G = WithGroups<false>> { /* .. */ }
 
-    impl Kernel {
+    impl<G> Kernel<G> {
         /// Threads per group.
         pub fn threads(&self) -> u32;
         /// Global threads to dispatch.
         ///
         /// Implicitly declares groups by rounding up to the next multiple of threads.
-        pub fn with_global_threads(self, global_threads: u32) -> Self;
+        pub fn with_global_threads(self, global_threads: u32) -> Kernel<WithGroups<true>>;
         /// Groups to dispatch.
         ///
         /// For item kernels, if not provided, is inferred based on item arguments.
-        pub fn with_groups(self, groups: u32) -> Self;
+        pub fn with_groups(self, groups: u32) -> Kernel<WithGroups<true>>;
+    }
+
+    impl Kernel<WithGroups<true>> {
         /// Dispatches the kernel.
         ///
         /// - Waits for immutable access to slice arguments.
@@ -946,6 +949,8 @@ pub mod __private {
         Ok(output)
     }
 
+    pub enum Specialized<const S: bool> {}
+
     #[cfg_attr(not(feature = "device"), allow(dead_code))]
     #[derive(Clone)]
     pub struct KernelBuilder {
@@ -990,7 +995,8 @@ pub mod __private {
             }
         }
         pub fn specialize(self, spec_consts: &[ScalarElem]) -> Self {
-            assert_eq!(spec_consts.len(), self.desc.spec_descs.len());
+            debug_assert_eq!(spec_consts.len(), self.desc.spec_descs.len());
+            #[cfg(debug_assertions)]
             for (spec_const, spec_desc) in
                 spec_consts.iter().copied().zip(self.desc.spec_descs.iter())
             {
@@ -1021,26 +1027,13 @@ pub mod __private {
                     if threads > max_threads {
                         bail!("Kernel {name} threads {threads} is greater than max_threads {max_threads}!");
                     }
-                    let spec_bytes = {
-                        if !self.desc.spec_descs.is_empty() && self.spec_consts.is_empty() {
-                            bail!("Kernel `{name}` must be specialized!");
-                        }
-                        debug_assert_eq!(self.spec_consts.len(), desc.spec_descs.len());
-                        #[cfg(debug_assertions)]
-                        {
-                            for (spec_const, spec_desc) in
-                                self.spec_consts.iter().zip(desc.spec_descs.iter())
-                            {
-                                assert_eq!(spec_const.scalar_type(), spec_desc.scalar_type);
-                            }
-                        }
-                        self.spec_consts
-                            .iter()
-                            .flat_map(|x| x.as_bytes())
-                            .copied()
-                            .chain(threads.to_ne_bytes())
-                            .collect()
-                    };
+                    let spec_bytes = self
+                        .spec_consts
+                        .iter()
+                        .flat_map(|x| x.as_bytes())
+                        .copied()
+                        .chain(threads.to_ne_bytes())
+                        .collect();
                     let key = KernelKey {
                         id: self.id,
                         spec_bytes,
@@ -1059,6 +1052,8 @@ pub mod __private {
             }
         }
     }
+
+    pub enum WithGroups<const G: bool> {}
 
     #[derive(Clone)]
     pub struct Kernel {
@@ -1167,7 +1162,8 @@ pub mod __private {
                     let groups = items / threads + u32::from(items % threads != 0);
                     groups.min(max_groups)
                 } else {
-                    bail!("Kernel `{kernel_name}` global_threads or groups not provided!");
+                    #[cfg(debug_assertions)]
+                    unreachable!("groups not provided!");
                 };
                 let debug_printf_panic = if info.debug_printf() {
                     Some(Arc::new(AtomicBool::default()))
