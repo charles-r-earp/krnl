@@ -250,11 +250,7 @@ impl Device {
     Operations (like kernel dispatches) executed after this method is called
     will not block, and will not be waited on.
 
-    This is primarily for benchmarking, manual synchronization is unnecessary.
-
-    **Errors**
-
-    Returns an error if the device was lost while waiting. */
+    This is primarily for benchmarking, manual synchronization is unnecessary. */
     pub fn wait(&self) -> Result<(), DeviceLost> {
         match self.inner() {
             DeviceInner::Host => Ok(()),

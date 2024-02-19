@@ -1518,7 +1518,7 @@ fn kernel_impl(item_tokens: TokenStream2) -> Result<TokenStream2> {
                 ///
                 /// The builder is lazily created on first call.
                 ///
-                /// **Errors**
+                /// # Errors
                 /// - The kernel wasn't compiled (with `#[krnl(no_build)]` applied to `#[module]`).
                 pub fn builder() -> Result<KernelBuilder> {
                     static BUILDER: OnceLock<Result<KernelBuilderBase, String>> = OnceLock::new();
@@ -1553,7 +1553,7 @@ fn kernel_impl(item_tokens: TokenStream2) -> Result<TokenStream2> {
                     /// The kernel is cached, so subsequent calls to `.build()` with identical
                     /// builders (ie threads and spec constants) may avoid recompiling.
                     ///
-                    /// **Errors**
+                    /// # Errors
                     /// - `device` doesn't have required features.
                     /// - The kernel requires [specialization](kernel#specialization), but `.specialize(..)` was not called.
                     /// - The kernel is not supported on `device`.
@@ -1597,8 +1597,8 @@ fn kernel_impl(item_tokens: TokenStream2) -> Result<TokenStream2> {
                     /// - Waits for mutable access to mutable slice arguments.
                     /// - Blocks until the kernel is queued.
                     ///
-                    /// **Errors**
-                    /// - DeviceLost: The device was lost.
+                    /// # Errors
+                    /// - [`DeviceLost`].
                     /// - The kernel could not be queued.
                     pub #unsafe_token fn dispatch(&self, #dispatch_args) -> Result<()> {
                         unsafe { self.inner.dispatch(&[#dispatch_slice_args], &[#(#dispatch_push_args.into()),*]) }

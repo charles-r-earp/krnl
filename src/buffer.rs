@@ -860,7 +860,7 @@ impl<S: ScalarDataOwned> ScalarBufferBase<S> {
     /// # Safety
     /// The buffer will not be initialized.
     ///
-    /// **Errors**
+    /// # Errors
     /// - [`DeviceLost`]
     /// - [`DeviceBufferTooLarge`]
     /// - [`OutOfDeviceMemory`]
@@ -878,7 +878,7 @@ impl<S: ScalarDataOwned> ScalarBufferBase<S> {
     }
     /** Create a scalar buffer filled with `elem'.
 
-    **Errors**
+    # Errors
     - [`DeviceLost`]
     - [`DeviceBufferTooLarge`]
     - [`OutOfDeviceMemory`]
@@ -974,8 +974,7 @@ impl<S: ScalarData> ScalarBufferBase<S> {
     }
     /** Copies to an owned scalar buffer.
 
-    **Errors**
-
+    # Errors
     - [`DeviceLost`]
     - [`OutOfDeviceMemory`]
     - Could not dispatch the kernel. */
@@ -1040,8 +1039,6 @@ impl<S: ScalarData> ScalarBufferBase<S> {
         }})
     }
     /** Copies to the device in place.
-
-    **Errors**
 
     See [`.to_device()`](BufferBase::to_device). */
     pub fn to_device_mut(&mut self, device: Device) -> Result<()>
@@ -2080,8 +2077,7 @@ impl<T: Scalar, S: DataOwned<Elem = T>> BufferBase<S> {
     /// # Safety
     /// The buffer will not be initialized.
     ///
-    /// **Errors**
-    ///
+    /// # Errors
     /// - [`DeviceLost`]
     /// - [`DeviceBufferTooLarge`]
     /// - [`OutOfDeviceMemory`]
@@ -2093,7 +2089,7 @@ impl<T: Scalar, S: DataOwned<Elem = T>> BufferBase<S> {
     }
     /** Create a buffer filled with `elem`
 
-    **Errors**
+    # Errors
     - [`DeviceLost`]
     - [`DeviceBufferTooLarge`]
     - [`OutOfDeviceMemory`]
@@ -2231,8 +2227,7 @@ impl<T: Scalar, S: Data<Elem = T>> BufferBase<S> {
     }
     /** Copies to a buffer.
 
-    **Errors**
-
+    # Errors
     - [`DeviceLost`]
     - [`OutOfDeviceMemory`]
     - Could not dispatch the kernel. */
@@ -2278,8 +2273,7 @@ impl<T: Scalar, S: Data<Elem = T>> BufferBase<S> {
     }
     /** Copies to the device.
 
-    **Errors**
-
+    # Errors
     - [`DeviceLost`]
     - [`OutOfDeviceMemory`]
     - Could not dispatch the kernel. */
@@ -2288,8 +2282,6 @@ impl<T: Scalar, S: Data<Elem = T>> BufferBase<S> {
         Ok(Buffer { data })
     }
     /** Copies to the device in place.
-
-    **Errors**
 
     See [`.to_device()`](BufferBase::to_device). */
     pub fn to_device_mut(&mut self, device: Device) -> Result<()>
@@ -2328,7 +2320,7 @@ impl<T: Scalar, S: Data<Elem = T>> BufferBase<S> {
     }
     /** Fills with `elem`.
 
-    **Errors**
+    # Errors
     - [`DeviceLost`]
     - The kernel could not be dispatched.
         - This may require [`Features`](crate::device::Features) for the type. */
@@ -2393,8 +2385,8 @@ impl<T: Scalar, S: Data<Elem = T>> BufferBase<S> {
     }
     /** Casts to `Y`.
 
-    **Errors**
-    - DeviceLost
+    # Errors
+    - [`DeviceLost`]
     - The kernel could not be dispatched.
         - This may require [`Features`](crate::device::Features) for the type. */
     pub fn cast<Y: Scalar>(&self) -> Result<Buffer<Y>> {
@@ -2443,7 +2435,7 @@ impl<T: Scalar, S: Data<Elem = T>> BufferBase<S> {
     }
     /** Copies from src.
 
-    **Errors**
+    #Errors**
     - `src` is not the same length.
     - [`DeviceLost`]
     - The kernel could not be dispatched.
