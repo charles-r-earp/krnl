@@ -1441,19 +1441,55 @@ fn kernel_impl(item_tokens: TokenStream2) -> Result<TokenStream2> {
             }
         };
         let host_array_length_checks = kernel_meta.host_array_length_checks();
-        let kernel_builder_specialize_fn = if !kernel_desc.spec_descs.is_empty() {
+        let specialize = !kernel_desc.spec_descs.is_empty();
+        let specialized = [format_ident!("S")];
+        let specialized = if specialize {
+            specialized.as_ref()
+        } else {
+            &[]
+        };
+        let kernel_builder_phantom_data = if specialize {
+            quote! { S }
+        } else {
+            quote! { () }
+        };
+        let kernel_builder_build_generics = if specialize {
+            quote! {
+                <Specialized<true>>
+            }
+        } else {
+            TokenStream2::new()
+        };
+        let kernel_builder_specialize_fn = if specialize {
             let spec_def_args = kernel_meta.spec_def_args();
             let spec_args = kernel_meta.spec_args();
             quote! {
                 /// Specializes the kernel.
                 #[allow(clippy::too_many_arguments)]
-                pub fn specialize(mut self, #spec_def_args) -> Self {
-                    let inner = self.inner.specialize(&[#(#spec_args.into()),*]);
-                    Self {
-                        inner,
+                pub fn specialize(mut self, #spec_def_args) -> KernelBuilder<Specialized<true>> {
+                    KernelBuilder {
+                        inner: self.inner.specialize(&[#(#spec_args.into()),*]),
+                        _m: PhantomData,
                     }
                 }
             }
+        } else {
+            TokenStream2::new()
+        };
+        let needs_groups = !kernel_meta.itemwise;
+        let with_groups = [format_ident!("G")];
+        let with_groups = if needs_groups {
+            with_groups.as_ref()
+        } else {
+            &[]
+        };
+        let kernel_phantom_data = if needs_groups {
+            quote! { G }
+        } else {
+            quote! { () }
+        };
+        let kernel_dispatch_generics = if needs_groups {
+            quote! { <WithGroups<true>> }
         } else {
             TokenStream2::new()
         };
@@ -1494,10 +1530,21 @@ fn kernel_impl(item_tokens: TokenStream2) -> Result<TokenStream2> {
                     buffer::{Slice, SliceMut},
                     device::Device,
                     scalar::ScalarType,
-                    kernel::__private::{Kernel as KernelBase, KernelBuilder as KernelBuilderBase, KernelDesc, SliceDesc, SpecDesc, PushDesc, Safety, validate_kernel},
+                    kernel::__private::{
+                        Kernel as KernelBase,
+                        KernelBuilder as KernelBuilderBase,
+                        Specialized,
+                        WithGroups,
+                        KernelDesc,
+                        SliceDesc,
+                        SpecDesc,
+                        PushDesc,
+                        Safety,
+                        validate_kernel
+                    },
                     anyhow::format_err,
                 };
-                use ::std::sync::OnceLock;
+                use ::std::{sync::OnceLock, marker::PhantomData};
                 #[cfg(not(krnlc))]
                 #[doc(hidden)]
                 use __krnl::macros::__krnl_cache;
@@ -1509,9 +1556,11 @@ fn kernel_impl(item_tokens: TokenStream2) -> Result<TokenStream2> {
                 /// Builder for creating a [`Kernel`].
                 ///
                 /// See [`builder()`](builder).
-                pub struct KernelBuilder {
+                pub struct KernelBuilder #(<#specialized = Specialized<false>>)* {
                     #[doc(hidden)]
                     inner: KernelBuilderBase,
+                    #[doc(hidden)]
+                    _m: PhantomData<#kernel_builder_phantom_data>,
                 }
 
                 /// Creates a builder.
@@ -1533,21 +1582,26 @@ fn kernel_impl(item_tokens: TokenStream2) -> Result<TokenStream2> {
                     match builder {
                         Ok(inner) => Ok(KernelBuilder {
                             inner: inner.clone(),
+                            _m: PhantomData,
                         }),
                         Err(err) => Err(format_err!("{err}")),
                     }
                 }
 
-                impl KernelBuilder {
+                impl #(<#specialized>)* KernelBuilder #(<#specialized>)* {
                     /// Threads per group.
                     ///
                     /// Defaults to [`DeviceInfo::default_threads()`](DeviceInfo::default_threads).
                     pub fn with_threads(self, threads: u32) -> Self {
                         Self {
                             inner: self.inner.with_threads(threads),
+                            _m: PhantomData,
                         }
                     }
                     #kernel_builder_specialize_fn
+                }
+
+                impl KernelBuilder #kernel_builder_build_generics {
                     /// Builds the kernel for `device`.
                     ///
                     /// The kernel is cached, so subsequent calls to `.build()` with identical
@@ -1555,22 +1609,25 @@ fn kernel_impl(item_tokens: TokenStream2) -> Result<TokenStream2> {
                     ///
                     /// # Errors
                     /// - `device` doesn't have required features.
-                    /// - The kernel requires [specialization](kernel#specialization), but `.specialize(..)` was not called.
                     /// - The kernel is not supported on `device`.
                     /// - [`DeviceLost`].
                     pub fn build(&self, device: Device) -> Result<Kernel> {
-                        let inner = self.inner.build(device)?;
-                        Ok(Kernel { inner })
+                        Ok(Kernel {
+                            inner:  self.inner.build(device)?,
+                            _m: PhantomData,
+                        })
                     }
                 }
 
                 /// Kernel.
-                pub struct Kernel {
+                pub struct Kernel #(<#with_groups = WithGroups<false>>)* {
                     #[doc(hidden)]
                     inner: KernelBase,
+                    #[doc(hidden)]
+                    _m: PhantomData<#kernel_phantom_data>,
                 }
 
-                impl Kernel {
+                impl #(<#with_groups>)* Kernel #(<#with_groups>)* {
                     /// Threads per group.
                     pub fn threads(&self) -> u32 {
                         self.inner.threads()
@@ -1578,19 +1635,24 @@ fn kernel_impl(item_tokens: TokenStream2) -> Result<TokenStream2> {
                     /// Global threads to dispatch.
                     ///
                     /// Implicitly declares groups by rounding up to the next multiple of threads.
-                    pub fn with_global_threads(self, global_threads: u32) -> Self {
-                        Self {
+                    pub fn with_global_threads(self, global_threads: u32) -> Kernel #kernel_dispatch_generics {
+                        Kernel {
                             inner: self.inner.with_global_threads(global_threads),
+                            _m: PhantomData,
                         }
                     }
                     /// Groups to dispatch.
                     ///
                     /// For item kernels, if not provided, is inferred based on item arguments.
-                    pub fn with_groups(self, groups: u32) -> Self {
-                        Self {
+                    pub fn with_groups(self, groups: u32) -> Kernel #kernel_dispatch_generics {
+                        Kernel {
                             inner: self.inner.with_groups(groups),
+                            _m: PhantomData,
                         }
                     }
+                }
+
+                impl Kernel #kernel_dispatch_generics {
                     /// Dispatches the kernel.
                     ///
                     /// - Waits for immutable access to slice arguments.

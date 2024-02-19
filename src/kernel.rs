@@ -377,19 +377,22 @@ pub mod saxpy {
     }
 
     /// Kernel.
-    pub struct Kernel { /* .. */ }
+    pub struct Kernel<G = WithGroups<false>> { /* .. */ }
 
-    impl Kernel {
+    impl<G> Kernel<G> {
         /// Threads per group.
         pub fn threads(&self) -> u32;
         /// Global threads to dispatch.
         ///
         /// Implicitly declares groups by rounding up to the next multiple of threads.
-        pub fn with_global_threads(self, global_threads: u32) -> Self;
+        pub fn with_global_threads(self, global_threads: u32) -> Kernel<WithGroups<true>>;
         /// Groups to dispatch.
         ///
         /// For item kernels, if not provided, is inferred based on item arguments.
-        pub fn with_groups(self, groups: u32) -> Self;
+        pub fn with_groups(self, groups: u32) -> Kernel<WithGroups<true>>;
+    }
+
+    impl Kernel<WithGroups<true>> {
         /// Dispatches the kernel.
         ///
         /// - Waits for immutable access to slice arguments.
@@ -946,6 +949,8 @@ pub mod __private {
         Ok(output)
     }
 
+    pub enum Specialized<const S: bool> {}
+
     #[cfg_attr(not(feature = "device"), allow(dead_code))]
     #[derive(Clone)]
     pub struct KernelBuilder {
@@ -1023,7 +1028,8 @@ pub mod __private {
                     }
                     let spec_bytes = {
                         if !self.desc.spec_descs.is_empty() && self.spec_consts.is_empty() {
-                            bail!("Kernel `{name}` must be specialized!");
+                            unreachable!("Kernel wasn't specialized!");
+                            //bail!("Kernel `{name}` must be specialized!");
                         }
                         debug_assert_eq!(self.spec_consts.len(), desc.spec_descs.len());
                         #[cfg(debug_assertions)]
@@ -1059,6 +1065,8 @@ pub mod __private {
             }
         }
     }
+
+    pub enum WithGroups<const G: bool> {}
 
     #[derive(Clone)]
     pub struct Kernel {
@@ -1167,7 +1175,8 @@ pub mod __private {
                     let groups = items / threads + u32::from(items % threads != 0);
                     groups.min(max_groups)
                 } else {
-                    bail!("Kernel `{kernel_name}` global_threads or groups not provided!");
+                    //bail!("Kernel `{kernel_name}` global_threads or groups not provided!");
+                    unreachable!("groups not provided!");
                 };
                 let debug_printf_panic = if info.debug_printf() {
                     Some(Arc::new(AtomicBool::default()))

@@ -2,6 +2,91 @@ use dry::macro_for;
 use krnl::macros::module;
 use paste::paste;
 
+/**
+```no_run
+use krnl::macros::module;
+
+#[module]
+#[krnl(no_build)]
+mod kernels {
+    use krnl::{macros::kernel, device::Device, anyhow::Result};
+
+    #[kernel]
+    fn specialization<const X: i32>() {}
+
+    fn test_specialization(device: Device) -> Result<()> {
+        specialization::builder()?.specialize(1).build(device)?;
+        Ok(())
+    }
+}
+```
+```compile_fail
+use krnl::macros::module;
+
+#[module]
+#[krnl(no_build)]
+mod kernels {
+    use krnl::{macros::kernel, device::Device, anyhow::Result};
+
+    #[kernel]
+    fn specialization<const X: i32>() {}
+
+    fn test_specialization(device: Device) -> Result<()> {
+        specialization::builder()?.build(device)?;
+        Ok(())
+    }
+}
+```
+*/
+#[allow(dead_code)]
+enum Specialization {}
+
+/**
+```no_run
+use krnl::macros::module;
+
+#[module]
+#[krnl(no_build)]
+mod kernels {
+    use krnl::{macros::kernel, device::Device, buffer::SliceMut, anyhow::Result};
+
+    #[kernel]
+    fn with_groups() {}
+
+    fn test_with_groups(device: Device) -> Result<()> {
+        with_groups::builder()?.build(device)?.with_groups(1).dispatch()
+    }
+
+    #[kernel]
+    fn with_groups_item(
+        #[item] y: &mut u32,
+    ) {}
+
+    fn test_with_groups_item(y: SliceMut<u32>) -> Result<()> {
+        with_groups_item::builder()?.build(y.device())?.dispatch(y)
+    }
+}
+```
+```compile_fail
+use krnl::macros::module;
+
+#[module]
+#[krnl(no_build)]
+mod kernels {
+    use krnl::{macros::kernel, device::Device, anyhow::Result};
+
+    #[kernel]
+    fn with_groups() {}
+
+    fn test_with_groups(device: Device) -> Result<()> {
+        with_groups::builder()?.build(device)?.dispatch()
+    }
+}
+```
+*/
+#[allow(dead_code)]
+enum WithGroups {}
+
 #[module]
 pub mod kernels {
     use dry::macro_for;
