@@ -995,7 +995,8 @@ pub mod __private {
             }
         }
         pub fn specialize(self, spec_consts: &[ScalarElem]) -> Self {
-            assert_eq!(spec_consts.len(), self.desc.spec_descs.len());
+            debug_assert_eq!(spec_consts.len(), self.desc.spec_descs.len());
+            #[cfg(debug_assertions)]
             for (spec_const, spec_desc) in
                 spec_consts.iter().copied().zip(self.desc.spec_descs.iter())
             {
@@ -1026,27 +1027,13 @@ pub mod __private {
                     if threads > max_threads {
                         bail!("Kernel {name} threads {threads} is greater than max_threads {max_threads}!");
                     }
-                    let spec_bytes = {
-                        if !self.desc.spec_descs.is_empty() && self.spec_consts.is_empty() {
-                            unreachable!("Kernel wasn't specialized!");
-                            //bail!("Kernel `{name}` must be specialized!");
-                        }
-                        debug_assert_eq!(self.spec_consts.len(), desc.spec_descs.len());
-                        #[cfg(debug_assertions)]
-                        {
-                            for (spec_const, spec_desc) in
-                                self.spec_consts.iter().zip(desc.spec_descs.iter())
-                            {
-                                assert_eq!(spec_const.scalar_type(), spec_desc.scalar_type);
-                            }
-                        }
-                        self.spec_consts
-                            .iter()
-                            .flat_map(|x| x.as_bytes())
-                            .copied()
-                            .chain(threads.to_ne_bytes())
-                            .collect()
-                    };
+                    let spec_bytes = self
+                        .spec_consts
+                        .iter()
+                        .flat_map(|x| x.as_bytes())
+                        .copied()
+                        .chain(threads.to_ne_bytes())
+                        .collect();
                     let key = KernelKey {
                         id: self.id,
                         spec_bytes,
@@ -1175,7 +1162,7 @@ pub mod __private {
                     let groups = items / threads + u32::from(items % threads != 0);
                     groups.min(max_groups)
                 } else {
-                    //bail!("Kernel `{kernel_name}` global_threads or groups not provided!");
+                    #[cfg(debug_assertions)]
                     unreachable!("groups not provided!");
                 };
                 let debug_printf_panic = if info.debug_printf() {
