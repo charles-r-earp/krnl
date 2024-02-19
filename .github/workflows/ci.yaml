@@ -150,4 +150,4 @@ jobs:
     - uses: EmbarkStudios/cargo-deny-action@v1
     - uses: EmbarkStudios/cargo-deny-action@v1
       with:         
-        manifest-path: "krnc/Cargo.toml"
+        manifest-path: "krnlc/Cargo.toml"
