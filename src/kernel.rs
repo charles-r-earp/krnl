@@ -354,7 +354,7 @@ pub mod saxpy {
     ///
     /// The builder is lazily created on first call.
     ///
-    /// **Errors**
+    /// # Errors
     /// - The kernel wasn't compiled (with `#[krnl(no_build)]` applied to `#[module]`).
     pub fn builder() -> Result<KernelBuilder>;
 
@@ -368,7 +368,7 @@ pub mod saxpy {
         /// The kernel is cached, so subsequent calls to `.build()` with identical
         /// builders (ie threads and spec constants) may avoid recompiling.
         ///
-        /// **Errors**
+        /// # Errors
         /// - `device` doesn't have required features.
         /// - The kernel requires [specialization](kernel#specialization), but `.specialize(..)` was not called.
         /// - The kernel is not supported on `device`.
@@ -396,8 +396,8 @@ pub mod saxpy {
         /// - Waits for mutable access to mutable slice arguments.
         /// - Blocks until the kernel is queued.
         ///
-        /// **Errors**
-        /// - DeviceLost: The device was lost.
+        /// # Errors
+        /// - [`DeviceLost`].
         /// - The kernel could not be queued.
         pub fn dispatch(&self, alpha: f32, x: Slice<f32>, y: SliceMut<f32>) -> Result<()>;
     }
