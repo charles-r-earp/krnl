@@ -673,7 +673,7 @@ impl KernelDesc {
         }
         freeze_spec_constants(&mut module)?;
         reorder_push_constant_pointers(&mut module);
-        let spirv = module.assemble().into();
+        let spirv = module.assemble();
         Ok(Self {
             name,
             spirv,
@@ -939,6 +939,7 @@ fn freeze_spec_constants(module: &mut rspirv::dr::Module) -> Result<()> {
                         let x = values[&operands.first().unwrap().unwrap_id_ref()];
                         macro_wrap!(match scalar_type {
                             macro_for!($T in [U8, I8, U16, I16, U32, I32, U64, I64] {
+                                #[allow(clippy::useless_conversion, clippy::unnecessary_fallible_conversions)]
                                 ScalarType::$T => ScalarElem::$T(match x {
                                     E::U8(x) => x.try_into()?,
                                     E::I8(x) => x.try_into()?,
@@ -1153,7 +1154,7 @@ fn reorder_push_constant_pointers(module: &mut rspirv::dr::Module) {
                 if let [Operand::StorageClass(StorageClass::PushConstant), Operand::IdRef(pointee)] =
                     inst.operands.as_slice()
                 {
-                    if structs.iter().find(|x| *x == pointee).is_none() {
+                    if !structs.iter().any(|x| x == pointee) {
                         return Some(std::mem::replace(
                             inst,
                             Instruction::new(Op::Nop, None, None, Vec::new()),

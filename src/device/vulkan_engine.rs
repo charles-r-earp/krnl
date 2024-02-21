@@ -1182,7 +1182,7 @@ unsafe fn shader_module_from_words(
     let handle = {
         let infos = ash::vk::ShaderModuleCreateInfo {
             flags: ash::vk::ShaderModuleCreateFlags::empty(),
-            code_size: words.len() * std::mem::size_of::<u32>(),
+            code_size: std::mem::size_of_val(words),
             p_code: words.as_ptr(),
             ..Default::default()
         };
