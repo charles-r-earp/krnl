@@ -228,3 +228,81 @@ mod dependency {
         *y = add_one(x);
     }
 }
+
+#[module]
+mod spec_const_ops {
+    #[cfg(test)]
+    use krnl::anyhow::Result;
+    #[cfg(not(target_arch = "spirv"))]
+    use krnl::krnl_core;
+    #[cfg(all(test, feature = "device"))]
+    use krnl::{anyhow::format_err, device::Device};
+    use krnl_core::macros::kernel;
+    #[cfg(test)]
+    use paste::paste;
+
+    #[cfg(all(test, feature = "device"))]
+    fn test_device() -> Result<Device> {
+        use std::sync::OnceLock;
+
+        static DEVICE: OnceLock<Result<Device>> = OnceLock::new();
+
+        let device = DEVICE.get_or_init(|| {
+            let index = if let Ok(index) = std::env::var("KRNL_DEVICE") {
+                index.parse().unwrap()
+            } else {
+                0
+            };
+            Device::builder().index(index).build()
+        });
+        match device {
+            Ok(device) => Ok(device.clone()),
+            Err(err) => Err(format_err!("{err}")),
+        }
+    }
+
+    macro_rules! impl_tests {
+        ($(  [$($fs:literal),*] $f:ident($x:ident: $X:ty = $spec:literal) -> $Y:ty  $b:block)*)  => {
+            $(
+                #[allow(non_snake_case)]
+                #[kernel]
+                fn $f<const $x: $X>(#[item] y: &mut $Y) {
+                    *y = $b;
+                }
+
+                #[cfg(test)]
+                paste! {
+                    #[test]
+                    fn [<test _ $f>]() -> Result<()> {
+                        let _builder = $f::builder()?.specialize($spec);
+                        #[cfg(all(feature = "device", $(feature = $fs),*))]
+                        {
+                            _builder.build(test_device()?)?;
+                        }
+                        Ok(())
+                    }
+                }
+            )*
+        };
+    }
+
+    impl_tests! {
+        ["shader_int8"] uconvert(X: u8 = 1u8) -> u32 { X as u32 }
+        ["shader_int8"] sconvert(X: i8 = 1i8) -> i32 { X as i32 }
+        ["shader_float64"] fconvert(X: f32 = 1f32) -> f64 { X as f64 }
+        ["shader_int8"] snegate(X: i8 = 1) -> i32 { (-X) as i32 }
+        ["shader_int8"] not(X: u8 = 1) -> u32 { !X as u32 }
+        ["shader_int8"] iadd(X: i8 = 1) -> i32 { (X + 1) as i32 }
+        ["shader_int8"] isub(X: i8 = 1) -> i32 { (X - 1) as i32 }
+        ["shader_int8"] imul(X: i8 = 1) -> i32 { (X * 1) as i32 }
+        ["shader_int8"] udiv(X: i8 = 1) -> u32 { (1 / X) as u32 }
+        ["shader_int8"] sdiv(X: i8 = 1) -> i32 { (X / 1) as i32 }
+        ["shader_int8"] umod(X: u8 = 8) -> u32 { (X % 3) as u32 }
+        ["shader_int8"] smod(X: i8 = 3) -> i32 { (8 % X) as i32 }
+        ["shader_int8"] select_eq(X: u8 = 1) -> i32 { (if X == 1 { 3i8 } else { 4i8 }) as i32 }
+        ["shader_int8"] select_ge(X: i8 = 1) -> i32 { (if X >= 1 { 3i8 } else { 4i8 }) as i32 }
+        ["shader_int8"] select_gt(X: u8 = 1) -> i32 { (if X > 1 { 3i8 } else { 4i8 }) as i32 }
+        ["shader_int8"] select_le(X: i32 = 1) -> i32 { (if X <= 1 { 3i8 } else { 4i8 }) as i32 }
+        ["shader_int8"] select_lt(X: u32 = 1) -> i32 { (if X == 1 { 3i8 } else { 4i8 }) as i32 }
+    }
+}

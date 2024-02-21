@@ -1211,33 +1211,39 @@ fn add_spec_constant_ops(module: &mut rspirv::dr::Module) {
         dr::{Instruction, Operand},
         spirv::Op,
     };
+    let mut scalars = FxHashSet::default();
     let mut constants = FxHashSet::default();
     for inst in module.types_global_values.iter() {
-        if matches!(
-            inst.class.opcode,
+        match inst.class.opcode {
+            Op::TypeBool | Op::TypeInt | Op::TypeFloat  => {
+                scalars.insert(inst.result_id.unwrap());
+            }
             Op::Constant
                 | Op::ConstantTrue
                 | Op::ConstantFalse
                 | Op::ConstantNull
-                | Op::ConstantComposite
+            //    | Op::ConstantComposite
                 | Op::SpecConstant
                 | Op::SpecConstantTrue
                 | Op::SpecConstantFalse
-                | Op::SpecConstantComposite
-                | Op::SpecConstantOp
-        ) {
-            if let Some(result_id) = inst.result_id {
-                constants.insert(result_id);
+           //     | Op::SpecConstantComposite
+                | Op::SpecConstantOp => {
+                if scalars.contains(&inst.result_type.unwrap()) {
+                    constants.insert(inst.result_id.unwrap());
+                }
             }
+            _ => (),
         }
     }
+    let mut used_constants = FxHashSet::default();
+    used_constants.reserve(constants.len());
     for function in module.functions.iter_mut() {
         for block in function.blocks.iter_mut() {
             block.instructions.retain(|inst| {
                 if matches!(
                     inst.class.opcode,
-                    Op::SConvert
-                        | Op::UConvert
+                    Op::UConvert
+                        | Op::SConvert
                         | Op::FConvert
                         | Op::SNegate
                         | Op::Not
@@ -1249,19 +1255,6 @@ fn add_spec_constant_ops(module: &mut rspirv::dr::Module) {
                         | Op::UMod
                         | Op::SRem
                         | Op::SMod
-                        | Op::ShiftRightLogical
-                        | Op::ShiftRightArithmetic
-                        | Op::ShiftLeftLogical
-                        | Op::BitwiseOr
-                        | Op::BitwiseAnd
-                        | Op::VectorShuffle
-                        | Op::CompositeExtract
-                        | Op::CompositeInsert
-                        | Op::LogicalOr
-                        | Op::LogicalAnd
-                        | Op::LogicalNot
-                        | Op::LogicalEqual
-                        | Op::LogicalNotEqual
                         | Op::Select
                         | Op::IEqual
                         | Op::INotEqual
@@ -1272,40 +1265,56 @@ fn add_spec_constant_ops(module: &mut rspirv::dr::Module) {
                         | Op::ULessThanEqual
                         | Op::SLessThanEqual
                         | Op::UGreaterThanEqual
-                        | Op::SGreaterThanEqual
-                        | Op::QuantizeToF16
+                        | Op::SGreaterThanEqual /*
+                                                | Op::ShiftRightLogical
+                                                                 | Op::ShiftRightArithmetic
+                                                                 | Op::ShiftLeftLogical
+                                                                 | Op::BitwiseOr
+                                                                 | Op::BitwiseAnd
+                                                                 | Op::VectorShuffle
+                                                                 | Op::CompositeExtract
+                                                                 | Op::CompositeInsert
+                                                                 | Op::LogicalOr
+                                                                 | Op::LogicalAnd
+                                                                 | Op::LogicalNot
+                                                                 | Op::LogicalEqual
+                                                                 | Op::LogicalNotEqual
+                                                                | Op::QuantizeToF16
+                                                             */
                 ) {
-                    if let Some(result_id) = inst.result_id {
-                        let mut used_constants = FxHashSet::default();
-                        for operand in inst.operands.iter() {
-                            if let Operand::IdRef(id) = operand {
-                                if !constants.contains(id) {
-                                    return true;
-                                }
-                                used_constants.insert(*id);
+                    let result_type = inst.result_type.unwrap();
+                    if !scalars.contains(&result_type) {
+                        return true;
+                    }
+                    let result_id = inst.result_id.unwrap();
+                    used_constants.clear();
+                    for operand in inst.operands.iter() {
+                        if let Operand::IdRef(id) = operand {
+                            if !constants.contains(id) {
+                                return true;
                             }
+                            used_constants.insert(*id);
                         }
-                        for (i, global_inst) in module.types_global_values.iter().enumerate().rev()
-                        {
-                            if let Some(global_result_id) = global_inst.result_id {
-                                if inst.result_type == global_inst.result_id
-                                    || used_constants.contains(&global_result_id)
-                                {
-                                    module.types_global_values.insert(
-                                        i + 1,
-                                        Instruction::new(
-                                            Op::SpecConstantOp,
-                                            inst.result_type,
-                                            inst.result_id,
-                                            [Operand::LiteralInt32(inst.class.opcode as u32)]
-                                                .into_iter()
-                                                .chain(inst.operands.clone())
-                                                .collect(),
-                                        ),
-                                    );
-                                    constants.insert(result_id);
-                                    return false;
-                                }
+                    }
+                    for (i, global_inst) in module.types_global_values.iter().enumerate().rev() {
+                        if let Some(global_result_id) = global_inst.result_id {
+                            if inst.result_type == global_inst.result_id
+                                || used_constants.contains(&global_result_id)
+                            {
+                                module.types_global_values.insert(
+                                    i + 1,
+                                    Instruction::new(
+                                        Op::SpecConstantOp,
+                                        inst.result_type,
+                                        inst.result_id,
+                                        [Operand::LiteralInt32(inst.class.opcode as u32)]
+                                            .into_iter()
+                                            .chain(inst.operands.clone())
+                                            .collect(),
+                                    ),
+                                );
+                                constants.insert(result_id);
+                                return false;
                             }
                         }
                     }

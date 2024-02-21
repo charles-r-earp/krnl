@@ -560,11 +560,12 @@ use anyhow::{bail, Result};
 #[cfg(feature = "device")]
 use dry::macro_wrap;
 #[cfg(feature = "device")]
+use fxhash::FxHashMap;
+#[cfg(feature = "device")]
 use rspirv::{binary::Assemble, dr::Operand};
 use std::{borrow::Cow, sync::Arc};
 #[cfg(feature = "device")]
 use std::{
-    collections::HashMap,
     hash::Hash,
     sync::atomic::{AtomicBool, Ordering},
 };
@@ -605,7 +606,8 @@ impl KernelDesc {
     ) -> Result<Self> {
         use rspirv::spirv::{Decoration, Op};
         let mut module = rspirv::dr::load_words(&self.spirv).unwrap();
-        let mut spec_ids = HashMap::<u32, u32>::with_capacity(spec_consts.len());
+        let mut spec_ids = FxHashMap::<u32, u32>::default();
+        spec_ids.reserve(spec_consts.len());
         let mut spec_string = format!("threads={threads}");
         use std::fmt::Write;
         for (desc, spec) in self.spec_descs.iter().zip(spec_consts) {
@@ -654,6 +656,12 @@ impl KernelDesc {
                                 bytemuck::bytes_of_mut(a).copy_from_slice(&bytes[..8]);
                                 bytemuck::bytes_of_mut(b).copy_from_slice(&bytes[9..]);
                             }
+                            [Operand::LiteralFloat32(a)] => {
+                                *a = f32::try_from(value).unwrap();
+                            }
+                            [Operand::LiteralFloat64(a)] => {
+                                *a = f64::try_from(value).unwrap();
+                            }
                             _ => unreachable!("{:?}", inst.operands),
                         }
                     }
@@ -663,7 +671,7 @@ impl KernelDesc {
         if !debug_printf {
             strip_debug_printf(&mut module);
         }
-        freeze_spec_constants(&mut module);
+        freeze_spec_constants(&mut module)?;
         reorder_push_constant_pointers(&mut module);
         let spirv = module.assemble().into();
         Ok(Self {
@@ -727,8 +735,7 @@ fn strip_debug_printf(module: &mut rspirv::dr::Module) {
 // TODO: fixed in vulkano f2c68d7 https://github.com/vulkano-rs/vulkano/commit/f2c68d71c8e25a1b9ce35ab713a2960833c6115f
 // remove when published.
 #[cfg(feature = "device")]
-fn freeze_spec_constants(module: &mut rspirv::dr::Module) {
-    use fxhash::FxHashMap;
+fn freeze_spec_constants(module: &mut rspirv::dr::Module) -> Result<()> {
     use half::f16;
     use rspirv::{
         dr::Instruction,
@@ -789,10 +796,73 @@ fn freeze_spec_constants(module: &mut rspirv::dr::Module) {
         }
     }
 
+    use core::num::TryFromIntError;
+
+    fn scalar_elem_try_from_int<T>(
+        scalar_type: ScalarType,
+        x: T,
+    ) -> Result<ScalarElem, TryFromIntError>
+    where
+        T: std::fmt::Debug,
+        u8: TryFrom<T>,
+        TryFromIntError: From<<u8 as TryFrom<T>>::Error>,
+        i8: TryFrom<T>,
+        TryFromIntError: From<<i8 as TryFrom<T>>::Error>,
+        u16: TryFrom<T>,
+        TryFromIntError: From<<u16 as TryFrom<T>>::Error>,
+        i16: TryFrom<T>,
+        TryFromIntError: From<<i16 as TryFrom<T>>::Error>,
+        u32: TryFrom<T>,
+        TryFromIntError: From<<u32 as TryFrom<T>>::Error>,
+        i32: TryFrom<T>,
+        TryFromIntError: From<<i32 as TryFrom<T>>::Error>,
+        u64: TryFrom<T>,
+        TryFromIntError: From<<u64 as TryFrom<T>>::Error>,
+        i64: TryFrom<T>,
+        TryFromIntError: From<<i64 as TryFrom<T>>::Error>,
+    {
+        macro_wrap!(match scalar_type {
+            macro_for!($T in [U8, I8, U16, I16, U32, I32, U64, I64] {
+                ScalarType::$T => Ok(ScalarElem::$T(x.try_into()?)),
+            })
+            _ => unreachable!("{x:?} -> {scalar_type:?}"),
+        })
+    }
+
+    macro_rules! binary_scalar_int_op {
+        (|$a:ident, $b:ident| $e:expr) => {
+            macro_wrap!(match ($a, $b) {
+                macro_for!($T in [U8, I8, U16, I16, U32, I32, U64, I64] {
+                    (ScalarElem::$T($a), ScalarElem::$T($b)) => $e,
+                })
+                _ => unreachable!("{:?}", ($a, $b)),
+            })
+        };
+    }
+
+    enum ScalarElemOrBool {
+        ScalarElem(ScalarElem),
+        Bool(bool),
+    }
+
+    impl From<ScalarElem> for ScalarElemOrBool {
+        fn from(scalar_elem: ScalarElem) -> Self {
+            Self::ScalarElem(scalar_elem)
+        }
+    }
+
+    impl From<bool> for ScalarElemOrBool {
+        fn from(input: bool) -> Self {
+            Self::Bool(input)
+        }
+    }
+
     let mut scalars = FxHashMap::default();
     let mut values = FxHashMap::default();
+    let mut bool_values = FxHashMap::default();
     for inst in module.types_global_values.iter_mut() {
-        match inst.class.opcode {
+        let op = inst.class.opcode;
+        match op {
             Op::TypeInt => {
                 let width = inst.operands[0].unwrap_literal_int32();
                 let signed = inst.operands[1].unwrap_literal_int32() == 1;
@@ -818,6 +888,21 @@ fn freeze_spec_constants(module: &mut rspirv::dr::Module) {
                     _ => unreachable!(),
                 };
                 scalars.insert(inst.result_id.unwrap(), scalar_type);
+            }
+            Op::ConstantTrue | Op::SpecConstantTrue | Op::ConstantFalse | Op::SpecConstantFalse => {
+                let value = matches!(op, Op::ConstantTrue | Op::SpecConstantTrue);
+                bool_values.insert(inst.result_id.unwrap(), value);
+                if let Op::SpecConstant = inst.class.opcode {
+                    let op = if value {
+                        Op::ConstantTrue
+                    } else {
+                        Op::ConstantFalse
+                    };
+                    let result_type = inst.result_type;
+                    let result_id = inst.result_id;
+                    let operands = Vec::new();
+                    *inst = Instruction::new(op, result_type, result_id, operands);
+                }
             }
             Op::Constant | Op::SpecConstant => {
                 let operand = inst.operands.first().unwrap();
@@ -846,25 +931,193 @@ fn freeze_spec_constants(module: &mut rspirv::dr::Module) {
                 let operands = &inst.operands[1..];
                 let result_type = inst.result_type;
                 let result_id = inst.result_id;
+                use ScalarElem as E;
+                use ScalarType as T;
                 let output = match op {
-                    Op::SConvert => {
+                    Op::UConvert | Op::SConvert => {
                         let scalar_type = scalars[&result_type.unwrap()];
                         let x = values[&operands.first().unwrap().unwrap_id_ref()];
-                        x.scalar_cast(scalar_type)
+                        macro_wrap!(match scalar_type {
+                            macro_for!($T in [U8, I8, U16, I16, U32, I32, U64, I64] {
+                                ScalarType::$T => ScalarElem::$T(match x {
+                                    E::U8(x) => x.try_into()?,
+                                    E::I8(x) => x.try_into()?,
+                                    E::U16(x) => x.try_into()?,
+                                    E::I16(x) => x.try_into()?,
+                                    E::U32(x) => x.try_into()?,
+                                    E::I32(x) => x.try_into()?,
+                                    E::U64(x) => x.try_into()?,
+                                    E::I64(x) => x.try_into()?,
+                                    _ => unreachable!("{x:?}"),
+                                }),
+                            })
+                             _ => unreachable!("{scalar_type:?}"),
+                        })
+                        .into()
                     }
-                    _ => continue,
+                    Op::FConvert => {
+                        let scalar_type = scalars[&result_type.unwrap()];
+                        let x = values[&operands.first().unwrap().unwrap_id_ref()];
+                        match (x, scalar_type) {
+                            (E::F32(x), T::F64) => E::F64(x.into()),
+                            (E::F64(x), T::F32) => E::F32(x as f32),
+                            _ => unreachable!("{x:?} -> {scalar_type:?}"),
+                        }
+                        .into()
+                    }
+                    Op::SNegate => {
+                        use std::ops::Neg;
+
+                        let scalar_type = scalars[&result_type.unwrap()];
+                        let x = values[&operands.first().unwrap().unwrap_id_ref()];
+                        macro_rules! sneg {
+                            ($U:ident, $I:ident, $i:ident) => {
+                                match (x, scalar_type) {
+                                    (E::$U(x), T::$U) => E::$U($i::try_from(x)?.neg().try_into()?),
+                                    (E::$U(x), T::$I) => E::$I($i::try_from(x)?.neg()),
+                                    (E::$I(x), T::$U) => E::$U(x.neg().try_into()?),
+                                    (E::$I(x), T::$I) => E::$I(x.neg()),
+                                    _ => unreachable!("{x:?} -> {scalar_type:?}"),
+                                }
+                            };
+                        }
+
+                        match (x.scalar_type().size(), scalar_type.size()) {
+                            (1, 1) => sneg!(U8, I8, i8),
+                            (2, 2) => sneg!(U16, I16, i16),
+                            (4, 4) => sneg!(U32, I32, i32),
+                            (8, 8) => sneg!(U64, I64, i64),
+                            _ => unreachable!("{x:?} -> {scalar_type:?}"),
+                        }
+                        .into()
+                    }
+
+                    Op::Not => {
+                        use std::ops::Not;
+
+                        let scalar_type = scalars[&result_type.unwrap()];
+                        let x = values[&operands.first().unwrap().unwrap_id_ref()];
+                        macro_rules! not {
+                            ($U:ident, $I:ident) => {
+                                match (x, scalar_type) {
+                                    (E::$U(x), T::$U) => E::$U(x.not().try_into()?),
+                                    (E::$U(x), T::$I) => E::$I(x.not().try_into()?),
+                                    (E::$I(x), T::$U) => E::$U(x.not().try_into()?),
+                                    (E::$I(x), T::$I) => E::$I(x.not().try_into()?),
+                                    _ => unreachable!("{x:?} -> {scalar_type:?}"),
+                                }
+                            };
+                        }
+
+                        match (x.scalar_type().size(), scalar_type.size()) {
+                            (1, 1) => not!(U8, I8),
+                            (2, 2) => not!(U16, I16),
+                            (4, 4) => not!(U32, I32),
+                            (8, 8) => not!(U64, I64),
+                            _ => unreachable!("{x:?} -> {scalar_type:?}"),
+                        }
+                        .into()
+                    }
+
+                    Op::IAdd
+                    | Op::ISub
+                    | Op::IMul
+                    | Op::UDiv
+                    | Op::SDiv
+                    | Op::UMod
+                    | Op::SRem
+                    | Op::SMod => {
+                        let scalar_type = scalars[&result_type.unwrap()];
+                        let a = values[&operands[0].unwrap_id_ref()];
+                        let b = values[&operands[1].unwrap_id_ref()];
+                        binary_scalar_int_op!(|a, b| scalar_elem_try_from_int(
+                            scalar_type,
+                            match op {
+                                Op::IAdd => a + b,
+                                Op::ISub => a - b,
+                                Op::IMul => a * b,
+                                Op::UDiv | Op::SDiv => a / b,
+                                Op::UMod | Op::SMod => a % b,
+                                Op::SRem => core::ops::Rem::rem(a, b),
+                                _ => unreachable!(),
+                            }
+                        )?)
+                        .into()
+                    }
+
+                    Op::Select => {
+                        let condition = bool_values[&operands[0].unwrap_id_ref()];
+                        let index = if condition { 1 } else { 2 };
+                        if scalars.contains_key(&result_type.unwrap()) {
+                            values[&operands[index].unwrap_id_ref()].into()
+                        } else {
+                            bool_values[&operands[index].unwrap_id_ref()].into()
+                        }
+                    }
+                    Op::IEqual
+                    | Op::INotEqual
+                    | Op::ULessThan
+                    | Op::SLessThan
+                    | Op::UGreaterThan
+                    | Op::SGreaterThan
+                    | Op::ULessThanEqual
+                    | Op::SLessThanEqual
+                    | Op::UGreaterThanEqual
+                    | Op::SGreaterThanEqual => {
+                        let a = values[&operands[0].unwrap_id_ref()];
+                        let b = values[&operands[1].unwrap_id_ref()];
+                        binary_scalar_int_op!(|a, b| match op {
+                            Op::IEqual => a == b,
+                            Op::INotEqual => a != b,
+                            Op::ULessThan | Op::SLessThan => a < b,
+                            Op::UGreaterThan | Op::SGreaterThan => a > b,
+                            Op::ULessThanEqual | Op::SLessThanEqual => a <= b,
+                            Op::UGreaterThanEqual | Op::SGreaterThanEqual => a >= b,
+                            _ => unreachable!(),
+                        })
+                        .into()
+                    }
+
+                    Op::ShiftRightLogical
+                    | Op::ShiftRightArithmetic
+                    | Op::ShiftLeftLogical
+                    | Op::BitwiseOr
+                    | Op::BitwiseXor
+                    | Op::BitwiseAnd
+                    | Op::VectorShuffle
+                    | Op::CompositeExtract
+                    | Op::CompositeInsert
+                    | Op::LogicalOr
+                    | Op::LogicalAnd
+                    | Op::LogicalNot
+                    | Op::LogicalEqual
+                    | Op::LogicalNotEqual => bail!("SpecConstantOp {op:?} is unimplemented!"),
+                    _ => unreachable!("{op:?}"),
                 };
-                *inst = Instruction::new(
-                    Op::Constant,
-                    result_type,
-                    result_id,
-                    vec![scalar_elem_to_operand(output)],
-                );
+                match output {
+                    ScalarElemOrBool::ScalarElem(output) => {
+                        values.insert(result_id.unwrap(), output);
+                        *inst = Instruction::new(
+                            Op::Constant,
+                            result_type,
+                            result_id,
+                            vec![scalar_elem_to_operand(output)],
+                        );
+                    }
+                    ScalarElemOrBool::Bool(output) => {
+                        bool_values.insert(result_id.unwrap(), output);
+                        let op = if output {
+                            Op::ConstantTrue
+                        } else {
+                            Op::ConstantFalse
+                        };
+                        *inst = Instruction::new(op, result_type, result_id, Vec::new());
+                    }
+                }
             }
             _ => (),
         }
     }
-
     module.annotations.retain(|inst| {
         if inst.class.opcode == Op::Decorate {
             if let [_id, Operand::Decoration(Decoration::SpecId), _spec_id] =
@@ -874,7 +1127,8 @@ fn freeze_spec_constants(module: &mut rspirv::dr::Module) {
             }
         }
         true
-    })
+    });
+    Ok(())
 }
 
 // vulkano 0.34.1 false positive assert with PushConstant TypePointer not being a struct
