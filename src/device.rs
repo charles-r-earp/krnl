@@ -530,7 +530,7 @@ pub struct DeviceInfo {
     vendor_id: u32,
     max_groups: u32,
     max_threads: u32,
-    subgroup_threads: u32,
+    subgroup_threads: Option<u32>,
     features: Features,
     debug_printf: bool,
 }
@@ -544,14 +544,18 @@ impl DeviceInfo {
     pub fn max_threads(&self) -> u32 {
         self.max_threads
     }
-    // TODO: Intel Mesa driver uses variable subgroup size
-    // Fixed in https://github.com/charles-r-earp/krnl/tree/update-vulkano
-    /*
     /// Subgroup threads.
-    pub fn subgroup_threads(&self) -> u32 {
+    ///
+    /// **None** if the device does not support subgroup
+    /// operations or it cannot be determined.
+    ///
+    /// If `threads` is an exact multiple of this value, each subgroup
+    /// will have the same number of threads.
+    ///
+    /// See [`krnl_core::kernel::Kernel::subgroup_threads()`].
+    pub fn subgroup_threads(&self) -> Option<u32> {
         self.subgroup_threads
     }
-    */
     /// Device features.
     pub fn features(&self) -> Features {
         self.features

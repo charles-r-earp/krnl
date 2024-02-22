@@ -71,7 +71,56 @@ fn device_test(device: &Device, name: &str, f: impl Fn(Device) + Send + Sync + '
 
 #[cfg(not(target_arch = "wasm32"))]
 fn tests(device: &Device, device2: Option<&Device>) -> impl IntoIterator<Item = Trial> {
-    buffer_tests(device, device2)
+    subgroup_tests(device)
+        .into_iter()
+        .chain(buffer_tests(device, device2))
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn subgroup_tests(device: &Device) -> impl IntoIterator<Item = Trial> {
+    let device_info = if let Some(device_info) = device.info() {
+        device_info
+    } else {
+        return Vec::new();
+    };
+    let max_threads = device_info.max_threads();
+    let subgroup_threads = device_info.subgroup_threads();
+
+    (1..=256.min(max_threads))
+        .map(|threads| {
+            let device = device.clone();
+            Trial::test(format!("subgroup_info_threads{threads}"), move || {
+                let subgroup_threads = subgroup_threads.unwrap().min(threads);
+                let subgroups =
+                    threads / subgroup_threads + (threads % subgroup_threads != 0) as u32;
+                let subgroup_info = kernel_tests::subgroup_info(device.clone(), threads)?;
+                for (subgroup_id, subgroup_info) in subgroup_info
+                    .chunks(subgroup_threads.try_into().unwrap())
+                    .enumerate()
+                {
+                    let subgroup_id = u32::try_from(subgroup_id).unwrap();
+                    let subgroup_threads =
+                        if threads % subgroup_threads == 0 || subgroup_id < subgroups - 1 {
+                            subgroup_threads
+                        } else {
+                            threads % subgroup_threads
+                        };
+                    for (subgroup_thread_id, subgroup_info) in subgroup_info.iter().enumerate() {
+                        let subgroup_thread_id = u32::try_from(subgroup_thread_id).unwrap();
+                        let expected = kernel_tests::SubgroupInfo {
+                            subgroups,
+                            subgroup_id,
+                            subgroup_threads,
+                            subgroup_thread_id,
+                        };
+                        assert_eq!(subgroup_info, &expected);
+                    }
+                }
+                Ok(())
+            })
+            .with_ignored_flag(subgroup_threads.is_none())
+        })
+        .collect()
 }
 
 #[cfg(not(target_arch = "wasm32"))]

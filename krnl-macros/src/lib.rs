@@ -1375,9 +1375,6 @@ fn kernel_impl(item_tokens: TokenStream2) -> Result<TokenStream2> {
                 #[spirv(subgroup_id)]
                 __krnl_subgroup_id: u32,
                 #[allow(unused)]
-                #[spirv(subgroup_size)]
-                __krnl_subgroup_threads: u32,
-                #[allow(unused)]
                 #[spirv(subgroup_local_invocation_id)]
                 __krnl_subgroup_thread_id: u32,
                 #[allow(unused)]
@@ -1402,6 +1399,9 @@ fn kernel_impl(item_tokens: TokenStream2) -> Result<TokenStream2> {
                     }
                     #declare_specs
                     #declare_threads
+                    let __krnl_subgroup_threads = unsafe {
+                        ::krnl_core::kernel::__private::subgroup_threads()
+                    };
                     let mut kernel = unsafe {
                         ::krnl_core::kernel::__private::KernelArgs {
                             global_threads: __krnl_groups.x * __krnl_threads,

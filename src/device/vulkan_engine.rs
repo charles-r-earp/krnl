@@ -211,6 +211,7 @@ impl DeviceEngine for Engine {
         let name = physical_device.properties().device_name.clone();
         let optimal_device_extensions = vulkano::device::DeviceExtensions {
             khr_vulkan_memory_model: true,
+            ext_subgroup_size_control: true,
             ..vulkano::device::DeviceExtensions::empty()
         };
         let device_extensions = physical_device
@@ -219,6 +220,7 @@ impl DeviceEngine for Engine {
         let optimal_device_features = vulkano::device::Features {
             vulkan_memory_model: true,
             timeline_semaphore: true,
+            subgroup_size_control: true,
             shader_int8: optimal_features.shader_int8,
             shader_int16: optimal_features.shader_int16,
             shader_int64: optimal_features.shader_int64,
@@ -328,7 +330,7 @@ impl DeviceEngine for Engine {
             vendor_id: properties.vendor_id,
             max_groups: properties.max_compute_work_group_count[0],
             max_threads: properties.max_compute_work_group_size[0],
-            subgroup_threads: properties.subgroup_size.unwrap(),
+            subgroup_threads: properties.subgroup_size,
             features,
             debug_printf,
         });
@@ -1285,11 +1287,10 @@ impl KernelInner {
         let pipeline_layout = PipelineLayout::new(device.clone(), pipeline_layout_create_info)?;
         let cache = None;
         let required_subgroup_size = if enabled_features.subgroup_size_control {
-            Some(engine.info.subgroup_threads)
+            engine.info.subgroup_threads
         } else {
             None
         };
-
         let stage_create_info = PipelineShaderStageCreateInfo {
             required_subgroup_size,
             ..PipelineShaderStageCreateInfo::new(

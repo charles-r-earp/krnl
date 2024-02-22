@@ -48,6 +48,24 @@ pub mod __private {
     }
 
     #[inline]
+    pub unsafe fn subgroup_threads() -> u32 {
+        use core::arch::asm;
+
+        let mut y = 0u32;
+        unsafe {
+            asm! {
+                "%u32 = OpTypeInt 32 0",
+                "%one = OpConstant %u32 1",
+                "%subgroup = OpConstant %u32 3",
+                "%y = OpGroupNonUniformIAdd _ %subgroup Reduce %one",
+                "OpStore {y} %y",
+                y = in(reg) &mut y,
+            }
+        }
+        y
+    }
+
+    #[inline]
     pub unsafe fn zero_group_buffer<T: Default + Copy>(
         kernel: &Kernel,
         buffer: &mut [T; 1],
@@ -151,15 +169,28 @@ impl Kernel {
     pub fn subgroup_id(&self) -> usize {
         self.subgroup_id as usize
     }
-    // TODO: Intel Mesa driver uses variable subgroup size
-    // Fixed in https://github.com/charles-r-earp/krnl/tree/update-vulkano
-    /*
-    /// The number of threads per subgroup.
+    /// The number of threads in the subgroup.
+    ///
+    /// If `threads` is an exact multiple of `DeviceInfo::subgroup_threads()`,
+    /// will be exactly `DeviceInfo::subgroup_threads()`.
+    ///
+    /// If `threads` is not an exact multiple of  `DeviceInfo::subgroup_threads()`,
+    /// all but the last subgroup will return `DeviceInfo::subgroup_threads()`, and
+    /// the last subgroup will return the remainder.
+    ///
+    /// # Note
+    /// Does not use the [SubgroupSize BuiltIn](https://registry.khronos.org/SPIR-V/specs/unified1/SPIRV.html#_builtin),
+    /// but instead a
+    /// [subgroup reduction](https://registry.khronos.org/SPIR-V/specs/unified1/SPIRV.html#OpGroupNonUniformIAdd)
+    /// is peformed when creating the [`Kernel`],
+    /// producing the expected result.
+    ///
+    /// Consider using `DeviceInfo::subgroup_threads()` as a spec constant if `threads`
+    /// is an exact multiple.
     #[inline]
     pub fn subgroup_threads(&self) -> usize {
         self.subgroup_threads as usize
     }
-    */
     /// The subgroup thread id.
     #[inline]
     pub fn subgroup_thread_id(&self) -> usize {

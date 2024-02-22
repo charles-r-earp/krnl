@@ -1,0 +1,11 @@
+[package]
+name = "kernel-tests"
+version = "0.1.0"
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+krnl.workspace = true

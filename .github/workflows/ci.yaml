@@ -89,7 +89,7 @@ jobs:
         run: cargo +nightly-2023-05-27 install --path krnlc --root . --locked --no-default-features --features use-installed-tools -vv --debug
       - name: krnlc check 
         if: ${{ !cancelled() }}
-        run: ./bin/krnlc --check -p krnl -p krnlc-tests -p compute-benchmarks -v
+        run: ./bin/krnlc --check -p krnl -p kernel-tests -p krnlc-tests -p compute-benchmarks -v
   miri:
     runs-on: ubuntu-latest
     env:
