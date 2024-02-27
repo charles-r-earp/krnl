@@ -144,7 +144,6 @@ pub struct Saxpy {
 impl Saxpy {
     pub fn run(&mut self) -> Result<()> {
         kernels::saxpy::builder()?
-            .with_threads(256)
             .build(self.device.clone())?
             .dispatch(
                 self.x_device.as_slice(),
