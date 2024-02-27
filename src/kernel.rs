@@ -1162,8 +1162,7 @@ pub mod __private {
                     let groups = items / threads + u32::from(items % threads != 0);
                     groups.min(max_groups)
                 } else {
-                    #[cfg(debug_assertions)]
-                    unreachable!("groups not provided!");
+                    unreachable!("groups not provided!")
                 };
                 let debug_printf_panic = if info.debug_printf() {
                     Some(Arc::new(AtomicBool::default()))

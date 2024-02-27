@@ -4,13 +4,12 @@ pub mod __private {
     use super::{ItemKernel, Kernel};
 
     pub struct KernelArgs {
-        pub global_threads: u32,
         pub global_id: u32,
         pub groups: u32,
         pub group_id: u32,
         pub subgroups: u32,
         pub subgroup_id: u32,
-        pub subgroup_threads: u32,
+        //pub subgroup_threads: u32,
         pub subgroup_thread_id: u32,
         pub threads: u32,
         pub thread_id: u32,
@@ -21,25 +20,24 @@ pub mod __private {
         #[inline]
         pub unsafe fn into_kernel(self) -> Kernel {
             let Self {
-                global_threads,
                 global_id,
                 groups,
                 group_id,
                 subgroups,
                 subgroup_id,
-                subgroup_threads,
+                //subgroup_threads,
                 subgroup_thread_id,
                 threads,
                 thread_id,
             } = self;
             Kernel {
-                global_threads,
+                global_threads: groups * threads,
                 global_id,
                 groups,
                 group_id,
                 subgroups,
                 subgroup_id,
-                subgroup_threads,
+                //subgroup_threads,
                 subgroup_thread_id,
                 threads,
                 thread_id,
@@ -102,8 +100,7 @@ pub struct Kernel {
     #[doc(hidden)]
     #[deprecated(since = "0.0.4", note = "replaced with subgroup_id()")]
     pub subgroup_id: u32,
-    #[allow(unused)]
-    subgroup_threads: u32,
+    //subgroup_threads: u32,
     #[doc(hidden)]
     #[deprecated(since = "0.0.4", note = "replaced with subgroup_thread_id()")]
     pub subgroup_thread_id: u32,
@@ -151,8 +148,7 @@ impl Kernel {
     pub fn subgroup_id(&self) -> usize {
         self.subgroup_id as usize
     }
-    // TODO: Intel Mesa driver uses variable subgroup size
-    // Fixed in https://github.com/charles-r-earp/krnl/tree/update-vulkano
+    // TODO: Potentially implement via subgroup ballot / reduce operation
     /*
     /// The number of threads per subgroup.
     #[inline]
