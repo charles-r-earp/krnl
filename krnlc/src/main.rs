@@ -1249,7 +1249,7 @@ fn add_spec_constant_ops(module: &mut rspirv::dr::Module) {
                         | Op::UMod
                         | Op::SRem
                         | Op::SMod
-                  /*      | Op::ShiftRightLogical
+                  /* | Op::ShiftRightLogical
                         | Op::ShiftRightArithmetic
                         | Op::ShiftLeftLogical
                         | Op::BitwiseOr
@@ -1272,8 +1272,7 @@ fn add_spec_constant_ops(module: &mut rspirv::dr::Module) {
                         | Op::ULessThanEqual
                         | Op::SLessThanEqual
                         | Op::UGreaterThanEqual
-                        | Op::SGreaterThanEqual
-                  //      | Op::QuantizeToF16
+                        | Op::SGreaterThanEqual /* | Op::QuantizeToF16 */
                 ) {
                     if let Some(result_id) = inst.result_id {
                         let mut used_constants = FxHashSet::default();
