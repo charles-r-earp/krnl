@@ -48,6 +48,9 @@ struct Cli {
     /// Use verbose output
     #[arg(short = 'v', long = "verbose")]
     verbose: bool,
+    // Dumps kernels to <target>/krnlc/crates/<crate>/kernels/path/to/kernel.[spv, json]
+    #[arg(long = "dump-kernels", hide = true)]
+    dump_kernels: bool,
 }
 
 fn main() -> Result<()> {
@@ -72,6 +75,7 @@ fn main() -> Result<()> {
             module_sources,
             cli.debug_printf,
             cli.verbose,
+            cli.dump_kernels,
         )?;
         cache(package, modules, cli.check, cli.debug_printf)?;
     }
@@ -491,6 +495,7 @@ fn compile(
     module_sources: FxHashMap<String, String>,
     debug_printf: bool,
     verbose: bool,
+    dump_kernels: bool,
 ) -> Result<Vec<KernelDesc>> {
     use std::{
         env::consts::{DLL_PREFIX, DLL_SUFFIX},
@@ -618,7 +623,9 @@ crate-type = ["dylib"]
     }
     let crate_name_ident = crate_name.replace('-', "_");
     let kernels_dir = device_crate_dir.join("kernels");
-    std::fs::create_dir_all(&kernels_dir)?;
+    if dump_kernels {
+        std::fs::create_dir_all(&kernels_dir)?;
+    }
     let mut builder = SpirvBuilder::new(&device_crate_dir, "spirv-unknown-vulkan1.2")
         .spirv_metadata(SpirvMetadata::NameVariables)
         .print_metadata(MetadataPrintout::None);
@@ -671,6 +678,7 @@ crate-type = ["dylib"]
                 &spirv_module,
                 &entry_fns,
                 debug_printf,
+                dump_kernels,
             )
         })
         .collect()
@@ -781,6 +789,7 @@ fn kernel_post_process(
     spirv_module: &rspirv::dr::Module,
     entry_fns: &FxHashSet<u32>,
     debug_printf: bool,
+    dump_kernels: bool,
 ) -> Result<KernelDesc> {
     use rspirv::{
         binary::Assemble,
@@ -1106,7 +1115,7 @@ fn kernel_post_process(
         } else {
             spirv
         };
-        {
+        if dump_kernels {
             let path = kernels_dir.join(kernel_desc.name.replace("::", "/"));
             std::fs::create_dir_all(path.parent().unwrap())?;
             let string = serde_json::to_string_pretty(&kernel_desc)?;
