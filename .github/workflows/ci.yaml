@@ -31,10 +31,10 @@ jobs:
     steps:
       - uses: actions/checkout@v2
       - name: build
-        if: ${{ !canceled() }}
+        if: ${{ !cancelled() }}
         run: cargo build --locked --workspace --all-features --all-targets -v
       - name: test
-        if: ${{ !canceled() }}
+        if: ${{ !cancelled() }}
         run: cargo test --workspace --no-default-features --features serde  -v -- --format=terse
   miri:
     runs-on: ubuntu-latest
