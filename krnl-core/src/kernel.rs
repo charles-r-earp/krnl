@@ -2,6 +2,7 @@
 #[cfg(target_arch = "spirv")]
 pub mod __private {
     use super::{ItemKernel, Kernel};
+    use core::mem::size_of;
 
     pub struct KernelArgs {
         pub global_id: u32,
@@ -45,6 +46,28 @@ pub mod __private {
         }
     }
 
+    // ensures __krnl_kernel_data is used, and not optimized away
+    // removed by krnlc
+    #[inline]
+    pub unsafe fn kernel_data(data: &mut [u32]) {
+        use spirv_std::arch::IndexUnchecked;
+
+        unsafe {
+            *data.index_unchecked_mut(0) = 1;
+        }
+    }
+
+    // passes the length (constant, spec constant, or spec const expr) to krnlc
+    // the array is changed from len 1 to the constant
+    #[inline]
+    pub unsafe fn group_buffer_len(data: &mut [u32], index: usize, len: usize) {
+        use spirv_std::arch::IndexUnchecked;
+
+        unsafe {
+            *data.index_unchecked_mut(index) = if len > 0 { len as u32 } else { 1 };
+        }
+    }
+
     #[inline]
     pub unsafe fn zero_group_buffer<T: Default + Copy>(
         kernel: &Kernel,
@@ -53,14 +76,42 @@ pub mod __private {
     ) {
         use spirv_std::arch::IndexUnchecked;
 
-        let mut index = kernel.thread_id();
-        let threads = kernel.threads();
-        if index < threads {
+        let stride = {
+            if size_of::<T>() == 1 {
+                4
+            } else if size_of::<T>() == 2 {
+                2
+            } else {
+                1
+            }
+        };
+
+        let mut index = kernel.thread_id() * stride;
+        if index < kernel.threads() * stride {
             while index < len {
                 unsafe {
                     *buffer.index_unchecked_mut(index) = T::default();
                 }
-                index += threads;
+                if stride >= 2 {
+                    if index + 1 < len {
+                        unsafe {
+                            *buffer.index_unchecked_mut(index + 1) = T::default();
+                        }
+                    }
+                }
+                if stride == 4 {
+                    if index + 2 < len {
+                        unsafe {
+                            *buffer.index_unchecked_mut(index + 2) = T::default();
+                        }
+                    }
+                    if index + 3 < len {
+                        unsafe {
+                            *buffer.index_unchecked_mut(index + 3) = T::default();
+                        }
+                    }
+                }
+                index += kernel.threads() * stride;
             }
         }
     }

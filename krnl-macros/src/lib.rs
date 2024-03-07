@@ -9,7 +9,7 @@ Macros for [**krnl**](https://docs.rs/krnl).
 use derive_syn_parse::Parse;
 use fxhash::FxHashMap;
 use proc_macro::TokenStream;
-use proc_macro2::{Span as Span2, TokenStream as TokenStream2};
+use proc_macro2::{Literal, Span as Span2, TokenStream as TokenStream2};
 use quote::{format_ident, quote, ToTokens};
 use semver::{Version, VersionReq};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
@@ -771,6 +771,7 @@ impl KernelMeta {
             .chain(arrays)
             .collect()
     }
+    /*
     fn threads(&self) -> TokenStream2 {
         let id = self.spec_metas.len();
         let spec_id_string = format!("OpDecorate %spec SpecId {}", id);
@@ -788,7 +789,7 @@ impl KernelMeta {
                 spec
             };
         }
-    }
+    }*/
     fn declare_specs(&self) -> TokenStream2 {
         self.spec_metas
             .iter()
@@ -862,31 +863,13 @@ impl KernelMeta {
                         }
                     })
                     .collect();
-                /*let group_init = quote! {
-                    {
-                        use ::krnl_core::spirv_std::arch::IndexUnchecked;
-                        let mut __krnl_i = kernel.thread_id();
-                        let __krnl_group_stride = __krnl_threads as usize;
-                        if __krnl_i < __krnl_group_stride { // <- Needed for some reason? or else zeroing fails
-                            while __krnl_i < #len {
-                                unsafe {
-                                    *#ident.index_unchecked_mut(__krnl_i) = Default::default();
-                                }
-                                __krnl_i += __krnl_group_stride;
-                            }
-                        }
-                    }
-                };*/
                 quote! {
                     let #ident = #ident_with_id;
                     let mut #offset = 0usize;
                     #array_offsets_lens
                     let #len = #offset;
                     unsafe {
-                        use ::krnl_core::spirv_std::arch::IndexUnchecked;
-                        *__krnl_kernel_data.index_unchecked_mut(#id_lit) = if #len > 0 { #len as u32 } else { 1 };
-                    }
-                    unsafe {
+                        ::krnl_core::kernel::__private::group_buffer_len(__krnl_kernel_data, #id_lit, #len);
                         ::krnl_core::kernel::__private::zero_group_buffer(&kernel, #ident, #len);
                     }
                 }
@@ -1301,22 +1284,33 @@ fn kernel_impl(item_tokens: TokenStream2) -> Result<TokenStream2> {
         let block = &kernel_meta.block;
         let compute_def_args = kernel_meta.compute_def_args();
         let declare_specs = kernel_meta.declare_specs();
-        let declare_threads = kernel_meta.threads();
+        let threads_spec_id =
+            Literal::u32_unsuffixed(kernel_desc.spec_descs.len().try_into().unwrap());
         let items = kernel_meta.device_items();
         let device_arrays = kernel_meta.device_arrays();
         let device_slices = kernel_meta.device_slices();
         let device_fn_def_args = kernel_meta.device_fn_def_args();
         let device_fn_call_args = kernel_meta.device_fn_call_args();
         let push_consts_ident = format_ident!("__krnl_{ident}PushConsts");
-        let push_const_fields = kernel_desc.push_const_fields();
-        let push_struct_tokens = quote! {
-            #[cfg(target_arch = "spirv")]
-            #[automatically_derived]
-            #[repr(C)]
-            pub struct #push_consts_ident {
-                #push_const_fields
-            }
-        };
+        let (push_struct_tokens, push_consts_arg) =
+            if !kernel_desc.push_descs.is_empty() || !kernel_desc.slice_descs.is_empty() {
+                let push_const_fields = kernel_desc.push_const_fields();
+                let push_struct_tokens = quote! {
+                    #[cfg(target_arch = "spirv")]
+                    #[automatically_derived]
+                    #[repr(C)]
+                    pub struct #push_consts_ident {
+                        #push_const_fields
+                    }
+                };
+                let push_consts_arg = quote! {
+                    #[spirv(push_constant)]
+                    __krnl_push_consts: &#push_consts_ident,
+                };
+                (push_struct_tokens, push_consts_arg)
+            } else {
+                (TokenStream2::new(), TokenStream2::new())
+            };
         let mut device_fn_call = quote! {
             #unsafe_token {
                 #ident (
@@ -1356,31 +1350,22 @@ fn kernel_impl(item_tokens: TokenStream2) -> Result<TokenStream2> {
             #[::krnl_core::spirv_std::spirv(compute(threads(1)))]
             #[allow(unused)]
             pub fn #ident(
-                #[allow(unused)]
-                #[spirv(push_constant)]
-                __krnl_push_consts: &#push_consts_ident,
-                #[allow(unused)]
+                #push_consts_arg
                 #[spirv(global_invocation_id)]
                 __krnl_global_id: ::krnl_core::spirv_std::glam::UVec3,
-                #[allow(unused)]
                 #[spirv(num_workgroups)]
                 __krnl_groups: ::krnl_core::spirv_std::glam::UVec3,
-                #[allow(unused)]
                 #[spirv(workgroup_id)]
                 __krnl_group_id: ::krnl_core::spirv_std::glam::UVec3,
-                #[allow(unused)]
                 #[spirv(num_subgroups)]
                 __krnl_subgroups: u32,
-                #[allow(unused)]
                 #[spirv(subgroup_id)]
                 __krnl_subgroup_id: u32,
-                #[allow(unused)]
                 #[spirv(subgroup_local_invocation_id)]
                 __krnl_subgroup_thread_id: u32,
-                #[allow(unused)]
+                #[spirv(spec_constant(id = #threads_spec_id, default = 1))] __krnl_threads: u32,
                 #[spirv(local_invocation_id)]
                 __krnl_thread_id: ::krnl_core::spirv_std::glam::UVec3,
-                #[allow(unused)]
                 #[spirv(storage_buffer, descriptor_set = 1, binding = 0)]
                 #kernel_data: &mut [u32],
                 #compute_def_args
@@ -1394,11 +1379,9 @@ fn kernel_impl(item_tokens: TokenStream2) -> Result<TokenStream2> {
                 {
                     let __krnl_kernel_data = #kernel_data;
                     unsafe {
-                        use ::krnl_core::spirv_std::arch::IndexUnchecked as _;
-                        *__krnl_kernel_data.index_unchecked_mut(0) = 1;
+                        ::krnl_core::kernel::__private::kernel_data(__krnl_kernel_data);
                     }
                     #declare_specs
-                    #declare_threads
                     let mut kernel = unsafe {
                         ::krnl_core::kernel::__private::KernelArgs {
                             global_id: __krnl_global_id.x,

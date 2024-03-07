@@ -1149,7 +1149,6 @@ fn spirv_opt(spirv: &[u32], kind: SpirvOptKind) -> Result<Vec<u32>> {
                     DeadVariableElimination,
                     EliminateDeadConstant,
                     CombineAccessChains,
-                    //CFGCleanup,
                     CompactIds,
                 ]
             };
@@ -1158,47 +1157,9 @@ fn spirv_opt(spirv: &[u32], kind: SpirvOptKind) -> Result<Vec<u32>> {
             }
         }
         SpirvOptKind::Performance => {
-            /*let passes = {
-                use Passes::*;
-                [
-                    DeadBranchElim,
-                    MergeReturn,
-                    PrivateToLocal,
-                    LocalMultiStoreElim,
-                    ConditionalConstantPropagation,
-                    DeadBranchElim,
-                    Simplification,
-                    LocalSingleStoreElim,
-                    IfConversion,
-                    Simplification,
-                    AggressiveDCE,
-                    DeadBranchElim,
-                    BlockMerge,
-                    LocalAccessChainConvert,
-                    LocalSingleBlockLoadStoreElim,
-                    AggressiveDCE,
-                    CopyPropagateArrays,
-                    VectorDCE,
-                    DeadInsertElim,
-                    EliminateDeadMembers,
-                    LocalSingleStoreElim,
-                    BlockMerge,
-                    LocalMultiStoreElim,
-                    RedundancyElimination,
-                    Simplification,
-                    AggressiveDCE,
-                    CFGCleanup,
-                    CompactIds,
-                ]
-            };
-            for pass in passes {
-                optimizer.register_pass(pass);
-            }*/
             optimizer.register_performance_passes();
-            //optimizer.register_pass(Passes::LoopPeeling);
         }
     }
-    //optimizer.register_performance_passes();
     let spirv = optimizer
         .optimize(spirv, &mut |_| (), None)?
         .as_words()
@@ -1401,26 +1362,6 @@ fn strip_unused_debug_strings(module: &mut rspirv::dr::Module) {
     })
 }
 
-/*
-fn unroll_loops(module: &mut rspirv::dr::Module) {
-    use rspirv::{
-        dr::Operand,
-        spirv::{LoopControl, Op},
-    };
-    for func in module.functions.iter_mut() {
-        for block in func.blocks.iter_mut() {
-            for inst in block.instructions.iter_mut() {
-                if inst.class.opcode == Op::LoopMerge {
-                    let loop_control = inst.operands[2].unwrap_loop_control();
-                    if loop_control == LoopControl::NONE {
-                        inst.operands[2] = Operand::LoopControl(LoopControl::UNROLL);
-                    }
-                }
-            }
-        }
-    }
-}*/
-
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum ScalarType {
     U8,
@@ -1476,19 +1417,6 @@ impl ScalarType {
             F64 => "F64",
         }
     }
-    /*fn size(&self) -> usize {
-        use ScalarType::*;
-        match self {
-            U8 | I8 => 1,
-            U16 | I16 | F16 | BF16 => 2,
-            U32 | I32 | F32 => 4,
-            U64 | I64 | F64 => 8,
-        }
-    }
-    fn signed(&self) -> bool {
-        use ScalarType::*;
-        matches!(self, I8 | I16 | I32 | I64)
-    }*/
 }
 
 impl FromStr for ScalarType {
@@ -1543,7 +1471,6 @@ impl<'de> Deserialize<'de> for ScalarType {
 #[derive(Serialize, Deserialize, Debug)]
 struct KernelDesc {
     name: String,
-    //hash: u64,
     spirv: Vec<u32>,
     features: Features,
     safe: bool,
@@ -1574,23 +1501,6 @@ struct SliceDesc {
     mutable: bool,
     item: bool,
 }
-
-/*
-#[derive(Serialize, Deserialize, Debug)]
-struct ArrayDesc {
-    name: String,
-    storage_class: ArrayStorageClass,
-    mutable: bool,
-    len: usize,
-    spec_id: Option<u32>,
-}
-
-pub enum ArrayStorageClass {
-    Group,
-    Subgroup,
-    Thread,
-}
-*/
 
 #[derive(Serialize, Deserialize, Debug)]
 struct PushDesc {
