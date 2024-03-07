@@ -32,10 +32,10 @@ jobs:
       - uses: actions/checkout@v2
       - name: build
         if: ${{ !cancelled() }}
-        run: cargo build --workspace --features "serde ocl" --all-targets -v
+        run: cargo build --workspace --features serde --all-targets -v
       - name: test
         if: ${{ !cancelled() }}
-        run: cargo test --workspace --no-default-features --features serde  -v -- --format=terse
+        run: cargo test --workspace --no-default-features --features serde --all-targets  -v
   miri:
     runs-on: ubuntu-latest
     env:
