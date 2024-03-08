@@ -276,10 +276,10 @@ Kernels are dispatched with groups of threads (CUDA thread blocks). Threads in a
 typically on the same processor with a shared L1 cache. This is exposed via [group buffers](#group-buffers).
 
 Thread groups are composed of subgroups of threads (CUDA warps), similar to SIMD vector registers on a CPU.
-The number of threads per subgroup is a power of 2 between 1 and 128. Typical values are 32 for NVIDIA and 64 for AMD. 
-It may range between [min_subgroup_threads](crate::device::DeviceInfo::min_subgroup_threads) and 
-[max_subgroup_threads](crate::device::DeviceInfo::max_subgroup_threads). For `subgroup_threads` between 
-`min_subgroup_threads` and `max_subgroup_threads`, each subgroup in a group will have `subgroup_threads` 
+The number of threads per subgroup is a power of 2 between 1 and 128. Typical values are 32 for NVIDIA and 64 for AMD.
+It may range between [min_subgroup_threads](crate::device::DeviceInfo::min_subgroup_threads) and
+[max_subgroup_threads](crate::device::DeviceInfo::max_subgroup_threads). For `subgroup_threads` between
+`min_subgroup_threads` and `max_subgroup_threads`, each subgroup in a group will have `subgroup_threads`
 threads, unless `threads` per group is not an exact multiple, where the last subgroup will have the remainder of threads.
 
 # Global Buffers
