@@ -548,14 +548,6 @@ impl DeviceInfo {
     /// Min threads per subgroup.
     ///
     /// Power of 2 between 1 and 128.
-    ///
-    /// For `subgroup_threads` between `min_subgroup_threads`
-    /// and `max_subgroup_threads`, each subgroup in a group will have
-    /// `subgroup_threads` threads, unless `threads` per group is not an exact
-    /// multiple, where the last subgroup will have the remainder of threads.
-    ///```text
-    /// subgroups * subgroup_threads >= threads
-    ///```
     pub fn min_subgroup_threads(&self) -> u32 {
         self.min_subgroup_threads
     }

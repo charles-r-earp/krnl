@@ -2236,7 +2236,7 @@ impl<T: Scalar, S: Data<Elem = T>> BufferBase<S> {
     }
     /** Moves into an arc buffer.
 
-    See [`.to_shared()`] */
+    See [`.to_shared()`](BufferBase::into_shared) */
     pub fn into_shared(self) -> Result<ArcBuffer<T>> {
         let data = match self.data.try_into_arc_buffer() {
             Ok(data) => data,
@@ -2435,7 +2435,7 @@ impl<T: Scalar, S: Data<Elem = T>> BufferBase<S> {
     }
     /** Copies from src.
 
-    #Errors**
+    # Errors
     - `src` is not the same length.
     - [`DeviceLost`]
     - The kernel could not be dispatched.

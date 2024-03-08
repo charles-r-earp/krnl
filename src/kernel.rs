@@ -262,7 +262,7 @@ if let Some(x) = x.as_host_slice() {
 ```
 
 # Push Constants
-Scalar arguments without an attribute. Unlike [SpecConstants](#Specialization), they are
+Scalar arguments without an attribute. Unlike [SpecConstants](#specialization), they are
 provided to [`.dispatch(..)`](#dispatch), and do not require rebuilding the kernel.
 
 At least 128 bytes of push constants can be used, depending on the device. Each [item](#items) or
@@ -273,18 +273,14 @@ Kernels without [items](#items) have an implicit [Kernel](krnl_core::kernel::Ker
 identifies the group, subgroup, and thread.
 
 Kernels are dispatched with groups of threads (CUDA thread blocks). Threads in a group are executed together,
-typically on the same processor with a shared L1 cache. This is exposed via [Group Buffers](#group-buffers).
+typically on the same processor with a shared L1 cache. This is exposed via [group buffers](#group-buffers).
 
 Thread groups are composed of subgroups of threads (CUDA warps), similar to SIMD vector registers on a CPU.
-The number of threads per subgroup is a power of 2 between 1 and 128. Typical values are 32 for NVIDIA and 64
-for AMD.
-*/
-//
-// TODO: Intel Mesa driver uses variable subgroup size
-// Fixed in https://github.com/charles-r-earp/krnl/tree/update-vulkano
-// It can be accessed in a kernel via [`Kernel::subgroup_threads`](krnl_core::kernel::Kernel::subgroup_threads),
-// or on the host via [`DeviceInfo::subgroup_threads()`](crate::device::DeviceInfo::subgroup_threads).
-/*!
+The number of threads per subgroup is a power of 2 between 1 and 128. Typical values are 32 for NVIDIA and 64 for AMD. 
+It may range between [min_subgroup_threads](crate::device::DeviceInfo::min_subgroup_threads) and 
+[max_subgroup_threads](crate::device::DeviceInfo::max_subgroup_threads). For `subgroup_threads` between 
+`min_subgroup_threads` and `max_subgroup_threads`, each subgroup in a group will have `subgroup_threads` 
+threads, unless `threads` per group is not an exact multiple, where the last subgroup will have the remainder of threads.
 
 # Global Buffers
 Visible to all threads. [Slice](krnl_core::buffer::Slice) binds to [Slice](crate::buffer::Slice), [UnsafeSlice](krnl_core::buffer::UnsafeSlice) binds
@@ -484,7 +480,7 @@ to and from devices. [`Device::wait()`](crate::device::Device::wait) can be used
 [Binary intermediate representation](https://www.khronos.org/spir) for graphics shaders that can be used with [Vulkan](https://www.vulkan.org).
 [Kernels](#Kernels) are implemented as compute shaders targeting Vulkan 1.2.
 
-[spirv-std](krnl_core::spirv_std) is a std library for the spirv arch, for use with [RustGPU](https://github.com/EmbarkStudios/rust-gpu).
+[spirv-std](krnl_core::spirv_std) is a std library for the spirv arch, for use with [rust-gpu](https://github.com/EmbarkStudios/rust-gpu).
 
 ## Asm
 The [`asm!`](core::arch::asm) macro can be used with the spirv arch, see [inline-asm](https://github.com/EmbarkStudios/rust-gpu/blob/v0.9.0/docs/src/inline-asm.md).

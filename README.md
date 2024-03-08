@@ -19,7 +19,7 @@ Developed for [**autograph**](https://github.com/charles-r-earp/autograph).
 
 # **krnlc**
 Kernel compiler for **krnl**. 
-- Built on [RustGPU](https://github.com/EmbarkStudios/rust-gpu)'s spirv-builder.
+- Built on [rust-gpu](https://github.com/EmbarkStudios/rust-gpu)'s spirv-builder.
 - Supports dependencies defined in Cargo.toml. 
 - Uses [spirv-tools](https://github.com/EmbarkStudios/spirv-tools-rs) to validate and optimize. 
 - Compiles to "krnl-cache.rs", so the crate will build on stable Rust.
