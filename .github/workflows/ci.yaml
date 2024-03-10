@@ -48,7 +48,7 @@ jobs:
         toolchain: nightly
         components: miri
     - name: miri test
-      run: cargo +nightly miri test --no-default-features --features serde -v -- --format=terse
+      run: cargo +nightly miri test --no-default-features --features serde -v
   wasm: 
     runs-on: ubuntu-latest
     steps:
