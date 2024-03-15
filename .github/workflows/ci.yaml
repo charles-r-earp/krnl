@@ -11,13 +11,12 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+  CARGO_INCREMENTAL: 0
 
 jobs:
   test:
     runs-on: ${{ matrix.os }}
-    env:
-      RUST_BACKTRACE: 1
-      CARGO_INCREMENTAL: 0
     strategy:
       fail-fast: false
       matrix:
@@ -38,9 +37,6 @@ jobs:
         run: cargo test --workspace --no-default-features --features serde --all-targets  -v
   miri:
     runs-on: ubuntu-latest
-    env:
-      RUST_BACKTRACE: 1
-      CARGO_INCREMENTAL: 0
     steps:
     - uses: actions/checkout@v2
     - uses: actions-rs/toolchain@v1
@@ -62,8 +58,6 @@ jobs:
   krnlc:
     runs-on: ${{ matrix.os }}
     env:
-      RUST_BACKTRACE: 1
-      CARGO_INCREMENTAL: 0
       # spirv tools install copied from https://github.com/EmbarkStudios/rust-gpu/blob/main/.github/workflows/ci.yaml
       spirv_tools_version: "20221024"
       # NOTE(eddyb) do not forget to update both the above date and below links!
@@ -132,9 +126,6 @@ jobs:
         run: ./bin/krnlc --check -p krnl -p krnlc-tests -p compute-benchmarks -v
   lint: 
     runs-on: ubuntu-latest
-    env:
-      RUST_BACKTRACE: 1
-      CARGO_INCREMENTAL: 0
     steps:
     - uses: actions/checkout@v2
     - uses: actions-rs/toolchain@v1
