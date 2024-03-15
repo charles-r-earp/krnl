@@ -66,8 +66,6 @@ jobs:
       spirv_tools_linux_url: "https://storage.googleapis.com/spirv-tools/artifacts/prod/graphics_shader_compiler/spirv-tools/linux-clang-release/continuous/1863/20221024-094528/install.tgz"
       spirv_tools_macos_url: "https://storage.googleapis.com/spirv-tools/artifacts/prod/graphics_shader_compiler/spirv-tools/macos-clang-release/continuous/1875/20221024-094531/install.tgz"
       spirv_tools_windows_url: "https://storage.googleapis.com/spirv-tools/artifacts/prod/graphics_shader_compiler/spirv-tools/windows-msvc-2017-release/continuous/1851/20221024-094908/install.zip"
-      RUSTUP_UNPACK_RAM: "26214400"
-      RUSTUP_IO_THREADS: "1"
     strategy:
       fail-fast: false
       matrix:
