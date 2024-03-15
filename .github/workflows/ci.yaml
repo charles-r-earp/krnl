@@ -28,7 +28,7 @@ jobs:
           - os: macos-latest
             target: x86_64-apple-darwin
     steps:
-      - uses: actions/checkout@v2
+      - uses: actions/checkout@v4
       - name: build
         if: ${{ !cancelled() }}
         run: cargo build --workspace --features serde --all-targets -v
@@ -38,7 +38,7 @@ jobs:
   miri:
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v2
+    - uses: actions/checkout@v4
     - uses: actions-rs/toolchain@v1
       with:
         toolchain: nightly
@@ -48,7 +48,7 @@ jobs:
   wasm: 
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v2
+    - uses: actions/checkout@v4
     - name: install wasm-pack
       run: cargo install wasm-pack -vv
     - name: wasm test
@@ -80,7 +80,7 @@ jobs:
             target: x86_64-apple-darwin 
     # spirv tools install copied from https://github.com/EmbarkStudios/rust-gpu/blob/main/.github/workflows/ci.yaml
     steps:
-      - uses: actions/checkout@v2
+      - uses: actions/checkout@v4
       - if: ${{ runner.os == 'Linux' }}
         name: Linux - Install native dependencies and spirv-tools
         run: |
@@ -107,7 +107,7 @@ jobs:
         # Runs separately to add spir-v tools to Powershell's Path.
         run: echo "$HOME/spirv-tools/install/bin" >> $env:GITHUB_PATH
       # end install spirv-tools
-      - uses: actions/checkout@v2
+      - uses: actions/checkout@v4
       - uses: actions-rs/toolchain@v1
         with:
           toolchain: nightly
@@ -127,7 +127,7 @@ jobs:
   lint: 
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v2
+    - uses: actions/checkout@v4
     - uses: actions-rs/toolchain@v1
       with:
         toolchain: stable
@@ -153,7 +153,7 @@ jobs:
   cargo-deny:    
     runs-on: ubuntu-latest    
     steps:
-    - uses: actions/checkout@v2
+    - uses: actions/checkout@v4
     - uses: EmbarkStudios/cargo-deny-action@v1
     - uses: EmbarkStudios/cargo-deny-action@v1
       with:         
