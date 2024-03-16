@@ -161,7 +161,7 @@ jobs:
       if: ${{ !cancelled() }}
       run: |
         cargo +nightly generate-lockfile -Zmsrv-policy
-        echo Cargo.lock
+        cat Cargo.lock
         cargo +1.70.0 check --workspace --features serde --all-targets -v
   cargo-deny:
     runs-on: ubuntu-latest
