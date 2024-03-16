@@ -143,7 +143,7 @@ baz = { path = "baz" }
 
 # Modules
 The `module` macro declares a shared host and device scope that is visible to [krnlc](#krnlc).
-The [spirv](#spirv) arch will be used by **krnlc** when compiling modules to for the device.
+The [spirv](#spirv) arch will be used by **krnlc** when compiling modules for the device.
 ```no_run
 use krnl::macros::module;
 
@@ -366,7 +366,6 @@ pub mod saxpy {
         ///
         /// # Errors
         /// - `device` doesn't have required features.
-        /// - The kernel requires [specialization](kernel#specialization), but `.specialize(..)` was not called.
         /// - The kernel is not supported on `device`.
         /// - [`DeviceLost`].
         pub fn build(&self, device: Device) -> Result<Kernel>;
@@ -403,7 +402,7 @@ pub mod saxpy {
 }
 # fn main() {}
 ```
-View the generated code and documentation with `cargo doc --open`.
+View the generated code and documentation with `cargo doc`.
 Also use `--document-private-items` if the item is private.
 
 The `builder()` method returns a KernelBuilder for creating a Kernel. This will fail if the

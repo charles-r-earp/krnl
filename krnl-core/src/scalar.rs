@@ -459,9 +459,6 @@ pub trait Scalar:
 {
     /// The [`ScalarType`] of the scalar.
     const SCALAR_TYPE: ScalarType;
-    #[doc(hidden)]
-    #[deprecated(since = "0.0.4", note = "replaced by Scalar::SCALAR_TYPE")]
-    fn scalar_type() -> ScalarType;
     /// Casts `self as T`.
     fn cast<T: Scalar>(self) -> T;
 }
@@ -486,9 +483,6 @@ pub trait Scalar:
 {
     /// The [`ScalarType`] of the scalar.
     const SCALAR_TYPE: ScalarType;
-    #[doc(hidden)]
-    #[deprecated(since = "0.0.4", note = "replaced by Scalar::SCALAR_TYPE")]
-    fn scalar_type() -> ScalarType;
     /// Converts to [`ScalarElem`].
     fn scalar_elem(self) -> ScalarElem;
     /// Casts `self as T`.
@@ -517,9 +511,6 @@ pub trait Scalar:
 {
     /// The [`ScalarType`] of the scalar.
     const SCALAR_TYPE: ScalarType;
-    #[doc(hidden)]
-    #[deprecated(since = "0.0.4", note = "replaced by Scalar::SCALAR_TYPE")]
-    fn scalar_type() -> ScalarType;
     /// Converts to [`ScalarElem`].
     fn scalar_elem(self) -> ScalarElem;
     /// Casts `self as T`.
@@ -530,10 +521,6 @@ macro_for!($X in [u8, i8, u16, i16, f16, bf16, u32, i32, f32, u64, i64, f64] {
     paste! {
         impl Scalar for $X {
             const SCALAR_TYPE: ScalarType = ScalarType::[<$X:upper>];
-            #[inline(always)]
-            fn scalar_type() -> ScalarType {
-                Self::SCALAR_TYPE
-            }
             #[cfg(not(target_arch = "spirv"))]
             #[inline(always)]
             fn scalar_elem(self) -> ScalarElem {
