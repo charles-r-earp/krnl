@@ -41,7 +41,7 @@ fn main() {
         let device_index2 = usize::from(device_index == 0);
         println!("KRNL_DEVICE = {krnl_device:?}");
         println!("testing device {device_index}");
-        let device = devices.get(0).unwrap();
+        let device = devices.first().unwrap();
         let device2 = devices.get(1);
         if device2.is_some() {
             println!("using device {device_index2} for `buffer_device_to_device`");
