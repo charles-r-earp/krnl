@@ -138,10 +138,14 @@ jobs:
         toolchain: nightly-2023-05-27
         components: rustfmt, clippy, rust-src, rustc-dev, llvm-tools-preview
     - name: fmt
+      if: ${{ !cancelled() }}
       run: cargo fmt --check
+    - name: install cargo-hack
+      if: ${{ !cancelled() }}
+      run: cargo install cargo-hack -v
     - name: clippy
       if: ${{ !cancelled() }}
-      run: cargo clippy -- -D warnings
+      run: cargo hack --feature-powerset --workspace --exclude-features "cuda ocl" --keep-going clippy --all-targets -- -D warnings
     - name: krnlc fmt
       if: ${{ !cancelled() }}
       run: cargo +nightly-2023-05-27 fmt --check --manifest-path krnlc/Cargo.toml
