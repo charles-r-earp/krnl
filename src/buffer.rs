@@ -1412,17 +1412,6 @@ impl<T: Scalar> BufferRepr<T> {
             }
         }
     }
-    /*#[cfg(feature = "device")]
-    fn into_device(self, device: Device) -> Result<Self> {
-        let this_device = self.device();
-        if this_device == device {
-            Ok(self)
-        } else if this_device.is_host() {
-            Ok(Self::from_vec(self.into_vec()?))
-        } else {
-            self.as_slice().to_device(device)
-        }
-    }*/
     fn into_vec(self) -> Result<Vec<T>> {
         match self.raw.inner {
             RawSliceInner::Host(raw) => {
