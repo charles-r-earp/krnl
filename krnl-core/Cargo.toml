@@ -37,3 +37,6 @@ half.workspace = true
 
 [features]
 serde = ["dep:serde", "half/serde"]
+
+[package.metadata.docs.rs]
+all-features = true

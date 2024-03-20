@@ -84,6 +84,9 @@ default = ["device"]
 device = ["dep:vulkano", "dep:ash", "dep:dashmap", "dep:rspirv", "dep:fxhash", "dep:crossbeam-channel"]
 serde = ["dep:serde", "dep:serde_bytes", "krnl-core/serde"]
 
+[package.metadata.docs.rs]
+all-features = true
+
 [package.metadata.krnlc]
 default-features = false
 features = ["device"]
