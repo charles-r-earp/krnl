@@ -23,7 +23,9 @@ paste = "1.0.7"
 bytemuck = "1.13.1"
 derive_more = { version = "0.99.11", default-features = false }
 anyhow = "1.0.60"
-half = { version = "=2.1.0", default-features = false, features = ["num-traits"] }
+half = { version = "=2.1.0", default-features = false, features = [
+    "num-traits",
+] }
 num-traits = { version = "0.2.14", default-features = false }
 thiserror = "1.0.31"
 bincode2 = "2.0.1"
@@ -49,7 +51,7 @@ license.workspace = true
 keywords = ["kernel", "compute", "vulkan", "gpu"]
 categories = ["hardware-support", "science", "mathematics"]
 publish.workspace = true
-autobins = false 
+autobins = false
 autoexamples = false
 autotests = false
 autobenches = false
@@ -57,12 +59,15 @@ autobenches = false
 [dependencies]
 krnl-macros.workspace = true
 krnl-core.workspace = true
-serde = { workspace = true, default-features = false, features = ["derive", "rc"], optional = true }
+serde = { workspace = true, default-features = false, features = [
+    "derive",
+    "rc",
+], optional = true }
 serde_bytes = { version = "0.11.9", optional = true }
 anyhow.workspace = true
 half = { workspace = true, features = ["std"] }
 num-traits = { workspace = true, features = ["std"] }
-paste.workspace = true 
+paste.workspace = true
 dry.workspace = true
 derive_more = { workspace = true, features = ["unwrap", "deref", "deref_mut"] }
 thiserror.workspace = true
@@ -73,15 +78,22 @@ dashmap = { version = "5.3.4", optional = true }
 rspirv = { workspace = true, optional = true }
 fxhash = { workspace = true, optional = true }
 
-[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+[target.'cfg(not(target_family = "wasm"))'.dependencies]
 vulkano = { version = "0.33.0", optional = true, default-features = false }
 ash = { version = "0.37.1", optional = true }
-crossbeam-channel = { version = "0.5.8", optional = true }   
+crossbeam-channel = { version = "0.5.8", optional = true }
 
 [features]
 default = ["device"]
 # Enables device functionality. Not supported on the web.
-device = ["dep:vulkano", "dep:ash", "dep:dashmap", "dep:rspirv", "dep:fxhash", "dep:crossbeam-channel"]
+device = [
+    "dep:vulkano",
+    "dep:ash",
+    "dep:dashmap",
+    "dep:rspirv",
+    "dep:fxhash",
+    "dep:crossbeam-channel",
+]
 serde = ["dep:serde", "dep:serde_bytes", "krnl-core/serde"]
 
 [package.metadata.docs.rs]
@@ -105,10 +117,10 @@ bincode2.workspace = true
 serde_json = "1.0.96"
 serde_test = "1.0.160"
 
-[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+[target.'cfg(not(target_family = "wasm"))'.dev-dependencies]
 libtest-mimic = "0.6.0"
 # removes broken is_terminal dep for libtest-mimic on windows
 clap.workspace = true
 
-[target.'cfg(target_arch = "wasm32")'.dev-dependencies]
+[target.'cfg(target_family = "wasm")'.dev-dependencies]
 wasm-bindgen-test = "0.3.33"
