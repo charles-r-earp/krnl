@@ -34,8 +34,8 @@ jobs:
     - uses: actions/checkout@v4
     - name: install cargo-hack
       run: cargo install cargo-hack -v
-    - name: clippy
-      with:
+    - name: check
+      env:
         RUSTFLAGS: -D warnings
       run: cargo hack --feature-powerset --workspace --exclude-features cuda,ocl check --all-targets -v
     - name: build
