@@ -130,11 +130,12 @@ jobs:
       run: cargo fmt --check
     - name: krnlc fmt
       run: cargo +nightly-2023-05-27 fmt --check --manifest-path krnlc/Cargo.toml
+    - name: install cargo-hack
+      run: cargo install cargo-hack
     - name: clippy
-      run: |
-        cargo clippy --workspace --features serde --all-targets -v -- -D warnings
-        cargo clippy -p krnl -p krnl-core --no-default-features --features serde --all-targets -v -- --D warnings
-        cargo clippy -p krnl -p compute-benches --all-targets -v -- --D warnings
+      env:
+        CARGO_ALIAS_CLIPPYALL: clippy --workspace
+      run: cargo hack --feature-powerset --skip default clippyall --all-targets -v -- -D warnings
     - name: krnlc clippy
       run: cargo +nightly-2023-05-27 clippy --manifest-path krnlc/Cargo.toml --no-default-features --features use-installed-tools -v -- -D warnings
     - name: rustdoc
