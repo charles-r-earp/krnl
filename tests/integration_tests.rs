@@ -3,23 +3,23 @@ use half::{bf16, f16};
 #[cfg(feature = "device")]
 use krnl::buffer::Buffer;
 use krnl::{buffer::Slice, device::Device, scalar::Scalar};
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(target_family = "wasm"))]
 use krnl::{device::Features, scalar::ScalarType};
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(target_family = "wasm"))]
 use libtest_mimic::{Arguments, Trial};
 use paste::paste;
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(target_family = "wasm"))]
 use std::{mem::size_of, str::FromStr};
-#[cfg(target_arch = "wasm32")]
+#[cfg(target_family = "wasm")]
 use wasm_bindgen_test::wasm_bindgen_test as test;
 
-#[cfg(all(target_arch = "wasm32", run_in_browser))]
+#[cfg(all(target_family = "wasm", run_in_browser))]
 wasm_bindgen_test::wasm_bindgen_test_configure!(run_in_browser);
 
-#[cfg(target_arch = "wasm32")]
+#[cfg(target_family = "wasm")]
 fn main() {}
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(target_family = "wasm"))]
 fn main() {
     let args = Arguments::from_args();
     let tests = if cfg!(feature = "device") && !cfg!(miri) {
@@ -56,7 +56,7 @@ fn main() {
     libtest_mimic::run(&args, tests).exit()
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(target_family = "wasm"))]
 fn device_test(device: &Device, name: &str, f: impl Fn(Device) + Send + Sync + 'static) -> Trial {
     let name = format!(
         "{name}_{}",
@@ -69,12 +69,12 @@ fn device_test(device: &Device, name: &str, f: impl Fn(Device) + Send + Sync + '
     })
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(target_family = "wasm"))]
 fn tests(device: &Device, device2: Option<&Device>) -> impl IntoIterator<Item = Trial> {
     buffer_tests(device, device2)
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(target_family = "wasm"))]
 fn buffer_tests(device: &Device, device2: Option<&Device>) -> impl IntoIterator<Item = Trial> {
     let features = device
         .info()
@@ -207,7 +207,7 @@ fn device_buffer_too_large(device: Device) {
     error.downcast_ref::<DeviceBufferTooLarge>().unwrap();
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(target_family = "wasm"))]
 fn buffer_transfer(device: Device, device2: Device) {
     let n = buffer_transfer_test_lengths().last().unwrap();
     let x = (10..20).cycle().take(n).collect::<Vec<_>>();
@@ -291,7 +291,7 @@ fn buffer_from_vec_host() {
     buffer_from_vec(Device::host());
 }
 
-#[cfg(target_arch = "wasm32")]
+#[cfg(target_family = "wasm")]
 macro_for!($T in [u8, i8, u16, i16, f16, bf16, u32, i32, f32, u64, i64, f64] {
     paste! {
         #[test]
