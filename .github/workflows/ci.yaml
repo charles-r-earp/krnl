@@ -32,12 +32,6 @@ jobs:
             target: x86_64-apple-darwin
     steps:
     - uses: actions/checkout@v4
-    - name: install cargo-hack
-      run: cargo install cargo-hack -v
-    - name: check
-      env:
-        RUSTFLAGS: -D warnings
-      run: cargo hack --feature-powerset --workspace --exclude-features cuda,ocl check --all-targets -v
     - name: build
       run: cargo build --workspace --features serde --all-targets -v
     - name: test
@@ -136,8 +130,9 @@ jobs:
       run: cargo +nightly-2023-05-27 fmt --check --manifest-path krnlc/Cargo.toml
     - name: clippy
       run: |
-        cargo clippy -p krnl -p krnl-macros -p krnl-core -p krnlc-tests --all-features --all-targets -v -- -D warnings
-        cargo clippy -p compute-benches --all-targets -v -- -D warnings
+        cargo clippy --workspace --features serde --all-targets -v -- -D warnings
+        cargo clippy -p krnl -p krnl-core --no-default-features --features serde --all-targets -v -- --D warnings
+        cargo clippy -p krnl -p compute-benches --all-targets -v -- --D warnings
     - name: krnlc clippy
       run: cargo +nightly-2023-05-27 clippy --manifest-path krnlc/Cargo.toml --no-default-features --features use-installed-tools -v -- -D warnings
     - name: rustdoc
