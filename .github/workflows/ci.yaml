@@ -32,14 +32,17 @@ jobs:
             target: x86_64-apple-darwin
     steps:
     - uses: actions/checkout@v4
+    - name: install toolchains
+      run: |
+        rustup update
+        rustup toolchain install nightly
+        rustup component add miri --toolchain nightly
+        rustup toolchain install nightly-2023-05-27
+        rustup component add rust-src  rustc-dev  llvm-tools-preview --toolchain nightly-2023-05-27
     - name: build
       run: cargo build --workspace --features serde --all-targets -v
     - name: test
       run: cargo test --workspace --no-default-features --features serde --all-targets -v
-    - uses: hecrj/setup-rust-action@v2
-      with:
-        rust-version: nightly
-        components: miri
     - name: miri test
       run: cargo +nightly miri test --no-default-features --features serde -v
     - name: install wasm-pack
@@ -72,6 +75,12 @@ jobs:
     # spirv tools install copied from https://github.com/EmbarkStudios/rust-gpu/blob/main/.github/workflows/ci.yaml
     steps:
     - uses: actions/checkout@v4
+    - name: install toolchains
+      run: |
+        rustup update
+        rustup toolchain install nightly
+        rustup toolchain install nightly-2023-05-27
+        rustup component add rust-src  rustc-dev  llvm-tools-preview --toolchain nightly-2023-05-27
     - if: ${{ runner.os == 'Linux' }}
       name: Linux - Install native dependencies and spirv-tools
       run: |
@@ -99,13 +108,6 @@ jobs:
       run: echo "$HOME/spirv-tools/install/bin" >> $env:GITHUB_PATH
     # end install spirv-tools
     - uses: actions/checkout@v4
-    - uses: hecrj/setup-rust-action@v2
-      with:
-        rust-version: nightly
-    - uses: hecrj/setup-rust-action@v2
-      with:
-        rust-version: nightly-2023-05-27
-        components: rust-src, rustc-dev, llvm-tools-preview
     - name: check krnlc
       run: cargo +nightly-2023-05-27 -Zunstable-options -C=krnlc check --locked --no-default-features --features use-installed-tools -vv
     - name: install krnlc
@@ -116,14 +118,14 @@ jobs:
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v4
-    - uses: hecrj/setup-rust-action@v2
-      with:
-        rust-version: stable
-        components: rustfmt, clippy
-    - uses: hecrj/setup-rust-action@v2
-      with:
-        rust-version: nightly-2023-05-27
-        components: rustfmt, clippy, rust-src, rustc-dev, llvm-tools-preview
+    - name: install toolchains
+      run: |
+        rustup update
+        rustup component add rustfmt clippy
+        rustup toolchain install nightly
+        rustup toolchain install nightly-2023-05-27
+        rustup component add rustfmt clippy rust-src rustc-dev llvm-tools-preview --toolchain nightly-2023-05-27
+        rustup toolchain install 1.70.0
     - name: fmt
       run: cargo fmt --check
     - name: krnlc fmt
@@ -137,12 +139,6 @@ jobs:
       run: cargo +nightly-2023-05-27 clippy --manifest-path krnlc/Cargo.toml --no-default-features --features use-installed-tools -v -- -D warnings
     - name: rustdoc
       run: cargo rustdoc --all-features -- --D warnings
-    - uses: hecrj/setup-rust-action@v2
-      with:
-        rust-version: nightly
-    - uses: hecrj/setup-rust-action@v2
-      with:
-        rust-version: 1.70.0
     - name: msrv
       run: |
         cargo +nightly generate-lockfile -Zmsrv-policy
