@@ -128,14 +128,6 @@ impl RawSlice {
             RawSliceInner::Device(buffer) => buffer.device().into(),
         }
     }
-    /*#[cfg(feature = "device")]
-    fn offset(&self) -> usize {
-        match &self.inner {
-            RawSliceInner::Host(_) => 0,
-            #[cfg(feature = "device")]
-            RawSliceInner::Device(buffer) => buffer.offset(),
-        }
-    }*/
     fn len(&self) -> usize {
         match &self.inner {
             RawSliceInner::Host(raw) => raw.len,
@@ -191,7 +183,7 @@ impl RawSlice {
     }
 }
 
-#[derive(Clone, derive_more::Unwrap)]
+#[derive(Clone)]
 enum RawSliceInner {
     Host(RawHostSlice),
     #[cfg(feature = "device")]

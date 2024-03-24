@@ -25,12 +25,12 @@ use std::{
 #[cfg(feature = "device")]
 use std::{ops::Range, sync::atomic::AtomicBool};
 
-#[cfg(all(not(target_arch = "wasm32"), feature = "device"))]
+#[cfg(all(not(target_family = "wasm"), feature = "device"))]
 mod vulkan_engine;
-#[cfg(all(not(target_arch = "wasm32"), feature = "device"))]
+#[cfg(all(not(target_family = "wasm"), feature = "device"))]
 use vulkan_engine::Engine;
 
-#[cfg(all(target_arch = "wasm32", feature = "device"))]
+#[cfg(all(target_family = "wasm", feature = "device"))]
 compile_error!("device feature not supported on wasm");
 
 /// Errors.
@@ -286,7 +286,7 @@ impl From<RawDevice> for Device {
     }
 }
 
-#[derive(Clone, Eq, PartialEq, derive_more::Unwrap)]
+#[derive(Clone, Eq, PartialEq)]
 pub(crate) enum DeviceInner {
     Host,
     #[cfg(feature = "device")]
