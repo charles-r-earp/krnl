@@ -1443,7 +1443,7 @@ fn kernel_impl(item_tokens: TokenStream2) -> Result<TokenStream2> {
             let spec_args = kernel_meta.spec_args();
             quote! {
                 /// Specializes the kernel.
-                #[allow(clippy::too_many_arguments)]
+                #[allow(clippy::too_many_arguments, non_snake_case)]
                 pub fn specialize(mut self, #spec_def_args) -> KernelBuilder<Specialized<true>> {
                     KernelBuilder {
                         inner: self.inner.specialize(&[#(#spec_args.into()),*]),
