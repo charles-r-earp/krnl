@@ -42,7 +42,7 @@ jobs:
     - name: test
       run: |
         cargo test --workspace --no-default-features --features serde -v
-        cargo test -p compute-benches --benches -v
+        cargo test -p compute-benches --benches --no-default-features -v
     - name: miri test
       run: cargo +nightly miri test --tests --no-default-features --features serde -v
     - name: install wasm-pack
