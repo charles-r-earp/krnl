@@ -10,6 +10,7 @@ Shared core library for [**krnl**](https://docs.rs/krnl).
     no_std,
     feature(asm_experimental_arch, min_specialization)
 )]
+#![cfg_attr(doc_cfg, feature(doc_cfg, doc_auto_cfg))]
 #![deny(unsafe_op_in_unsafe_fn)]
 
 /// half
@@ -24,6 +25,7 @@ pub extern crate spirv_std;
 /// Buffers for use in kernels.
 pub mod buffer;
 /// Kernel structs passed to kernels.
+#[cfg_attr(doc_cfg, doc(cfg(target_arch = "spirv")))]
 pub mod kernel;
 /// Scalars and numerical traits.
 pub mod scalar;

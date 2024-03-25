@@ -98,6 +98,7 @@ serde = ["dep:serde", "dep:serde_bytes", "krnl-core/serde"]
 
 [package.metadata.docs.rs]
 all-features = true
+rustdoc-args = ["--cfg", "doc_cfg"]
 
 [package.metadata.krnlc]
 default-features = false
