@@ -1,4 +1,4 @@
-use crate::scalar::{Scalar, ScalarType};
+use crate::scalar::Scalar;
 #[cfg(not(target_arch = "spirv"))]
 use core::marker::PhantomData;
 use core::ops::Index;
@@ -212,12 +212,6 @@ impl<S: DataBase> BufferBase<S> {
     #[inline]
     pub fn is_empty(&self) -> bool {
         self.len() == 0
-    }
-    #[doc(hidden)]
-    #[deprecated(since = "0.0.4", note = "use S::Elem::SCALAR_TYPE")]
-    #[inline]
-    pub fn scalar_type(&self) -> ScalarType {
-        S::Elem::SCALAR_TYPE
     }
 }
 

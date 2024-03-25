@@ -131,39 +131,19 @@ pub mod __private {
     }
 }
 
-#[non_exhaustive]
 pub struct Kernel {
-    #[doc(hidden)]
-    #[deprecated(since = "0.0.4", note = "replaced with global_threads()")]
-    pub global_threads: u32,
-    #[doc(hidden)]
-    #[deprecated(since = "0.0.4", note = "replaced with global_id()")]
-    pub global_id: u32,
-    #[doc(hidden)]
-    #[deprecated(since = "0.0.4", note = "replaced with groups()")]
-    pub groups: u32,
-    #[doc(hidden)]
-    #[deprecated(since = "0.0.4", note = "replaced with group_id()")]
-    pub group_id: u32,
-    #[doc(hidden)]
-    #[deprecated(since = "0.0.4", note = "replaced with subgroups()")]
-    pub subgroups: u32,
-    #[doc(hidden)]
-    #[deprecated(since = "0.0.4", note = "replaced with subgroup_id()")]
-    pub subgroup_id: u32,
+    global_threads: u32,
+    global_id: u32,
+    groups: u32,
+    group_id: u32,
+    subgroups: u32,
+    subgroup_id: u32,
     //subgroup_threads: u32,
-    #[doc(hidden)]
-    #[deprecated(since = "0.0.4", note = "replaced with subgroup_thread_id()")]
-    pub subgroup_thread_id: u32,
-    #[doc(hidden)]
-    #[deprecated(since = "0.0.4", note = "replaced with threads()")]
-    pub threads: u32,
-    #[doc(hidden)]
-    #[deprecated(since = "0.0.4", note = "replaced with thread_id()")]
-    pub thread_id: u32,
+    subgroup_thread_id: u32,
+    threads: u32,
+    thread_id: u32,
 }
 
-#[allow(deprecated)]
 impl Kernel {
     /// The number of global threads.
     ///
@@ -224,17 +204,11 @@ impl Kernel {
     }
 }
 
-#[non_exhaustive]
 pub struct ItemKernel {
-    #[doc(hidden)]
-    #[deprecated(since = "0.0.4", note = "replaced with items()")]
-    pub items: u32,
-    #[doc(hidden)]
-    #[deprecated(since = "0.0.4", note = "replaced with item_id()")]
-    pub item_id: u32,
+    items: u32,
+    item_id: u32,
 }
 
-#[allow(deprecated)]
 impl ItemKernel {
     /// The number of items.
     ///
