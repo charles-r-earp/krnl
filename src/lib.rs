@@ -116,6 +116,7 @@ fn main() -> Result<()> {
 ```
 */
 
+#![cfg_attr(doc_cfg, feature(doc_auto_cfg))]
 #![deny(unsafe_op_in_unsafe_fn)]
 #![warn(missing_docs)]
 

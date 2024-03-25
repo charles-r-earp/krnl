@@ -463,6 +463,7 @@ pub trait Scalar:
     fn cast<T: Scalar>(self) -> T;
 }
 
+#[cfg_attr(doc_cfg, doc(cfg(all())))]
 #[cfg(all(not(target_arch = "spirv"), not(feature = "serde")))]
 /// Base trait for numerical types.
 pub trait Scalar:
@@ -484,11 +485,13 @@ pub trait Scalar:
     /// The [`ScalarType`] of the scalar.
     const SCALAR_TYPE: ScalarType;
     /// Converts to [`ScalarElem`].
+    #[cfg_attr(doc_cfg, doc(cfg(not(target_arch = "spirv"))))]
     fn scalar_elem(self) -> ScalarElem;
     /// Casts `self as T`.
     fn cast<T: Scalar>(self) -> T;
 }
 
+#[cfg_attr(doc_cfg, doc(cfg(all())))]
 #[cfg(all(not(target_arch = "spirv"), feature = "serde"))]
 /// Base trait for numerical types.
 pub trait Scalar:
@@ -512,6 +515,7 @@ pub trait Scalar:
     /// The [`ScalarType`] of the scalar.
     const SCALAR_TYPE: ScalarType;
     /// Converts to [`ScalarElem`].
+    #[cfg_attr(doc_cfg, doc(cfg(not(target_arch = "spirv"))))]
     fn scalar_elem(self) -> ScalarElem;
     /// Casts `self as T`.
     fn cast<T: Scalar>(self) -> T;
