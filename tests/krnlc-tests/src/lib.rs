@@ -90,6 +90,8 @@ enum WithGroups {}
 #[module]
 pub mod kernels {
     use dry::macro_for;
+    #[cfg(test)]
+    use krnl::device::Features;
     #[cfg(not(target_arch = "spirv"))]
     use krnl::krnl_core;
     use krnl_core::macros::kernel;
@@ -101,9 +103,17 @@ pub mod kernels {
     use paste::paste;
 
     #[kernel]
+    fn empty() {}
+
+    #[test]
+    fn test_empty() {
+        let builder = empty::builder().unwrap();
+        assert_eq!(builder.__features(), Features::empty());
+    }
+
+    #[kernel]
     fn specs<const X: u32, const Y: f32>() {}
 
-    #[cfg(test)]
     #[test]
     fn test_specs() {
         specs::builder().unwrap().specialize(10u32, 1.5f32);
@@ -119,7 +129,6 @@ pub mod kernels {
                 *a = a_push + A;
             }
 
-            #[cfg(test)]
             #[test]
             fn [<test_basic_ $A>]() {
                 #[allow(unused_imports)]
@@ -146,7 +155,7 @@ pub mod kernels {
                             *y.unsafe_index_mut(0) = *x_group.unsafe_index(0);
                         }
                     }
-                    #[cfg(test)]
+
                     #[test]
                     fn [<test_group_ $k>]() {
                         [<group_ $k>]::builder().unwrap().specialize(11);
@@ -179,7 +188,6 @@ macro_for!($T in [u8, i8, u16, i16, f16, bf16, u32, i32, f32, u64, i64, f64] {
                 #[kernel]
                 pub fn foo() {}
 
-                #[cfg(test)]
                 #[test]
                 fn test_foo() {
                     foo::builder().unwrap();
@@ -226,5 +234,97 @@ mod dependency {
     #[kernel]
     fn add_one_i32(#[item] x: i32, #[item] y: &mut i32) {
         *y = add_one(x);
+    }
+}
+
+#[module]
+mod subgroup {
+    #[cfg(not(target_arch = "spirv"))]
+    use krnl::krnl_core;
+    use krnl_core::macros::kernel;
+
+    #[cfg(target_arch = "spirv")]
+    unsafe fn subgroup_add_i32(x: i32, cluster: Option<u32>) -> i32 {
+        use core::arch::asm;
+
+        let mut y = 0i32;
+        if let Some(cluster) = cluster {
+            asm! {
+                "%u32 = OpTypeInt 32 0",
+                "%subgroup = OpConstant %u32 3",
+                "%y = OpGroupNonUniformIAdd _ %subgroup ClusteredReduce {x} {c}",
+                "OpStore {y} %y",
+                x = in(reg) x,
+                c = in(reg) cluster,
+                y = in(reg) &mut y,
+            }
+        } else {
+            asm! {
+                "%u32 = OpTypeInt 32 0",
+                "%subgroup = OpConstant %u32 3",
+                "%y = OpGroupNonUniformIAdd _ %subgroup Reduce {x}",
+                "OpStore {y} %y",
+                x = in(reg) x,
+                y = in(reg) &mut y,
+            }
+        }
+        y
+    }
+
+    #[kernel]
+    fn add_i32(#[global] x: Slice<i32>, #[global] y: UnsafeSlice<i32>) {
+        use krnl_core::buffer::UnsafeIndex;
+
+        let x = x[kernel.global_id()];
+        let x = unsafe { subgroup_add_i32(x, None) };
+        if kernel.subgroup_thread_id() == 0 {
+            unsafe {
+                *y.unsafe_index_mut(
+                    kernel.group_id() * kernel.subgroups() + kernel.subgroup_id(),
+                ) = x;
+            }
+        }
+    }
+
+    #[test]
+    fn test_add_i32() {
+        use krnl::device::Features;
+
+        let builder = add_i32::builder().unwrap();
+        assert_eq!(
+            builder.__features(),
+            Features::SUBGROUP_BASIC.union(Features::SUBGROUP_ARITHMETIC)
+        );
+    }
+
+    #[kernel]
+    fn add_i32_clustered(#[global] x: Slice<i32>, #[global] y: UnsafeSlice<i32>) {
+        use krnl_core::buffer::UnsafeIndex;
+
+        const CLUSTER: usize = 8;
+
+        let x = x[kernel.global_id()];
+        let x = unsafe { subgroup_add_i32(x, Some(CLUSTER as u32)) };
+        let cluster_id = kernel.subgroup_thread_id() / CLUSTER;
+        if kernel.subgroup_thread_id() % CLUSTER == 0 {
+            unsafe {
+                *y.unsafe_index_mut(
+                    kernel.group_id() * kernel.subgroups()
+                        + kernel.subgroup_id() * CLUSTER
+                        + cluster_id,
+                ) = x;
+            }
+        }
+    }
+
+    #[test]
+    fn test_add_i32_clustered() {
+        use krnl::device::Features;
+
+        let builder = add_i32_clustered::builder().unwrap();
+        assert_eq!(
+            builder.__features(),
+            Features::SUBGROUP_BASIC.union(Features::SUBGROUP_CLUSTERED)
+        );
     }
 }

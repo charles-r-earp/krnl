@@ -1014,7 +1014,7 @@ pub mod __private {
                     let features = desc.features;
                     let info = device.info();
                     let device_features = info.features();
-                    if !device_features.contains(&features) {
+                    if !device_features.contains(features) {
                         bail!("Kernel {name} requires {features:?}, {device:?} has {device_features:?}!");
                     }
                     let threads = self.threads.unwrap_or(info.default_threads());
@@ -1045,6 +1045,9 @@ pub mod __private {
                     })
                 }
             }
+        }
+        pub fn features(&self) -> Features {
+            self.desc.features
         }
     }
 

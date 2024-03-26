@@ -43,12 +43,15 @@ use crate::{
     device::{Device, DeviceInner},
     scalar::{Scalar, ScalarElem, ScalarType},
 };
+#[cfg(feature = "device")]
+use crate::{
+    device::{DeviceBuffer, Features},
+    macros::module,
+};
 use anyhow::{bail, Result};
 use bytemuck::PodCastError;
 use dry::{macro_for, macro_wrap};
 use half::{bf16, f16};
-#[cfg(feature = "device")]
-use krnl_macros::module;
 use paste::paste;
 #[cfg(feature = "serde")]
 use serde::{de::Deserializer, ser::Serializer, Deserialize, Serialize};
@@ -59,9 +62,6 @@ use std::{
     ops::{Bound, RangeBounds},
     sync::Arc,
 };
-
-#[cfg(feature = "device")]
-use crate::device::DeviceBuffer;
 
 /// Errors.
 pub mod error {
@@ -875,7 +875,7 @@ impl<S: ScalarDataOwned> ScalarBufferBase<S> {
     - [`DeviceBufferTooLarge`]
     - [`OutOfDeviceMemory`]
     - Could not dispatch the kernel.
-        - This may require [`Features`](crate::device::Features) for the type.
+        - This may require [`Features`] for the type.
 
     See [.fill()](ScalarBufferBase::fill).
      */
@@ -2304,7 +2304,7 @@ impl<T: Scalar, S: Data<Elem = T>> BufferBase<S> {
     # Errors
     - [`DeviceLost`]
     - The kernel could not be dispatched.
-        - This may require [`Features`](crate::device::Features) for the type. */
+        - This may require [`Features`] for the type. */
     pub fn fill(&mut self, elem: T) -> Result<()>
     where
         S: DataMut,
@@ -2337,21 +2337,31 @@ impl<T: Scalar, S: Data<Elem = T>> BufferBase<S> {
             }
             let device = self.device();
             let features = device.info().unwrap().features();
-            if let Ok(y) = self.bitcast_mut::<u64>() {
-                let x = copied_bytes(elem);
-                return kernels::fill_u64::builder()?.build(device)?.dispatch(x, y);
+            if features.contains(Features::INT64) {
+                if let Ok(y) = self.bitcast_mut::<u64>() {
+                    let x = copied_bytes(elem);
+                    return kernels::fill_u64::builder()?.build(device)?.dispatch(x, y);
+                }
             }
             if let Ok(y) = self.bitcast_mut::<u32>() {
                 let x = copied_bytes(elem);
                 return kernels::fill_u32::builder()?.build(device)?.dispatch(x, y);
             }
-            if features.shader_int16() {
+            if features.contains(
+                Features::INT16
+                    .union(Features::BUFFER16)
+                    .union(Features::PUSH_CONSTANT16),
+            ) {
                 if let Ok(y) = self.bitcast_mut::<u16>() {
                     let x = copied_bytes(elem);
                     return kernels::fill_u16::builder()?.build(device)?.dispatch(x, y);
                 }
             }
-            if features.shader_int8() {
+            if features.contains(
+                Features::INT8
+                    .union(Features::BUFFER8)
+                    .union(Features::PUSH_CONSTANT8),
+            ) {
                 if let Ok(y) = self.bitcast_mut::<u8>() {
                     let x = copied_bytes(elem);
                     return kernels::fill_u8::builder()?.build(device)?.dispatch(x, y);
@@ -2369,7 +2379,7 @@ impl<T: Scalar, S: Data<Elem = T>> BufferBase<S> {
     # Errors
     - [`DeviceLost`]
     - The kernel could not be dispatched.
-        - This may require [`Features`](crate::device::Features) for the type. */
+        - This may require [`Features`] for the type. */
     pub fn cast<Y: Scalar>(&self) -> Result<Buffer<Y>> {
         let mut output = unsafe { Buffer::uninit(self.device(), self.len())? };
         self.as_slice().cast_impl(&mut output.as_slice_mut())?;
