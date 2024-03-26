@@ -1132,7 +1132,6 @@ fn kernel_post_process(
                 _ => (),
             }
         }
-
         for inst in spirv_module.functions.iter().flat_map(|f| f.blocks.iter().flat_map(|b| b.instructions.iter())) {
             let op = inst.class.opcode;
             let operands = inst.operands.as_slice();
@@ -1155,11 +1154,7 @@ fn kernel_post_process(
                 | Op::GroupNonUniformFMax
                 | Op::GroupNonUniformBitwiseAnd
                 | Op::GroupNonUniformBitwiseOr
-                | Op::GroupNonUniformBitwiseXor
-                /*
-                | Op::GroupNonUniformBitwiseLogicalOr
-                | Op::GroupNonUniformBitwiseLogicalXor
-               */ => {
+                | Op::GroupNonUniformBitwiseXor => {
                     if let [Operand::IdScope(_scope), Operand::GroupOperation(group_op), ..] = operands {
                         if op == Op::GroupNonUniformBallotBitCount {
                             features |= Features::SUBGROUP_BALLOT;
@@ -1171,24 +1166,34 @@ fn kernel_post_process(
                     }
                 }
                 Op::GroupNonUniformBroadcast
-               | Op::GroupNonUniformBroadcastFirst
-              | Op::GroupNonUniformBallot
-             | Op::GroupNonUniformInverseBallot
-            | Op::GroupNonUniformBallotBitExtract
-            | Op::GroupNonUniformBallotFindLSB
-            | Op::GroupNonUniformBallotFindMSB => {
+                | Op::GroupNonUniformBroadcastFirst
+                | Op::GroupNonUniformBallot
+                | Op::GroupNonUniformInverseBallot
+                | Op::GroupNonUniformBallotBitExtract
+                | Op::GroupNonUniformBallotFindLSB
+                | Op::GroupNonUniformBallotFindMSB => {
                     features |= Features::SUBGROUP_BALLOT;
+                }
+                Op::GroupNonUniformShuffle
+                | Op::GroupNonUniformShuffleXor => {
+                    features |= Features::SUBGROUP_SHUFFLE;
+                }
+                Op::GroupNonUniformShuffleUp
+                | Op::GroupNonUniformShuffleDown => {
+                    features |= Features::SUBGROUP_SHUFFLE_RELATIVE;
                 }
                 _ => (),
             }
         }
-        if features.contains(Features::SUBGROUP_VOTE)
-        || features.contains(Features::SUBGROUP_ARITHMETIC)
-        || features.contains(Features::SUBGROUP_BALLOT)
-        || features.contains(Features::SUBGROUP_SHUFFLE)
-        || features.contains(Features::SUBGROUP_SHUFFLE_RELATIVE)
-        || features.contains(Features::SUBGROUP_CLUSTERED)
-        || features.contains(Features::SUBGROUP_QUAD)
+        if [
+            Features::SUBGROUP_VOTE,
+            Features::SUBGROUP_ARITHMETIC,
+            Features::SUBGROUP_BALLOT,
+            Features::SUBGROUP_SHUFFLE,
+            Features::SUBGROUP_SHUFFLE_RELATIVE,
+            Features::SUBGROUP_CLUSTERED,
+            Features::SUBGROUP_QUAD,
+        ].into_iter().any(|f| features.contains(f))
         || spirv_module.annotations.iter().any(|inst| {
             inst.class.opcode == Op::Decorate && matches!(
                 inst.operands.as_slice(),
