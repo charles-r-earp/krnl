@@ -213,12 +213,7 @@ impl Device {
             #[cfg(feature = "device")]
             options: DeviceOptions {
                 index: 0,
-                optimal_features: Features::empty()
-                    .with_shader_int8(true)
-                    .with_shader_int16(true)
-                    .with_shader_int64(true)
-                    .with_shader_float16(true)
-                    .with_shader_float64(true),
+                optimal_features: Features::all(),
             },
         }
     }
@@ -414,6 +409,281 @@ impl DeviceBuffer {
     }
 }
 
+/** Features supported by a device.
+
+See [`DeviceInfo::features()`].
+
+[Kernels](crate::kernel) can not be compiled unless the device supports all features used.
+
+Use features to specialize or provide a more helpful error message:
+```
+# use krnl::device::Features;
+# fn main() {
+# let features = Features::empty();
+if features.contains(Features::INT8 | Features::BUFFER8) {
+    /* u8 impl */
+} else {
+    /* fallback */
+}
+# }
+```
+*/
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub struct Features {
+    bits: u32,
+}
+
+impl Features {
+    /// 8 bit integers.
+    ///
+    /// Int8 capability.
+    pub const INT8: Self = Self::new(1);
+    /// 16 bit integers.
+    ///
+    /// Int16 capability.
+    pub const INT16: Self = Self::new(1 << 1);
+    /// 64 bit integers.
+    ///
+    /// Int64 capability.
+    pub const INT64: Self = Self::new(1 << 2);
+    /// 16 bit floats.
+    ///
+    /// Float16 capability.
+    pub const FLOAT16: Self = Self::new(1 << 3);
+    /// 64 bit floats.
+    ///
+    /// Float64 capability.
+    pub const FLOAT64: Self = Self::new(1 << 4);
+    /// 8 bit buffers.
+    ///
+    /// StorageBuffer8BitAccess capability.
+    pub const BUFFER8: Self = Self::new(1 << 8);
+    /// 16 bit buffers.
+    ///
+    /// StorageBuffer16BitAccess capability.
+    pub const BUFFER16: Self = Self::new(1 << 9);
+    /// 8 bit push constants.
+    ///
+    /// StoragePushConstant8 capability.
+    pub const PUSH_CONSTANT8: Self = Self::new(1 << 10);
+    /// 16 bit push constants.
+    ///
+    /// StoragePushConstant16 capability.
+    pub const PUSH_CONSTANT16: Self = Self::new(1 << 11);
+    /// Subgroup operations.
+    ///
+    /// GroupNonUniform capability.
+    ///
+    /// Enables [`Kernel`](krnl_core::kernel::Kernel) `subgroup` methods:
+    /// - [`.subgroups()`](krnl_core::kernel::Kernel::subgroups)
+    /// - [`.subgroup_id()`](krnl_core::kernel::Kernel::subgroup_id)
+    /// - [`.subgroup_thread_id()`](krnl_core::kernel::Kernel::subgroup_thread_id)
+    pub const SUBGROUP_BASIC: Self = Self::new(1 << 16);
+    /// Subgroup vote.
+    ///
+    /// GroupNonUniformVote capability.
+    pub const SUBGROUP_VOTE: Self = Self::new(1 << 17);
+    /// Subgroup arithmetic operations.
+    ///
+    /// GroupNonUniformArithmetic capability.
+    pub const SUBGROUP_ARITHMETIC: Self = Self::new(1 << 18);
+    /// Subgroup ballot operations.
+    ///
+    /// GroupNonUniformBallot capability.
+    pub const SUBGROUP_BALLOT: Self = Self::new(1 << 19);
+    /// Subgroup shuffle operations.
+    ///
+    /// GroupNonUniformShuffle capability.
+    pub const SUBGROUP_SHUFFLE: Self = Self::new(1 << 20);
+    /// Subgroup shuffle relative operations.
+    ///
+    /// GroupNonUniformShuffleRelative capability.
+    pub const SUBGROUP_SHUFFLE_RELATIVE: Self = Self::new(1 << 21);
+    /// Subgroup clustered operations.
+    ///
+    /// GroupNonUniformClustered capability.
+    pub const SUBGROUP_CLUSTERED: Self = Self::new(1 << 22);
+    /// Subgroup quad operations.
+    ///
+    /// GroupNonUniformQuad capability.
+    pub const SUBGROUP_QUAD: Self = Self::new(1 << 23);
+
+    #[inline]
+    const fn new(bits: u32) -> Self {
+        Self { bits }
+    }
+    /// No features.
+    #[inline]
+    pub const fn empty() -> Self {
+        Self { bits: 0 }
+    }
+    /// All features.
+    #[inline]
+    pub const fn all() -> Self {
+        Self::empty()
+            .union(Self::INT8)
+            .union(Self::INT16)
+            .union(Self::INT64)
+            .union(Self::FLOAT16)
+            .union(Self::FLOAT64)
+            .union(Self::BUFFER8)
+            .union(Self::BUFFER16)
+            .union(Self::PUSH_CONSTANT8)
+            .union(Self::PUSH_CONSTANT16)
+            .union(Self::SUBGROUP_BASIC)
+            .union(Self::SUBGROUP_VOTE)
+            .union(Self::SUBGROUP_ARITHMETIC)
+            .union(Self::SUBGROUP_BALLOT)
+            .union(Self::SUBGROUP_SHUFFLE)
+            .union(Self::SUBGROUP_SHUFFLE_RELATIVE)
+            .union(Self::SUBGROUP_CLUSTERED)
+            .union(Self::SUBGROUP_QUAD)
+    }
+    /// Contains all features of `other`.
+    #[inline]
+    pub const fn contains(self, other: Self) -> bool {
+        (self.bits | other.bits) == self.bits
+    }
+    /// All features of `self` and `other`.
+    #[inline]
+    pub const fn union(self, other: Self) -> Self {
+        Self::new(self.bits | other.bits)
+    }
+    fn name_iter(&self) -> impl Iterator<Item = &str> {
+        macro_rules! features {
+            ($($f:ident),*) => {
+                [
+                    $(
+                        (stringify!($f), Self::$f)
+                    ),*
+                ]
+            };
+        }
+
+        features!(
+            INT8,
+            INT16,
+            INT64,
+            FLOAT16,
+            FLOAT64,
+            BUFFER8,
+            BUFFER16,
+            PUSH_CONSTANT8,
+            PUSH_CONSTANT16,
+            SUBGROUP_BASIC,
+            SUBGROUP_VOTE,
+            SUBGROUP_ARITHMETIC,
+            SUBGROUP_BALLOT,
+            SUBGROUP_SHUFFLE,
+            SUBGROUP_SHUFFLE_RELATIVE,
+            SUBGROUP_CLUSTERED,
+            SUBGROUP_QUAD
+        )
+        .into_iter()
+        .filter_map(|(name, features)| {
+            if self.contains(features) {
+                Some(name)
+            } else {
+                None
+            }
+        })
+    }
+}
+
+impl Debug for Features {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> fmt::Result {
+        struct FeaturesStr<'a>(&'a str);
+
+        impl Debug for FeaturesStr<'_> {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                f.debug_struct(self.0).finish()
+            }
+        }
+
+        let alternate = f.alternate();
+        let mut b = f.debug_tuple("Features");
+        if alternate {
+            for name in self.name_iter() {
+                b.field(&FeaturesStr(name));
+            }
+        } else {
+            b.field(&FeaturesStr(&itertools::join(self.name_iter(), "|")));
+        }
+        b.finish()
+    }
+}
+
+impl core::ops::BitOr for Features {
+    type Output = Self;
+    fn bitor(self, rhs: Self) -> Self::Output {
+        self.union(rhs)
+    }
+}
+
+impl core::ops::BitOrAssign for Features {
+    fn bitor_assign(&mut self, rhs: Self) {
+        *self = self.union(rhs);
+    }
+}
+
+// deprecated
+#[deprecated(since = "0.1.0")]
+#[doc(hidden)]
+impl Features {
+    pub const fn shader_int8(&self) -> bool {
+        self.contains(Self::INT8)
+    }
+    pub const fn with_shader_int8(self, shader_int8: bool) -> Self {
+        if shader_int8 {
+            self.union(Self::INT8)
+        } else {
+            self
+        }
+    }
+    pub const fn shader_int16(&self) -> bool {
+        self.contains(Self::INT16)
+    }
+    pub const fn with_shader_int16(self, shader_int16: bool) -> Self {
+        if shader_int16 {
+            self.union(Self::INT16)
+        } else {
+            self
+        }
+    }
+    pub const fn shader_int64(&self) -> bool {
+        self.contains(Self::INT64)
+    }
+    pub const fn with_shader_int64(self, shader_int64: bool) -> Self {
+        if shader_int64 {
+            self.union(Self::INT16)
+        } else {
+            self
+        }
+    }
+    pub const fn shader_float16(&self) -> bool {
+        self.contains(Self::FLOAT16)
+    }
+    pub const fn with_shader_float16(self, shader_float16: bool) -> Self {
+        if shader_float16 {
+            self.union(Self::FLOAT16)
+        } else {
+            self
+        }
+    }
+    pub const fn shader_float64(&self) -> bool {
+        self.contains(Self::FLOAT64)
+    }
+    pub const fn with_shader_float64(self, shader_float64: bool) -> Self {
+        if shader_float64 {
+            self.union(Self::FLOAT64)
+        } else {
+            self
+        }
+    }
+}
+
+/*
+
 /** Features
 
 Features supported by a device. See [`DeviceInfo::features`].
@@ -519,6 +789,7 @@ impl Features {
         self
     }
 }
+*/
 
 /// Device info.
 #[derive(Debug)]

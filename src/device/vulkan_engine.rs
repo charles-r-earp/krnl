@@ -217,23 +217,20 @@ impl DeviceEngine for Engine {
             vulkan_memory_model: true,
             timeline_semaphore: true,
             subgroup_size_control: true,
-            shader_int8: optimal_features.shader_int8,
-            shader_int16: optimal_features.shader_int16,
-            shader_int64: optimal_features.shader_int64,
-            shader_float16: optimal_features.shader_float16,
-            shader_float64: optimal_features.shader_float64,
+            shader_int8: optimal_features.contains(Features::INT8),
+            shader_int16: optimal_features.contains(Features::INT16),
+            shader_int64: optimal_features.contains(Features::INT64),
+            shader_float16: optimal_features.contains(Features::FLOAT16),
+            shader_float64: optimal_features.contains(Features::FLOAT64),
+            storage_buffer8_bit_access: optimal_features.contains(Features::BUFFER8),
+            storage_buffer16_bit_access: optimal_features.contains(Features::BUFFER16),
+            storage_push_constant8: optimal_features.contains(Features::PUSH_CONSTANT8),
+            storage_push_constant16: optimal_features.contains(Features::PUSH_CONSTANT16),
             ..vulkano::device::Features::empty()
         };
         let device_features = physical_device
             .supported_features()
             .intersection(&optimal_device_features);
-        let features = Features {
-            shader_int8: device_features.shader_int8,
-            shader_int16: device_features.shader_int16,
-            shader_int64: device_features.shader_int64,
-            shader_float16: device_features.shader_float16,
-            shader_float64: device_features.shader_float64,
-        };
         let compute_family = physical_device
             .queue_family_properties()
             .iter()
@@ -310,6 +307,63 @@ impl DeviceEngine for Engine {
         } else {
             (1, 128)
         };
+
+        let mut features = Features::empty();
+        if device_features.shader_int8 {
+            features = features.union(Features::INT8);
+        }
+        if device_features.shader_int16 {
+            features = features.union(Features::INT16);
+        }
+        if device_features.shader_int64 {
+            features = features.union(Features::INT64);
+        }
+        if device_features.shader_float16 {
+            features = features.union(Features::FLOAT16);
+        }
+        if device_features.shader_float64 {
+            features = features.union(Features::FLOAT64);
+        }
+        if device_features.storage_buffer8_bit_access {
+            features = features.union(Features::BUFFER8);
+        }
+        if device_features.storage_buffer16_bit_access {
+            features = features.union(Features::BUFFER16);
+        }
+        if device_features.storage_push_constant8 {
+            features = features.union(Features::PUSH_CONSTANT8);
+        }
+        if device_features.storage_push_constant16 {
+            features = features.union(Features::PUSH_CONSTANT16);
+        }
+        if let Some(subgroup_features) = properties.subgroup_supported_operations {
+            use vulkano::device::physical::SubgroupFeatures;
+
+            if subgroup_features.contains(SubgroupFeatures::BASIC) {
+                features = features.union(Features::SUBGROUP_BASIC);
+            }
+            if subgroup_features.contains(SubgroupFeatures::VOTE) {
+                features = features.union(Features::SUBGROUP_VOTE);
+            }
+            if subgroup_features.contains(SubgroupFeatures::ARITHMETIC) {
+                features = features.union(Features::SUBGROUP_ARITHMETIC);
+            }
+            if subgroup_features.contains(SubgroupFeatures::BALLOT) {
+                features = features.union(Features::SUBGROUP_BALLOT);
+            }
+            if subgroup_features.contains(SubgroupFeatures::SHUFFLE) {
+                features = features.union(Features::SUBGROUP_SHUFFLE);
+            }
+            if subgroup_features.contains(SubgroupFeatures::SHUFFLE_RELATIVE) {
+                features = features.union(Features::SUBGROUP_SHUFFLE_RELATIVE);
+            }
+            if subgroup_features.contains(SubgroupFeatures::CLUSTERED) {
+                features = features.union(Features::SUBGROUP_CLUSTERED);
+            }
+            if subgroup_features.contains(SubgroupFeatures::QUAD) {
+                features = features.union(Features::SUBGROUP_QUAD);
+            }
+        }
         let info = Arc::new(DeviceInfo {
             index,
             name,

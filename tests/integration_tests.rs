@@ -113,10 +113,10 @@ fn buffer_tests(device: &Device, device2: Option<&Device>) -> impl IntoIterator<
                     false
                 } else {
                     match size_of::<$T>() {
-                        1 => !features.shader_int8(),
-                        2 => !features.shader_int16(),
+                        1 => !features.contains(Features::INT8 | Features::BUFFER8 | Features::PUSH_CONSTANT8),
+                        2 => !features.contains(Features::INT16 | Features::BUFFER16 | Features::PUSH_CONSTANT16),
                         4 => false,
-                        8 => !features.shader_int64(),
+                        8 => !features.contains(Features::INT64),
                         _ => unreachable!(),
                     }
                 };
@@ -132,26 +132,22 @@ fn buffer_tests(device: &Device, device2: Option<&Device>) -> impl IntoIterator<
         fn features(ty: ScalarType) -> Features {
             use ScalarType::*;
             match ty {
-                U8 | I8 => Features::empty().with_shader_int8(true),
-                U16 | I16 => Features::empty().with_shader_int16(true),
-                F16 | BF16 => Features::empty()
-                    .with_shader_int8(true)
-                    .with_shader_int16(true),
+                U8 | I8 => Features::INT8 | Features::BUFFER8,
+                U16 | I16 => Features::INT16 | Features::BUFFER16,
+                F16 | BF16 => Features::INT8 | Features::INT16 | Features::BUFFER16,
                 U32 | I32 | F32 => Features::empty(),
-                U64 | I64 => Features::empty().with_shader_int64(true),
-                F64 => Features::empty()
-                    .with_shader_int64(true)
-                    .with_shader_float64(true),
+                U64 | I64 => Features::INT64,
+                F64 => Features::INT64 | Features::FLOAT64,
                 _ => unreachable!(),
             }
         }
-        features(x).union(&features(y))
+        features(x).union(features(y))
     }
 
     macro_for!($X in [u8, i8, u16, i16, f16, bf16, u32, i32, f32, u64, i64, f64] {
         macro_for!($Y in [u8, i8, u16, i16, f16, bf16, u32, i32, f32, u64, i64, f64] {
             {
-                let ignore = !device.is_host() && !features.contains(&buffer_cast_features($X::SCALAR_TYPE, $Y::SCALAR_TYPE));
+                let ignore = !device.is_host() && !features.contains(buffer_cast_features($X::SCALAR_TYPE, $Y::SCALAR_TYPE));
                 paste! {
                     let trial = device_test(device, stringify!([<buffer_cast_ $X _ $Y>]), [<buffer_cast>]::<$X, $Y>);
                     tests.push(trial.with_ignored_flag(ignore));

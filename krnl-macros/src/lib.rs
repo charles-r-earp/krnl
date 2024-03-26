@@ -13,7 +13,11 @@ use proc_macro2::{Literal, Span as Span2, TokenStream as TokenStream2};
 use quote::{format_ident, quote, ToTokens};
 use semver::{Version, VersionReq};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
-use std::{str::FromStr, sync::OnceLock};
+use std::{
+    fmt::{self, Debug},
+    str::FromStr,
+    sync::OnceLock,
+};
 use syn::{
     parse::{Parse, ParseStream},
     parse_macro_input,
@@ -881,7 +885,7 @@ impl KernelMeta {
         let mut spec_def_args = self.spec_def_args();
         for arg in spec_def_args.iter_mut() {
             *arg = quote! {
-                #[allow(unused_variables)]
+                #[allow(unused_variables, non_snake_case)]
                 #arg
             };
         }
@@ -891,7 +895,7 @@ impl KernelMeta {
                 if let Some(len) = arg.len.as_ref() {
                     quote! {
                         const _: () = {
-                            #[allow(clippy::too_many_arguments)]
+                            #[allow(non_snake_case, clippy::too_many_arguments)]
                             const fn __krnl_array_len(#spec_def_args) -> usize {
                                 #len
                             }
@@ -1121,7 +1125,9 @@ impl<'de> Deserialize<'de> for ScalarType {
 #[derive(Default, Serialize, Deserialize, Debug)]
 struct KernelDesc {
     name: String,
+    #[serde(skip_serializing)]
     spirv: Vec<u32>,
+    #[serde(skip_serializing)]
     features: Features,
     safe: bool,
     spec_descs: Vec<SpecDesc>,
@@ -1175,36 +1181,142 @@ impl KernelDesc {
     }
 }
 
-#[derive(Default, Debug, Serialize, Deserialize)]
+#[derive(Default, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(transparent)]
 struct Features {
-    shader_int8: bool,
-    shader_int16: bool,
-    shader_int64: bool,
-    shader_float16: bool,
-    shader_float64: bool,
+    bits: u32,
+}
+
+impl Features {
+    pub const INT8: Self = Self::new(1);
+    pub const INT16: Self = Self::new(1 << 1);
+    pub const INT64: Self = Self::new(1 << 2);
+    pub const FLOAT16: Self = Self::new(1 << 3);
+    pub const FLOAT64: Self = Self::new(1 << 4);
+    pub const BUFFER8: Self = Self::new(1 << 8);
+    pub const BUFFER16: Self = Self::new(1 << 9);
+    pub const PUSH_CONSTANT8: Self = Self::new(1 << 10);
+    pub const PUSH_CONSTANT16: Self = Self::new(1 << 11);
+    pub const SUBGROUP_BASIC: Self = Self::new(1 << 16);
+    pub const SUBGROUP_VOTE: Self = Self::new(1 << 17);
+    pub const SUBGROUP_ARITHMETIC: Self = Self::new(1 << 18);
+    pub const SUBGROUP_BALLOT: Self = Self::new(1 << 19);
+    pub const SUBGROUP_SHUFFLE: Self = Self::new(1 << 20);
+    pub const SUBGROUP_SHUFFLE_RELATIVE: Self = Self::new(1 << 21);
+    pub const SUBGROUP_CLUSTERED: Self = Self::new(1 << 22);
+    pub const SUBGROUP_QUAD: Self = Self::new(1 << 23);
+
+    #[inline]
+    const fn new(bits: u32) -> Self {
+        Self { bits }
+    }
+    /*
+    #[inline]
+    pub const fn empty() -> Self {
+        Self { bits: 0 }
+    }
+    #[inline]
+    pub const fn all() -> Self {
+        Self::empty()
+            .union(Self::INT8)
+            .union(Self::INT16)
+            .union(Self::FLOAT16)
+            .union(Self::INT64)
+            .union(Self::FLOAT64)
+            .union(Self::BUFFER8)
+            .union(Self::BUFFER16)
+            .union(Self::SUBGROUP_BASIC)
+            .union(Self::SUBGROUP_VOTE)
+            .union(Self::SUBGROUP_ARITHMETIC)
+            .union(Self::SUBGROUP_BALLOT)
+            .union(Self::SUBGROUP_SHUFFLE)
+            .union(Self::SUBGROUP_SHUFFLE_RELATIVE)
+            .union(Self::SUBGROUP_CLUSTERED)
+            .union(Self::SUBGROUP_QUAD)
+    }
+    */
+    #[inline]
+    pub const fn contains(self, other: Self) -> bool {
+        (self.bits | other.bits) == self.bits
+    }
+    /*
+    #[inline]
+    pub const fn union(self, other: Self) -> Self {
+        Self::new(self.bits | other.bits)
+    }
+    */
+    fn name_iter(self) -> impl Iterator<Item = &'static str> {
+        macro_rules! features {
+            ($($f:ident),*) => {
+                [
+                    $(
+                        (stringify!($f), Self::$f)
+                    ),*
+                ]
+            };
+        }
+
+        features!(
+            INT8,
+            INT16,
+            INT64,
+            FLOAT16,
+            FLOAT64,
+            BUFFER8,
+            BUFFER16,
+            PUSH_CONSTANT8,
+            PUSH_CONSTANT16,
+            SUBGROUP_BASIC,
+            SUBGROUP_VOTE,
+            SUBGROUP_ARITHMETIC,
+            SUBGROUP_BALLOT,
+            SUBGROUP_SHUFFLE,
+            SUBGROUP_SHUFFLE_RELATIVE,
+            SUBGROUP_CLUSTERED,
+            SUBGROUP_QUAD
+        )
+        .into_iter()
+        .filter_map(move |(name, features)| {
+            if self.contains(features) {
+                Some(name)
+            } else {
+                None
+            }
+        })
+    }
+}
+
+impl Debug for Features {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> fmt::Result {
+        struct FeaturesStr<'a>(&'a str);
+
+        impl Debug for FeaturesStr<'_> {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                f.debug_struct(self.0).finish()
+            }
+        }
+
+        let alternate = f.alternate();
+        let mut b = f.debug_tuple("Features");
+        if alternate {
+            for name in self.name_iter() {
+                b.field(&FeaturesStr(name));
+            }
+        } else {
+            b.field(&FeaturesStr(&itertools::join(self.name_iter(), "|")));
+        }
+        b.finish()
+    }
 }
 
 impl ToTokens for Features {
     fn to_tokens(&self, tokens: &mut TokenStream2) {
-        let Self {
-            shader_int8,
-            shader_int16,
-            shader_int64,
-            shader_float16,
-            shader_float64,
-        } = *self;
-        let shader_int8 = if shader_int8 { [true].as_ref() } else { &[] };
-        let shader_int16 = if shader_int16 { [true].as_ref() } else { &[] };
-        let shader_int64 = if shader_int64 { [true].as_ref() } else { &[] };
-        let shader_float16 = if shader_float16 { [true].as_ref() } else { &[] };
-        let shader_float64 = if shader_float64 { [true].as_ref() } else { &[] };
+        let features = self
+            .name_iter()
+            .map(|name| Ident::new(name, Span2::call_site()));
         tokens.extend(quote! {
             Features::empty()
-            #(.with_shader_int8(#shader_int8))*
-            #(.with_shader_int16(#shader_int16))*
-            #(.with_shader_int64(#shader_int64))*
-            #(.with_shader_float16(#shader_float16))*
-            #(.with_shader_float64(#shader_float64))*
+                #(.union(Features::#features))*
         });
     }
 }
@@ -1506,7 +1618,7 @@ fn kernel_impl(item_tokens: TokenStream2) -> Result<TokenStream2> {
                     anyhow::{self, Result},
                     krnl_core::half::{f16, bf16},
                     buffer::{Slice, SliceMut},
-                    device::Device,
+                    device::{Device, Features},
                     scalar::ScalarType,
                     kernel::__private::{
                         Kernel as KernelBase,
@@ -1577,6 +1689,11 @@ fn kernel_impl(item_tokens: TokenStream2) -> Result<TokenStream2> {
                         }
                     }
                     #kernel_builder_specialize_fn
+                    #[doc(hidden)]
+                    #[inline]
+                    pub fn __features(&self) -> Features {
+                        self.inner.features()
+                    }
                 }
 
                 impl KernelBuilder #kernel_builder_build_generics {
