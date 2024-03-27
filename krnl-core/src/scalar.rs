@@ -463,8 +463,8 @@ pub trait Scalar:
     fn cast<T: Scalar>(self) -> T;
 }
 
-#[cfg_attr(doc_cfg, doc(cfg(all())))]
 #[cfg(all(not(target_arch = "spirv"), not(feature = "serde")))]
+#[cfg_attr(doc_cfg, doc(cfg(all())))]
 /// Base trait for numerical types.
 pub trait Scalar:
     Default
@@ -491,8 +491,8 @@ pub trait Scalar:
     fn cast<T: Scalar>(self) -> T;
 }
 
-#[cfg_attr(doc_cfg, doc(cfg(all())))]
 #[cfg(all(not(target_arch = "spirv"), feature = "serde"))]
+#[cfg_attr(doc_cfg, doc(cfg(all())))]
 /// Base trait for numerical types.
 pub trait Scalar:
     Default
