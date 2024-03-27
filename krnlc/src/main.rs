@@ -463,7 +463,9 @@ fn cache(
     let bytes = chunks.remainder();
     if !bytes.is_empty() {
         let (bytes, rem) = bytes.split_at(bytes.len() / 4 * 4);
-        cache.push_str(&bytes.to_z85()?);
+        if !bytes.is_empty() {
+            cache.push_str(&bytes.to_z85()?);
+        }
         if !rem.is_empty() {
             let mut tail = [0u8; 4];
             tail[..rem.len()].copy_from_slice(rem);
