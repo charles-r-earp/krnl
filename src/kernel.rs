@@ -77,12 +77,12 @@ fn main() -> Result<()> {
 }
 ```
 
-# **krnlc**
-[Kernels](#kernels) are compiled with **krnlc**.
+# krnlc
+[Kernels](#kernels) are compiled with krnlc.
 
 Compile with `krnlc` or `krnlc -p my-crate`.
 
-1. Runs the equivalent of [`cargo expand`](https://github.com/dtolnay/cargo-expand) to locate all modules.
+1. Runs the equivalent of [`cargo expand`](https://docs.rs/cargo-expand) to locate all modules.
 2. Generates a device crate under \<target-dir\>/krnlc/crates/\<my-crate\>.
 3. Compiles the device crate with [spirv-builder](https://docs.rs/crate/spirv-builder).
 4. Processes the output, validates and optimizes with [spirv-tools](https://docs.rs/spirv-tools).
@@ -96,11 +96,11 @@ abZy8000000@}Rn2yGJu{w.WVIuQ#sT$h4DaGh)Tk%#sdtgN ..
 ");
 ```
 
-If the version of **krnlc** is incompatible with the **krnl** version, [`module`](#modules)
+If the version of krnlc is incompatible with the krnl version, [`module`](#modules)
 will emit a compiler error.
 
 ## Toolchains
-To locate [modules](#modules), **krnlc** will use the nightly toolchain. Install it with:
+To locate [modules](#modules), krnlc will use the nightly toolchain. Install it with:
 ```text
 rustup toolchain install nightly
 ```
@@ -122,7 +122,7 @@ cargo +nightly-2023-05-27 install krnlc --locked
 ```
 
 ## Metadata
-**krnlc** can read metadata from Cargo.toml:
+krnlc can read metadata from Cargo.toml:
 ```toml
 [package.metadata.krnlc]
 # enable default features when locating modules
@@ -143,7 +143,7 @@ baz = { path = "baz" }
 
 # Modules
 The `module` macro declares a shared host and device scope that is visible to [krnlc](#krnlc).
-The [spirv](#spirv) arch will be used by **krnlc** when compiling modules for the device.
+The [spirv](#spirv) arch will be used by krnlc when compiling modules for the device.
 ```no_run
 use krnl::macros::module;
 
@@ -543,7 +543,7 @@ thread 'foo' panicked at src/lib.rs:50:10:
 called `Result::unwrap()` on an `Err` value: Kernel `crate::kernels::foo<threads=2, N=4>` panicked!
 ```
 
-Note: The validation layer can be configured to redirect messages to stdout. This will prevent **krnl** from receiving a callback
+Note: The validation layer can be configured to redirect messages to stdout. This will prevent krnl from receiving a callback
 and returning an error in case of a panic.
 */
 

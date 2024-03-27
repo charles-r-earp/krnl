@@ -1,10 +1,5 @@
+//! Macros for [krnl](https://docs.rs/krnl).
 #![forbid(unsafe_code)]
-
-/*!
-# **krnl-macros**
-Macros for [**krnl**](https://docs.rs/krnl).
-
-*/
 
 use derive_syn_parse::Parse;
 use fxhash::FxHashMap;

@@ -39,6 +39,8 @@ fn main() -> Result<()> {
 
 #[cfg(doc)]
 use crate::device::error::DeviceLost;
+#[cfg(all(not(feature = "device"), doc))]
+use crate::device::Features;
 use crate::{
     device::{Device, DeviceInner},
     scalar::{Scalar, ScalarElem, ScalarType},

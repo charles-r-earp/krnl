@@ -4,11 +4,11 @@
 [Docs]: https://docs.rs/krnl
 [DocsBadge]: https://docs.rs/krnl/badge.svg
 
-# **krnl**
+# krnl
 
 Safe, portable, high performance compute (GPGPU) kernels.
 
-Developed for [**autograph**](https://github.com/charles-r-earp/autograph).
+Developed for [autograph](https://github.com/charles-r-earp/autograph).
 
 - Similar functionality to CUDA and OpenCL.
 - Supports GPU's and other Vulkan 1.2 capable devices.
@@ -19,11 +19,11 @@ Developed for [**autograph**](https://github.com/charles-r-earp/autograph).
   - DebugPrintf integration, generates backtraces for panics.
 - Buffers on the host can be accessed natively as Vecs and slices.
 
-# **krnlc**
+# krnlc
 
-Kernel compiler for **krnl**.
+Kernel compiler for krnl.
 
-- Built on [rust-gpu](https://github.com/EmbarkStudios/rust-gpu)'s spirv-builder.
+- Built on [spirv-builder](https://github.com/EmbarkStudios/rust-gpu/tree/main/crates/spirv-builder).
 - Supports dependencies defined in Cargo.toml.
 - Uses [spirv-tools](https://github.com/EmbarkStudios/spirv-tools-rs) to validate and optimize.
 - Compiles to "krnl-cache.rs", so the crate will build on stable Rust.
@@ -39,8 +39,8 @@ For device functionality (kernels), install [Vulkan](https://www.vulkan.org) for
   - Validation layers
     - DebugPrintf
   - spirv-tools
-    - This is used by **krnlc** for spirv validation and optimization.
-      - **krnlc** builds by default without needing spirv-tools to be installed.
+    - This is used by krnlc for spirv validation and optimization.
+      - krnlc builds by default without needing spirv-tools to be installed.
 
 ## Test
 

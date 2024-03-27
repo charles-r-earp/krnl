@@ -1,10 +1,4 @@
-/*!
-
-# **krnl-core**
-Shared core library for [**krnl**](https://docs.rs/krnl).
-
-*/
-
+//! Shared core library for [krnl](https://docs.rs/krnl).
 #![cfg_attr(
     target_arch = "spirv",
     no_std,
@@ -27,5 +21,5 @@ pub mod buffer;
 /// Kernel structs passed to kernels.
 #[cfg_attr(doc_cfg, doc(cfg(target_arch = "spirv")))]
 pub mod kernel;
-/// Scalars and numerical traits.
+/// Numerical types.
 pub mod scalar;
