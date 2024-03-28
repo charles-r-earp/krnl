@@ -172,10 +172,6 @@ _NVIDIA GeForce GTX 1060 with Max-Q Design_
 | **`10,000,000`** | `746.92 us` (✅ **1.00x**) | `770.03 us` (✅ **1.03x slower**) | `779.90 us` (✅ **1.04x slower**) |
 | **`64,000,000`** | `4.71 ms` (✅ **1.00x**)   | `4.90 ms` (✅ **1.04x slower**)   | `4.91 ms` (✅ **1.04x slower**)   |
 
-# Recent Changes
-
-See [Releases.md](https://github.com/charles-r-earp/krnl/blob/main/Releases.md)
-
 # License
 
 Dual-licensed to be compatible with the Rust project.
