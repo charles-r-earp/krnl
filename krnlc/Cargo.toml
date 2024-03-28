@@ -2,7 +2,7 @@
 
 [package]
 name = "krnlc"
-version = "0.1.0"
+version = "0.1.1-alpha"
 authors = ["Charles R Earp <charles-r-earp@gmail.com>"]
 edition = "2021"
 description = "Kernel compiler for krnl."
@@ -10,7 +10,7 @@ documentation = "https://docs.rs/krnl"
 readme = "../README.md"
 homepage = "https://github.com/charles-r-earp/krnl"
 license = "MIT OR Apache-2.0"
-publish = true
+publish = false
 autoexamples = false
 autotests = false
 autobenches = false
@@ -45,5 +45,11 @@ zero85 = "0.2.0"
 
 [features]
 default = ["use-compiled-tools"]
-use-compiled-tools = ["spirv-builder/use-compiled-tools", "spirv-tools/use-compiled-tools"]
-use-installed-tools = ["spirv-builder/use-installed-tools", "spirv-builder/use-installed-tools"]
+use-compiled-tools = [
+    "spirv-builder/use-compiled-tools",
+    "spirv-tools/use-compiled-tools",
+]
+use-installed-tools = [
+    "spirv-builder/use-installed-tools",
+    "spirv-builder/use-installed-tools",
+]
