@@ -109,7 +109,7 @@ pub mod builder {
         }
         /// Creates a device.
         ///
-        /// **Errors**
+        /// # Errors
         ///
         /// - [DeviceUnavailable]
         /// - [DeviceIndexOutOfRange]
