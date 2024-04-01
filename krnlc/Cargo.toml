@@ -9,6 +9,7 @@ description = "Kernel compiler for krnl."
 documentation = "https://docs.rs/krnl"
 readme = "../README.md"
 homepage = "https://github.com/charles-r-earp/krnl"
+repository = "https://github.com/charles-r-earp/krnl"
 license = "MIT OR Apache-2.0"
 publish = false
 autoexamples = false
