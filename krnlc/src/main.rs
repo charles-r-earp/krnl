@@ -6,7 +6,7 @@ use clap::Parser;
 use clap_cargo::{Manifest, Workspace};
 use fxhash::{FxHashMap, FxHashSet};
 use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
-use semver::{Version, VersionReq};
+use semver::Version;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use spirv_builder::{MetadataPrintout, ShaderPanicStrategy, SpirvBuilder, SpirvMetadata};
 use std::{
@@ -139,20 +139,16 @@ fn cargo_expand(
 // Should match krnl_macros
 fn krnlc_version_compatible(krnlc_version: &str, version: &str) -> bool {
     let krnlc_version = Version::parse(krnlc_version).unwrap();
-    let (version, req) = (
-        Version::parse(version).unwrap(),
-        VersionReq::parse(version).unwrap(),
-    );
-    if !req.matches(&krnlc_version) {
-        return false;
+    let version = Version::parse(version).unwrap();
+    if !krnlc_version.pre.is_empty() || !version.pre.is_empty() {
+        krnlc_version == version
+    } else if version.major == 0 && version.minor == 0 {
+        krnlc_version.major == 0 && krnlc_version.minor == 0 && krnlc_version.patch == version.patch
+    } else if version.major == 0 {
+        krnlc_version.major == 0 && krnlc_version.minor == version.minor
+    } else {
+        krnlc_version.major == version.major && krnlc_version.minor == version.minor
     }
-    if !krnlc_version.pre.is_empty() && krnlc_version < version {
-        return false;
-    }
-    if !version.pre.is_empty() && version != krnlc_version {
-        return false;
-    }
-    true
 }
 
 fn pretty_fmt(input: &str) -> Result<String> {
