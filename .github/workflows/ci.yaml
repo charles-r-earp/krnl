@@ -48,7 +48,7 @@ jobs:
     - name: install wasm-pack
       run: cargo install wasm-pack -vv
     - name: wasm test safari
-      if: ${{ runner.os == 'macos-latest' }}
+      if: ${{ runner.os == 'macOS' }}
       run: wasm-pack test --headless --safari -- --no-default-features --features serde -vv
       continue-on-error: true
       env:
