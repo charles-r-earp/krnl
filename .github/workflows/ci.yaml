@@ -149,7 +149,7 @@ jobs:
         cargo +nightly hack -p krnl -p krnl-core  rustdoc --all-features -v -- --cfg doc_cfg --D warnings
     - name: msrv
       run: |
-        cargo +nightly generate-lockfile -Zmsrv-policy
+        cargo +nightly generate-lockfile -Zmsrv-policy --config "resolver.something-like-precedence='something-like-rust-version'"
         cat Cargo.lock
         cargo +1.70.0 check --workspace --features serde --all-targets -v
   deny:
