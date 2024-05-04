@@ -56,7 +56,7 @@ jobs:
       run: wasm-pack test --headless --firefox -- --no-default-features --features serde -vv
       env:
         RUSTFLAGS: --cfg run_in_browser
-      continue-on-error: ${{ runner.os = 'macOS' }}
+      continue-on-error: ${{ runner.os == 'macOS' }}
   krnlc:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20
