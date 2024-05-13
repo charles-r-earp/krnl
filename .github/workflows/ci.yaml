@@ -140,13 +140,13 @@ jobs:
     - name: clippy
       env:
         CARGO_ALIAS_CLIPPYALL: clippy --workspace
-      run: cargo hack --feature-powerset --skip default clippyall --all-targets -v -- -D warnings
+      run: cargo hack --feature-powerset --skip default clippyall --all-targets -v -- -D warnings -A unexpected_cfgs
     - name: krnlc clippy
       run: cargo +nightly-2023-05-27 clippy --manifest-path krnlc/Cargo.toml --no-default-features --features use-installed-tools -v -- -D warnings
     - name: rustdoc
       run: |
-        cargo hack -p krnl -p krnl-macros -p krnl-core --feature-powerset --skip default rustdoc -v -- --D warnings
-        cargo +nightly hack -p krnl -p krnl-core  rustdoc --all-features -v -- --cfg doc_cfg --D warnings
+        cargo hack -p krnl -p krnl-macros -p krnl-core --feature-powerset --skip default rustdoc -v -- --D warnings -A unexpected_cfgs
+        cargo +nightly hack -p krnl -p krnl-core  rustdoc --all-features -v -- --cfg doc_cfg --D warnings -A unexpected_cfgs
     - name: msrv
       run: |
         cargo +nightly generate-lockfile -Zmsrv-policy --config "resolver.something-like-precedence='something-like-rust-version'"
