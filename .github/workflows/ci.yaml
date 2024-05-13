@@ -44,7 +44,10 @@ jobs:
         cargo test --workspace --no-default-features --features serde -v
         cargo test -p compute-benches --benches --no-default-features -v
     - name: miri test
-      run: cargo +nightly miri test --tests --no-default-features --features serde -v
+      run: |
+        cargo update half --precise 2.1.0 # miri doesn't support asm!
+        cargo +nightly miri test --tests --no-default-features --features serde -v
+        cargo update half@2
     - name: install wasm-pack
       run: cargo install wasm-pack -vv
     - name: wasm test safari
