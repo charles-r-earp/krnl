@@ -34,9 +34,9 @@ jobs:
     - name: install toolchains
       run: |
         rustup set profile minimal
-        rustup toolchain install stable --component rust-docs
-        rustup toolchain install nightly --component miri
-        rustup toolchain install nightly-2023-05-27 --component rust-src  rustc-dev  llvm-tools-preview
+        rustup toolchain install stable --component rust-docs --no-self-update
+        rustup toolchain install nightly --component miri --no-self-update
+        rustup toolchain install nightly-2023-05-27 --component rust-src  rustc-dev  llvm-tools-preview --no-self-update
     - name: build
       run: cargo build --workspace --features serde --all-targets -v
     - name: test
@@ -44,7 +44,10 @@ jobs:
         cargo test --workspace --no-default-features --features serde -v
         cargo test -p compute-benches --benches --no-default-features -v
     - name: miri test
-      run: cargo +nightly miri test --tests --no-default-features --features serde -v
+      run: |
+        cargo update half@2 --precise 2.2.0 # miri doesn't support asm!
+        cargo +nightly miri test --tests --no-default-features --features serde -v
+        cargo update half@2
     - name: install wasm-pack
       run: cargo install wasm-pack -vv
     - name: wasm test safari
@@ -85,8 +88,8 @@ jobs:
     - name: install toolchains
       run: |
         rustup set profile minimal
-        rustup toolchain install stable nightly
-        rustup toolchain install nightly-2023-05-27 --component rust-src  rustc-dev  llvm-tools-preview
+        rustup toolchain install stable nightly --no-self-update
+        rustup toolchain install nightly-2023-05-27 --component rust-src  rustc-dev  llvm-tools-preview --no-self-update
     - if: ${{ runner.os == 'Linux' }}
       name: Linux - Install native dependencies and spirv-tools
       run: |
@@ -128,9 +131,9 @@ jobs:
     - name: install toolchains
       run: |
         rustup set profile minimal
-        rustup toolchain install stable --component rustfmt clippy rust-docs
-        rustup toolchain install nightly 1.70.0
-        rustup toolchain install nightly-2023-05-27 --component rustfmt clippy rust-src rustc-dev llvm-tools-preview
+        rustup toolchain install stable --component rustfmt clippy rust-docs --no-self-update
+        rustup toolchain install nightly 1.70.0 --no-self-update
+        rustup toolchain install nightly-2023-05-27 --component rustfmt clippy rust-src rustc-dev llvm-tools-preview --no-self-update
     - name: fmt
       run: cargo fmt --check
     - name: krnlc fmt
@@ -140,13 +143,13 @@ jobs:
     - name: clippy
       env:
         CARGO_ALIAS_CLIPPYALL: clippy --workspace
-      run: cargo hack --feature-powerset --skip default clippyall --all-targets -v -- -D warnings
+      run: cargo hack --feature-powerset --skip default clippyall --all-targets -v -- -D warnings -A unexpected_cfgs
     - name: krnlc clippy
       run: cargo +nightly-2023-05-27 clippy --manifest-path krnlc/Cargo.toml --no-default-features --features use-installed-tools -v -- -D warnings
     - name: rustdoc
       run: |
-        cargo hack -p krnl -p krnl-macros -p krnl-core --feature-powerset --skip default rustdoc -v -- --D warnings
-        cargo +nightly hack -p krnl -p krnl-core  rustdoc --all-features -v -- --cfg doc_cfg --D warnings
+        cargo hack -p krnl -p krnl-macros -p krnl-core --feature-powerset --skip default rustdoc -v -- --D warnings -A unexpected_cfgs
+        cargo +nightly hack -p krnl -p krnl-core  rustdoc --all-features -v -- --cfg doc_cfg --D warnings -A unexpected_cfgs
     - name: msrv
       run: |
         cargo +nightly generate-lockfile -Zmsrv-policy --config "resolver.something-like-precedence='something-like-rust-version'"

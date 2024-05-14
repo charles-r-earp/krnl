@@ -23,7 +23,7 @@ paste = "1.0.7"
 bytemuck = "1.13.1"
 derive_more = { version = "0.99.11", default-features = false }
 anyhow = "1.0.60"
-half = { version = "=2.1.0", default-features = false, features = [
+half = { version = "2.1.0", default-features = false, features = [
     "num-traits",
 ] }
 num-traits = { version = "0.2.14", default-features = false }
