@@ -90,8 +90,8 @@ Compile with `krnlc` or `krnlc -p my-crate`.
 
 The cache allows packages to build with stable Rust, without recompiling kernels downstream:
 ```text
-__krnl_cache!("0.0.4", "
-abZy8000000@}Rn2yGJu{w.WVIuQ#sT$h4DaGh)Tk%#sdtgN ..
+__krnl_cache!("0.1.0", "
+abZy8000000@}Rn2BDn}/7A)@mn.pk3NcX{F^z.@l>4nckBq6ms3D<md5goETn#<^Op/(BnRwlm5HBw3ld4M0 ..
 ..
 ");
 ```
