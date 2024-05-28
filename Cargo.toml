@@ -2,7 +2,7 @@
 members = ["benches/*", "tests/*"]
 
 [workspace.package]
-version = "0.1.1"
+version = "0.1.2-alpha"
 authors = ["Charles R Earp <charles.r.earp@gmail.com>"]
 edition = "2021"
 rust-version = "1.70.0"
@@ -11,11 +11,11 @@ readme = "README.md"
 homepage = "https://github.com/charles-r-earp/krnl"
 repository = "https://github.com/charles-r-earp/krnl"
 license = "MIT OR Apache-2.0"
-publish = true
+publish = false
 
 [workspace.dependencies]
-krnl-macros = { path = "krnl-macros", version = "=0.1.1" }
-krnl-core = { path = "krnl-core", version = "=0.1.1" }
+krnl-macros = { path = "krnl-macros", version = "=0.1.2-alpha" }
+krnl-core = { path = "krnl-core", version = "=0.1.2-alpha" }
 krnl = { path = ".", default-features = false }
 serde = { version = "1.0.143", default-features = false, features = ["derive"] }
 dry = "0.1.1"

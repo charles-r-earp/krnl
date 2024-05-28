@@ -440,7 +440,7 @@ dependencies = [
 
 [[package]]
 name = "krnlc"
-version = "0.1.1"
+version = "0.1.2-alpha"
 dependencies = [
  "anyhow",
  "bincode2",
