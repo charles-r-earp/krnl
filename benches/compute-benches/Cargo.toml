@@ -6,7 +6,7 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 publish = false
-autobins = false 
+autobins = false
 autoexamples = false
 autotests = false
 autobenches = false
@@ -39,4 +39,8 @@ name = "benchmarks"
 harness = false
 required-features = ["device"]
 
-
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = [
+    'cfg(target_arch, values("spirv"))',
+    'cfg(krnlc)',
+] }
