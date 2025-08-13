@@ -89,7 +89,7 @@ jobs:
       run: |
         rustup set profile minimal
         rustup toolchain install stable nightly --no-self-update
-        rustup toolchain install nightly-2023-05-27 --component rust-src  rustc-dev  llvm-tools-preview --no-self-update
+        rustup toolchain install nightly-2023-05-27 --component rust-src,rustc-dev,llvm-tools-preview --no-self-update
     - if: ${{ runner.os == 'Linux' }}
       name: Linux - Install native dependencies and spirv-tools
       run: |
@@ -131,7 +131,7 @@ jobs:
     - name: install toolchains
       run: |
         rustup set profile minimal
-        rustup toolchain install stable --component rustfmt clippy rust-docs --no-self-update
+        rustup toolchain install stable --component,rustfmt,clippy,rust-docs --no-self-update
         rustup toolchain install nightly 1.70.0 --no-self-update
         rustup toolchain install nightly-2023-05-27 --component rustfmt,clippy,rust-src,rustc-dev,llvm-tools-preview --no-self-update
     - name: fmt
