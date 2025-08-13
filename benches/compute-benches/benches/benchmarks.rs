@@ -1,5 +1,3 @@
-#[cfg(feature = "autograph")]
-use compute_benches::autograph_backend::AutographBackend;
 #[cfg(feature = "cuda")]
 use compute_benches::cuda_backend::CudaBackend;
 use compute_benches::krnl_backend::KrnlBackend;

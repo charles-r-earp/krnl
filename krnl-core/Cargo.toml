@@ -44,3 +44,9 @@ serde = ["dep:serde", "half/serde"]
 [package.metadata.docs.rs]
 all-features = true
 rustdoc-args = ["--cfg", "doc_cfg"]
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = [
+    'cfg(target_arch, values("spirv"))',
+    'cfg(doc_cfg)',
+] }

@@ -35,6 +35,7 @@ struct InsideBracket<T> {
     value: T,
 }
 
+/*
 #[derive(Parse, Debug)]
 struct InsideBrace<T> {
     #[brace]
@@ -49,11 +50,12 @@ impl<T: ToTokens> ToTokens for InsideBrace<T> {
             .surround(tokens, |tokens| self.value.to_tokens(tokens));
     }
 }
+*/
 
 #[proc_macro_attribute]
 pub fn module(attr: TokenStream, item: TokenStream) -> TokenStream {
     if !attr.is_empty() {
-        return Error::new_spanned(&TokenStream2::from(attr), "unexpected tokens")
+        return Error::new_spanned(TokenStream2::from(attr), "unexpected tokens")
             .into_compile_error()
             .into();
     }
@@ -67,7 +69,7 @@ pub fn module(attr: TokenStream, item: TokenStream) -> TokenStream {
                 .path
                 .segments
                 .first()
-                .map_or(false, |x| x.ident == "krnl")
+                .is_some_and(|x| x.ident == "krnl")
         {
             let tokens = attr.tokens.clone().into();
             let args = syn::parse_macro_input!(tokens as ModuleKrnlArgs);
@@ -217,7 +219,7 @@ impl ToTokens for ModuleItem {
 #[proc_macro_attribute]
 pub fn kernel(attr: TokenStream, item: TokenStream) -> TokenStream {
     if !attr.is_empty() {
-        return Error::new_spanned(&TokenStream2::from(attr), "unexpected tokens")
+        return Error::new_spanned(TokenStream2::from(attr), "unexpected tokens")
             .into_compile_error()
             .into();
     }
