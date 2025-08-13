@@ -110,6 +110,7 @@ allow = [
     "ISC",
     "Zlib",
     "Unicode-DFS-2016",
+    "Unicode-3.0",
     "CC0-1.0",
 ]
 # List of explicitly disallowed licenses
