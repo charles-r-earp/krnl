@@ -36,7 +36,13 @@ paste.workspace = true
 
 [target.'cfg(target_arch = "spirv")'.dependencies]
 num-traits = { workspace = true, default-features = false, features = ["libm"] }
-half.workspace = true
+half = { version = ">=2.1.0,<=2.4.0", default-features = false, features = [
+    "num-traits",
+] }
+glam = { version = ">=0.24,<=0.24.2", default-features = false, features = [
+    "libm",
+] }
+libm = ">=0.2.0,<=0.2.11"
 
 [features]
 serde = ["dep:serde", "half/serde"]
