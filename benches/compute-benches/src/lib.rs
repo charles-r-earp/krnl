@@ -8,12 +8,7 @@ pub mod krnl_backend;
 pub mod ocl_backend;
 
 #[cfg(all(
-    any(
-        feature = "device",
-        feature = "autograph",
-        feature = "cuda",
-        feature = "ocl"
-    ),
+    any(feature = "device", feature = "cuda", feature = "ocl"),
     debug_assertions
 ))]
 fn saxpy_host(x: &[f32], alpha: f32, y: &mut [f32]) {

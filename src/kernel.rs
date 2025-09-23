@@ -1195,7 +1195,7 @@ pub mod __private {
         pub fn features(&self) -> Features {
             #[cfg(feature = "device")]
             {
-                return self.inner.desc().features;
+                self.inner.desc().features
             }
             #[cfg(not(feature = "device"))]
             {

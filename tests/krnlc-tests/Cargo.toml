@@ -16,3 +16,9 @@ dry.workspace = true
 paste = {}
 dry = {}
 test-dependency = { path = "test-dependency" }
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = [
+    'cfg(target_arch, values("spirv"))',
+    'cfg(krnlc)',
+] }
