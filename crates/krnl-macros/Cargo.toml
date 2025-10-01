@@ -1,0 +1,33 @@
+[package]
+name = "krnl-macros"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+#rust-version.workspace = true
+description = "Macros for krnl."
+documentation.workspace = true
+readme.workspace = true
+homepage.workspace = true
+repository.workspace = true
+license.workspace = true
+publish.workspace = true
+autobins = false
+autoexamples = false
+autobenches = false
+
+[lib]
+proc-macro = true
+test = false
+doctest = false
+bench = false
+
+[dependencies]
+derive-syn-parse = "0.2.0"
+fxhash = "0.2.1"
+derive_more = { workspace = true, features = ["display", "is_variant"] }
+itertools.workspace = true
+prettyplease = "0.2.35"
+syn_derive = "0.2.0"
+proc-macro2.workspace = true
+quote.workspace = true
+syn = { workspace = true, features = ["full", "visit", "visit-mut"] }

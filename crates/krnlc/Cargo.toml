@@ -1,0 +1,68 @@
+[package]
+name = "krnlc"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+#rust-version.workspace = true
+description = "Kernel compiler for krnl."
+documentation.workspace = true
+readme.workspace = true
+homepage.workspace = true
+repository.workspace = true
+license.workspace = true
+publish.workspace = true
+autoexamples = false
+autotests = false
+autobenches = false
+
+[lib]
+test = false
+doctest = false
+bench = false
+
+[build-dependencies]
+rustversion = "1.0.12"
+vergen = { version = "8.2.6", features = ["git", "gitcl"] }
+
+[dependencies]
+krnl-core.workspace = true
+cargo-gpu = { git = "https://github.com/Rust-GPU/cargo-gpu", optional = true }
+spirv-tools = { version = "0.12", default-features = false }
+spirt = "0.4.0"
+camino = "1.1.10"
+cargo_metadata = { version = "0.19.0", features = ["builder"], optional = true }
+clap = { version = "4.5", optional = true }
+clap-cargo = { version = "0.15.2", features = [
+    "cargo_metadata",
+], optional = true }
+fxhash = "0.2.1"
+spirv_headers = "1.5.0"
+bytemuck = "1.23.1"
+smallvec = "1.15.1"
+indexmap = "2.9.0"
+color-print = "0.3.7"
+proc-macro2 = { workspace = true, optional = true }
+quote = { workspace = true, optional = true }
+syn = { workspace = true, features = [], optional = true }
+num-traits.workspace = true
+derive_more = { workspace = true, features = ["is_variant"] }
+itertools.workspace = true
+rayon.workspace = true
+rspirv = { workspace = true, optional = true }
+
+[features]
+default = ["use-installed-tools", "cli", "rust-in", "print", "bindings", "jit"]
+use-installed-tools = ["spirv-tools/use-installed-tools"]
+use-compiled-tools = ["spirv-tools/use-compiled-tools"]
+cli = ["clap", "clap-cargo"]
+print = []
+rust-in = ["cargo-gpu", "cargo_metadata"]
+bindings = ["proc-macro2", "quote", "syn", "rspirv"]
+jit = []
+
+[[bin]]
+name = "krnlc"
+required-features = ["cli"]
+test = false
+doctest = false
+bench = false

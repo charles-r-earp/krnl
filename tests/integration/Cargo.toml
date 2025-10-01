@@ -1,0 +1,26 @@
+[package]
+name = "integration-tests"
+version = "0.1.0"
+edition.workspace = true
+publish = false
+autobenches = false
+
+[lib]
+doctest = false
+
+[dependencies]
+dry.workspace = true
+krnl = { workspace = true }
+paste.workspace = true
+
+[target.'cfg(target_family = "wasm")'.dependencies]
+wasm-bindgen-test = "0.3.50"
+maybe-async = "0.2.10"
+
+[target.'cfg(not(target_family = "wasm"))'.dependencies]
+maybe-async = { version = "0.2.10", features = ["is_sync"] }
+
+[features]
+default = []
+run_in_browser = []
+device = ["krnl/device"]

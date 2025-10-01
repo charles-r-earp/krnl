@@ -1,0 +1,33 @@
+[package]
+name = "krnl-core"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+#rust-version.workspace = true
+description = "Core library for krnl."
+documentation.workspace = true
+readme.workspace = true
+homepage.workspace = true
+repository.workspace = true
+license.workspace = true
+publish.workspace = true
+autobins = false
+autoexamples = false
+autotests = false
+autobenches = false
+
+[lib]
+test = false
+doctest = false
+bench = false
+
+[dependencies]
+paste.workspace = true
+half.workspace = true
+derive_more = { workspace = true, features = ["display", "debug"] }
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = [
+    'cfg(target_arch, values("spirv"))',
+    'cfg(krnlc)',
+] }

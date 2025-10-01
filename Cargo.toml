@@ -1,11 +1,11 @@
 [workspace]
-members = ["benches/*", "tests/*"]
+resolver = "2"
+members = ["examples/*", "crates/*", "tests/*"]
 
 [workspace.package]
-version = "0.1.2-alpha"
+version = "0.2.0"
 authors = ["Charles R Earp <charles.r.earp@gmail.com>"]
-edition = "2021"
-rust-version = "1.70.0"
+edition = "2024"
 documentation = "https://docs.rs/krnl"
 readme = "README.md"
 homepage = "https://github.com/charles-r-earp/krnl"
@@ -14,123 +14,26 @@ license = "MIT OR Apache-2.0"
 publish = false
 
 [workspace.dependencies]
-krnl-macros = { path = "krnl-macros", version = "=0.1.2-alpha" }
-krnl-core = { path = "krnl-core", version = "=0.1.2-alpha" }
-krnl = { path = ".", default-features = false }
-serde = { version = "1.0.143", default-features = false, features = ["derive"] }
+krnl = { path = "crates/krnl" }
+krnlc = { path = "crates/krnlc", default-features = false }
+krnl-macros = { path = "crates/krnl-macros" }
+krnl-core = { path = "crates/krnl-core" }
+krnl-types = { path = "crates/krnl-types", default-features = false }
+spirv-std = { git = "https://github.com/Rust-GPU/rust-gpu", rev = "8ee9f2f" }
+bytemuck = { version = "1.23.1", features = ["min_const_generics"] }
+derive_more = { version = "2.0.1", default-features = false }
 dry = "0.1.1"
-paste = "1.0.7"
-bytemuck = "1.13.1"
-derive_more = { version = "0.99.11", default-features = false }
-anyhow = "1.0.60"
-half = { version = "2.1.0", default-features = false, features = [
-    "num-traits",
-] }
-num-traits = { version = "0.2.14", default-features = false }
-thiserror = "1.0.31"
-bincode2 = "2.0.1"
-rspirv = "0.11.0"
-flate2 = "1.0.25"
-hex = "0.4.3"
-rustversion = "1.0.12"
-clap = { version = "4.2.4", features = ["derive"] }
+paste = "1.0.15"
 fxhash = "0.2.1"
-itertools = "0.12.1"
-
-[package]
-name = "krnl"
-version.workspace = true
-authors.workspace = true
-edition.workspace = true
-rust-version.workspace = true
-description = "Safe, portable, high performance compute (GPGPU) kernels."
-documentation.workspace = true
-readme.workspace = true
-homepage.workspace = true
-repository.workspace = true
-license.workspace = true
-keywords = ["kernel", "compute", "vulkan", "gpu"]
-categories = ["hardware-support", "science", "mathematics"]
-publish.workspace = true
-autobins = false
-autoexamples = false
-autotests = false
-autobenches = false
-
-[dependencies]
-krnl-macros.workspace = true
-krnl-core.workspace = true
-serde = { workspace = true, default-features = false, features = [
-    "derive",
-    "rc",
-], optional = true }
-serde_bytes = { version = "0.11.9", optional = true }
-anyhow.workspace = true
-half = { workspace = true, features = ["std"] }
-num-traits = { workspace = true, features = ["std"] }
-paste.workspace = true
-dry.workspace = true
-derive_more = { workspace = true, features = ["deref", "deref_mut"] }
-thiserror.workspace = true
-parking_lot = "0.12.1"
-bytemuck.workspace = true
-flate2.workspace = true
-dashmap = { version = "5.3.4", optional = true }
-rspirv = { workspace = true, optional = true }
-fxhash = { workspace = true, optional = true }
-itertools.workspace = true
-
-[target.'cfg(not(target_family = "wasm"))'.dependencies]
-vulkano = { version = "0.33.0", optional = true, default-features = false }
-ash = { version = "0.37.1", optional = true }
-crossbeam-channel = { version = "0.5.8", optional = true }
-
-[features]
-default = ["device"]
-# Enables device functionality. Not supported on the web.
-device = [
-    "dep:vulkano",
-    "dep:ash",
-    "dep:dashmap",
-    "dep:rspirv",
-    "dep:fxhash",
-    "dep:crossbeam-channel",
-]
-serde = ["dep:serde", "dep:serde_bytes", "krnl-core/serde"]
-
-[package.metadata.docs.rs]
-all-features = true
-rustdoc-args = ["--cfg", "doc_cfg"]
-
-[package.metadata.krnlc]
-default-features = false
-features = ["device"]
-
-[package.metadata.krnlc.dependencies]
-dry = {}
-paste = {}
-
-[[test]]
-name = "integration_tests"
-path = "tests/integration_tests.rs"
-harness = false
-
-[dev-dependencies]
-bincode2.workspace = true
-serde_json = "1.0.96"
-serde_test = "1.0.160"
-
-[target.'cfg(not(target_family = "wasm"))'.dev-dependencies]
-libtest-mimic = "0.6.0"
-# removes broken is_terminal dep for libtest-mimic on windows
-clap.workspace = true
-
-[target.'cfg(target_family = "wasm")'.dev-dependencies]
-wasm-bindgen-test = "0.3.33"
-
-[lints.rust]
-unexpected_cfgs = { level = "warn", check-cfg = [
-    'cfg(target_arch, values("spirv"))',
-    'cfg(krnlc)',
-    'cfg(doc_cfg)',
+half = { version = "2.6.0", default-features = false, features = [
+    "num-traits",
+    "bytemuck",
 ] }
+rayon = "1.10.0"
+num-traits = { version = "0.2.19", default-features = false }
+itertools = "0.14.0"
+proc-macro2 = "1.0.95"
+quote = "1.0.40"
+syn = "2.0.101"
+#rspirv = "0.12.0"
+rspirv = { git = "https://github.com/LegNeato/rspirv", branch = "localsizeid" }
