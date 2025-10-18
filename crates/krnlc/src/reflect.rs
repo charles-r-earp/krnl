@@ -4,28 +4,27 @@ use crate::{
 };
 use fxhash::{FxBuildHasher, FxHasher};
 use indexmap::{
-    map::{MutableEntryKey, MutableKeys},
     IndexMap, IndexSet,
+    map::{MutableEntryKey, MutableKeys},
 };
 use krnl_core::__private::__KrnlInst as KrnlInst;
 use num_traits::FromPrimitive;
 use smallvec::SmallVec;
 use spirt::{
-    print::Plan,
-    spv::{
-        encode_literal_string, extract_literal_string,
-        spec::{ExtInstSetDesc, ExtInstSetInstructionDesc, Spec},
-        Imm, Inst,
-    },
-    transform::{InnerInPlaceTransform, Transformer},
-    visit::{InnerVisit, Visit, Visitor},
     AddrSpace, Attr, AttrSet, AttrSetDef, Const, ConstDef, ConstKind, Context, DataInst,
     DataInstDef, DataInstForm, DataInstFormDef, DataInstKind, DeclDef, ExportKey, Exportee, Func,
     GlobalVar, GlobalVarDecl, GlobalVarDefBody, InternedStr, Module, ModuleDialect, Type, TypeDef,
     TypeKind, TypeOrConst, Value,
+    print::Plan,
+    spv::{
+        Imm, Inst, encode_literal_string, extract_literal_string,
+        spec::{ExtInstSetDesc, ExtInstSetInstructionDesc, Spec},
+    },
+    transform::{InnerInPlaceTransform, Transformer},
+    visit::{InnerVisit, Visit, Visitor},
 };
 use spirv_headers::{Capability, Decoration, ExecutionModel, MemoryModel, StorageClass};
-use spirv_tools::{binary::Binary, opt::Optimizer, val::Validator, TargetEnv};
+use spirv_tools::{TargetEnv, binary::Binary, opt::Optimizer, val::Validator};
 use std::{
     collections::{BTreeMap, BTreeSet},
     rc::Rc,
@@ -185,8 +184,11 @@ impl KernelDesc {
                         let name = extract_literal_string(&inst.imms[1..]).unwrap();
                         push_constants[member as usize].name = name;
                     } else if opcode == spec.well_known.OpMemberDecorate {
-                        if let [Imm::Short(_, member), Imm::Short(_, decoration), Imm::Short(_, offset)] =
-                            inst.imms.as_slice()
+                        if let [
+                            Imm::Short(_, member),
+                            Imm::Short(_, decoration),
+                            Imm::Short(_, offset),
+                        ] = inst.imms.as_slice()
                         {
                             let decoration = Decoration::from_u32(*decoration).unwrap();
                             if decoration == Decoration::Offset {
@@ -720,6 +722,18 @@ impl Features {
         };
         module.visit_with(&mut visitor);
         visitor.features
+    }
+    pub(crate) fn wgsl(mut self, wgsl: bool) -> Self {
+        if !wgsl {
+            return self;
+        }
+        self.capabilities.retain(|x| {
+            !matches!(
+                x,
+                Capability::VariablePointers | Capability::VariablePointersStorageBuffer
+            )
+        });
+        self
     }
     pub(crate) fn write_to_module(&self, module: &mut Module) {
         let ModuleDialect::Spv(ref mut dialect) = module.dialect;

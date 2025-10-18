@@ -329,6 +329,12 @@ pub(crate) struct Kernel {
 
 #[cfg(feature = "device")]
 impl Kernel {
+    pub(crate) fn device(&self) -> Device {
+        Device {
+            raw: self.raw.device().clone(),
+        }
+    }
+
     pub(crate) fn get_or_create(
         device: Device,
         key: KernelKey,
@@ -361,6 +367,13 @@ pub(crate) struct BufferBindingVec(Vec<RawBufferBinding>);
 
 #[cfg(feature = "device")]
 impl BufferBindingVec {
+    pub(crate) fn set_slice<T: Pod>(&mut self, index: usize, slice: &Slice<T>) {
+        self.0[index] = RawBufferBinding {
+            slice: slice.raw.clone(),
+            mutable: false,
+        };
+    }
+
     pub(crate) fn with_capacity(capacity: usize) -> Self {
         Self(Vec::with_capacity(capacity))
     }

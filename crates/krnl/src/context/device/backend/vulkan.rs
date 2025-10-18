@@ -1,22 +1,18 @@
-use super::{BufferRange, DeviceSpecifier};
+use super::{BufferRange, DeviceOwned, DeviceSpecifier, Properties};
 use crate::{
-    Result, buffer,
-    context::device::backend::{DeviceOwned, Properties},
+    Result,
     kernel::{KernelCreateInfo, KernelDesc, KernelKey},
 };
-use ash::vk::SpecializationMapEntry;
-use bytemuck::bytes_of;
-use core::{mem::ManuallyDrop, u64};
+use core::u64;
 use fxhash::FxHashMap;
 use parking_lot::{ArcMutexGuard, Mutex, RawMutex, RwLock};
 use std::{
-    collections::{HashMap, VecDeque},
+    collections::VecDeque,
     ffi::CString,
     sync::{
         Arc,
         atomic::{AtomicU64, Ordering},
     },
-    time::Instant,
 };
 use vk_mem::Alloc as _;
 
@@ -88,30 +84,55 @@ impl RawDevice {
                     .queue_priorities(&queue_priorities)
             })
             .collect();
-        let supported_physical_device_features = unsafe {
-            backend
-                .instance
-                .get_physical_device_features(physical_device)
+        let mut supported_physical_device_features2 = ash::vk::PhysicalDeviceFeatures2::default();
+        let mut supported_physical_device_vulkan11_features =
+            ash::vk::PhysicalDeviceVulkan11Features::default();
+        let mut supported_physical_device_vulkan12_features =
+            ash::vk::PhysicalDeviceVulkan12Features::default();
+        supported_physical_device_features2 = supported_physical_device_features2
+            .push_next(&mut supported_physical_device_vulkan11_features)
+            .push_next(&mut supported_physical_device_vulkan12_features);
+        unsafe {
+            backend.instance.get_physical_device_features2(
+                physical_device,
+                &mut supported_physical_device_features2,
+            );
         };
-        let mut physical_device_features = ash::vk::PhysicalDeviceFeatures::default()
+        let supported_physical_device_features = supported_physical_device_features2.features;
+        let physical_device_features = ash::vk::PhysicalDeviceFeatures::default()
             .robust_buffer_access(true)
             .shader_int16(supported_physical_device_features.shader_int16 != 0)
             .shader_int64(supported_physical_device_features.shader_int64 != 0)
             .shader_float64(supported_physical_device_features.shader_float64 != 0);
         let mut vulkan11_features = ash::vk::PhysicalDeviceVulkan11Features::default()
-            .variable_pointers_storage_buffer(true);
+            .variable_pointers_storage_buffer(true)
+            .storage_buffer16_bit_access(
+                supported_physical_device_vulkan11_features.storage_buffer16_bit_access != 0,
+            )
+            .storage_push_constant16(
+                supported_physical_device_vulkan11_features.storage_push_constant16 != 0,
+            );
         let mut vulkan12_features = ash::vk::PhysicalDeviceVulkan12Features::default()
             .timeline_semaphore(true)
-            .vulkan_memory_model(true);
+            .vulkan_memory_model(true)
+            .shader_int8(supported_physical_device_vulkan12_features.shader_int8 != 0)
+            .storage_buffer8_bit_access(
+                supported_physical_device_vulkan12_features.storage_buffer8_bit_access != 0,
+            )
+            .storage_push_constant8(
+                supported_physical_device_vulkan12_features.storage_push_constant8 != 0,
+            );
         let mut vulkan13_features = ash::vk::PhysicalDeviceVulkan13Features::default()
             .maintenance4(true)
             .subgroup_size_control(true);
-        let device_create_info = ash::vk::DeviceCreateInfo::default()
-            .queue_create_infos(&queue_create_infos)
-            //    .push_next(&mut physical_device_features)
+        let mut physical_device_features2 = ash::vk::PhysicalDeviceFeatures2::default()
+            .features(physical_device_features)
             .push_next(&mut vulkan11_features)
             .push_next(&mut vulkan12_features)
             .push_next(&mut vulkan13_features);
+        let device_create_info = ash::vk::DeviceCreateInfo::default()
+            .queue_create_infos(&queue_create_infos)
+            .push_next(&mut physical_device_features2);
         let mut physical_device_properties = ash::vk::PhysicalDeviceProperties2::default();
         let mut vulkan13_properties = ash::vk::PhysicalDeviceVulkan13Properties::default();
         // TODO: This doesn't work
@@ -123,6 +144,10 @@ impl RawDevice {
                 .get_physical_device_properties2(physical_device, &mut physical_device_properties);
         }
         let properties = Properties {
+            max_buffer_size: physical_device_properties
+                .properties
+                .limits
+                .max_storage_buffer_range,
             min_subgroup_threads: vulkan13_properties.min_subgroup_size,
             max_subgroup_threads: vulkan13_properties.max_subgroup_size,
         };
@@ -1217,7 +1242,7 @@ impl super::Slice for Slice {
                 event.wait()?;
             }
             unsafe {
-                (&mut *host_buffer.raw.mapped_slice.unwrap()).copy_from_slice(chunk);
+                (&mut *host_buffer.raw.mapped_slice.unwrap())[..chunk.len()].copy_from_slice(chunk);
             }
             let event = command_buffer.submit()?;
             offset += chunk.len();
@@ -1273,6 +1298,7 @@ impl super::Slice for Slice {
         host_buffer.event.replace(command_buffer.submit()?);
         let mut chunk_iter = bytes.chunks_mut(HOST_BUFFER_LEN).peekable();
         while let Some(chunk) = chunk_iter.next() {
+            offset += chunk.len();
             let command_buffer = if let Some((chunk, host_buffer)) =
                 chunk_iter.peek().zip(host_buffers.second.as_mut())
             {
@@ -1291,13 +1317,16 @@ impl super::Slice for Slice {
                 event.wait()?;
             }
             let host_buffer = &mut host_buffers.first;
-            host_buffer.event.take().unwrap().wait()?;
+            if let Some(event) = host_buffer.event.take() {
+                event.wait()?;
+            }
+            let chunk_len = chunk.len();
             unsafe {
-                chunk.copy_from_slice(&*host_buffer.raw.mapped_slice.unwrap());
+                chunk.copy_from_slice(&(&*host_buffer.raw.mapped_slice.unwrap())[..chunk_len]);
             }
             if let Some(command_buffer) = command_buffer {
+                let host_buffer = host_buffers.second.as_mut().unwrap();
                 host_buffer.event.replace(command_buffer.submit()?);
-                offset += chunk.len();
                 host_buffers.swap();
             }
         }

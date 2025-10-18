@@ -51,14 +51,13 @@ rayon.workspace = true
 rspirv = { workspace = true, optional = true }
 
 [features]
-default = ["use-installed-tools", "cli", "rust-in", "print", "bindings", "jit"]
+default = ["use-installed-tools", "cli", "rust-in", "print", "bindings"]
 use-installed-tools = ["spirv-tools/use-installed-tools"]
 use-compiled-tools = ["spirv-tools/use-compiled-tools"]
 cli = ["clap", "clap-cargo"]
 print = []
 rust-in = ["cargo-gpu", "cargo_metadata"]
 bindings = ["proc-macro2", "quote", "syn", "rspirv"]
-jit = []
 
 [[bin]]
 name = "krnlc"

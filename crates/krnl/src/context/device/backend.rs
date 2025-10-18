@@ -28,6 +28,7 @@ pub(super) trait Backend {
 
 #[derive(Clone, Copy, Debug)]
 pub(super) struct Properties {
+    max_buffer_size: u32,
     min_subgroup_threads: u32,
     max_subgroup_threads: u32,
 }

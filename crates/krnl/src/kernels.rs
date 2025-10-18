@@ -3,7 +3,7 @@ use crate::{
     macros::{host_only, kernel},
     scalar::Scalar,
 };
-use num_traits::AsPrimitive;
+use num_traits::{AsPrimitive, FromPrimitive};
 host_only! {
     use crate::{Result, scalar::Element, buffer::{BufferBase, Buffer, Data, DataMut}, kernel::KernelDef};
 }
@@ -24,15 +24,33 @@ pub fn fill_u32(x: u32, #[kernel(item)] y: &mut u32) {
 }
 
 #[kernel]
-pub fn fill_u32x2(x: [u32; 2], #[kernel(item)] y: &mut [u32; 2]) {
-    *y = x;
+pub fn fill_u32x2(x1: u32, x2: u32, #[kernel(item)] y: &mut [u32; 2]) {
+    *y = [x1, x2];
 }
 
 #[kernel]
-pub fn cast<X: Scalar + AsPrimitive<Y>, Y: Scalar>(
+pub fn cast<X: Scalar + AsPrimitive<Y> + AsPrimitive<u32>, Y: Scalar + FromPrimitive>(
     #[kernel(item)] x: X,
     #[kernel(item)] y: &mut Y,
 ) {
+    use krnl::scalar::ScalarType;
+
+    if const { ScalarType::of::<X>() as u32 == ScalarType::of::<u8>() as u32 } {
+        let x: u32 = x.as_();
+        if const { ScalarType::of::<Y>() as u32 == ScalarType::of::<i16>() as u32 } {
+            *y = Y::from_i16(x as i16).unwrap();
+            return;
+        }
+        if const { ScalarType::of::<Y>() as u32 == ScalarType::of::<i32>() as u32 } {
+            *y = Y::from_i32(x as i32).unwrap();
+            return;
+        }
+        if const { ScalarType::of::<Y>() as u32 == ScalarType::of::<i64>() as u32 } {
+            *y = Y::from_i64(x as i64).unwrap();
+            return;
+        }
+    }
+
     *y = x.as_();
 }
 
@@ -46,7 +64,7 @@ host_only! {
                 return Ok(());
             }
             if let Some(y) = self.as_slice_mut().try_bitcast_mut::<[u32; 2]>() {
-                let x = if const { size_of::<T>() == 8 } {
+                let [x1, x2] = if const { size_of::<T>() == 8 } {
                     bytemuck::cast(x)
                 } else if const { size_of::<T>() == 4 } {
                     let x: u32 = bytemuck::cast(x);
@@ -58,7 +76,7 @@ host_only! {
                     let x: u8 = bytemuck::cast(x);
                     bytemuck::cast([x; 8])
                 };
-                fill_u32x2::builder(()).build(y.context())?.exec((x, y))?;
+                fill_u32x2::builder(()).build(y.context())?.exec((x1, x2, y))?;
                 Ok(())
             } else if let Some(y) = self.as_slice_mut().try_bitcast_mut::<u32>() {
                 let x = if const { size_of::<T>() == 4 } {
@@ -91,60 +109,21 @@ host_only! {
     }
 
     impl<T: Scalar, S: Data<Elem = T>> BufferBase<S> {
-        pub fn cast<Y: Scalar>(self) -> Result<Buffer<Y>>
+        pub fn cast<Y: Scalar + FromPrimitive>(self) -> Result<Buffer<Y>>
         where
-            T: AsPrimitive<Y>,
+            T: AsPrimitive<Y> + AsPrimitive<u32>,
         {
             let x = self.as_slice();
+            if let Some(x) = x.as_slice().into_host_slice() {
+                let y: Vec<Y> = x.iter().copied().map(|x| x.as_()).collect();
+                return Ok(y.into());
+            }
             let mut y = unsafe { Buffer::uninit(self.context(), self.len())? };
             cast::builder(())
+                .threads(1)
                 .build(y.context())?
                 .exec((x, y.as_slice_mut()))?;
             Ok(y)
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use crate::{
-        buffer::{Buffer, Slice},
-        context::{Context, Device},
-    };
-
-    #[cfg(feature = "device")]
-    #[test]
-    fn fill_device() {
-        let context = Context::Device(Device::builder().build().unwrap());
-        let n = 10;
-        let mut y = unsafe { Buffer::uninit(context, n).unwrap() };
-        y.fill(1).unwrap();
-        let y = y.into_vec().unwrap();
-        assert_eq!(y, vec![1u32; n]);
-    }
-
-    #[cfg(feature = "device")]
-    #[test]
-    fn zeros_device() {
-        let context = Context::Device(Device::builder().build().unwrap());
-        let n = 10;
-        let y = Buffer::<f32>::zeros(context, n).unwrap();
-        let y = y.into_vec().unwrap();
-        assert_eq!(y, vec![0f32; n]);
-    }
-
-    #[cfg(feature = "device")]
-    #[test]
-    fn cast_u32_f32_device() {
-        let context = Context::Device(Device::builder().build().unwrap());
-        let n = 10;
-        let x_vec: Vec<u32> = (1..=n).map(|x| x as u32).collect();
-        let y_vec: Vec<f32> = x_vec.iter().copied().map(|x| x as f32).collect();
-        let x = Slice::from(x_vec.as_slice())
-            .into_context(context.clone())
-            .unwrap();
-        let y = x.cast::<f32>().unwrap();
-        let y = y.into_vec().unwrap();
-        assert_eq!(y, y_vec);
     }
 }

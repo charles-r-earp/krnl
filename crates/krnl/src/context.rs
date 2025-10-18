@@ -1,7 +1,6 @@
 use crate::Result;
 use bytemuck::Pod;
 use derive_more::From;
-use std::marker::PhantomData;
 
 pub mod device;
 pub use device::Device;
@@ -147,7 +146,7 @@ impl<T: Pod> Slice<'_, T> {
             #[cfg(feature = "device")]
             Self::Device(slice) => {
                 let mut output = vec![T::zeroed(); slice.len()];
-                slice.download_async(&mut output).await;
+                slice.download_async(&mut output).await?;
                 Ok(output)
             }
         }

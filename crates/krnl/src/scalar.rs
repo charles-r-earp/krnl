@@ -1,9 +1,4 @@
 use bytemuck::Pod;
-use core::{
-    any::TypeId,
-    fmt::{Debug, Display},
-    num::NonZeroU8,
-};
 use derive_more::Display;
 use dry::macro_for;
 pub use half::{bf16, f16};
@@ -16,7 +11,7 @@ use sealed::Sealed;
 
 pub unsafe trait DeviceCopy: Copy + Send + Sync + Pod + Sealed {
     #[cfg(target_arch = "spirv")]
-    unsafe fn __data_type<V>(var: *const V) {}
+    unsafe fn __data_type<V>(#[allow(unused_variables)] var: *const V) {}
 }
 
 unsafe impl<T: Scalar, const N: usize> DeviceCopy for [T; N] {

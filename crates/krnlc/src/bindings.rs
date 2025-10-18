@@ -1,5 +1,5 @@
 use crate::reflect::{
-    get_scalar_type, BufferDesc, ElementType, KernelDesc, PushConstantDesc, UsedGlobals,
+    BufferDesc, ElementType, Features, KernelDesc, PushConstantDesc, UsedGlobals, get_scalar_type,
 };
 use crate::scalar::ScalarType;
 use crate::spirv::{
@@ -12,39 +12,38 @@ use camino::{Utf8Path, Utf8PathBuf};
 use derive_more::IsVariant;
 use fxhash::FxBuildHasher;
 use indexmap::{
-    map::{MutableEntryKey, MutableKeys},
     IndexMap, IndexSet,
+    map::{MutableEntryKey, MutableKeys},
 };
 use krnl_core::__private::__KrnlInst as KrnlInst;
 use proc_macro2::{Span, TokenStream};
-use quote::{format_ident, quote, ToTokens};
-use rayon::iter::{IntoParallelRefMutIterator, ParallelIterator};
+use quote::{ToTokens, format_ident, quote};
+use rayon::iter::{IndexedParallelIterator, IntoParallelIterator, ParallelIterator};
 use smallvec::SmallVec;
 use spirt::{
-    spv::{
-        encode_literal_string, extract_literal_string,
-        spec::{ExtInstSetDesc, ExtInstSetInstructionDesc, Spec},
-        Imm, Inst,
-    },
-    transform::{InnerInPlaceTransform, Transformer},
-    visit::{InnerVisit, Visitor},
     AddrSpace, Attr, AttrSet, AttrSetDef, Const, ConstDef, ConstKind, Context, ControlNodeKind,
     DataInst, DataInstDef, DataInstForm, DataInstFormDef, DataInstKind, DeclDef, ExportKey,
     Exportee, Func, GlobalVar, GlobalVarDecl, GlobalVarDefBody, InternedStr, Module, Type, TypeDef,
     TypeKind, TypeOrConst, Value,
+    spv::{
+        Imm, Inst, encode_literal_string, extract_literal_string,
+        spec::{ExtInstSetDesc, ExtInstSetInstructionDesc, Spec},
+    },
+    transform::{InnerInPlaceTransform, Transformer},
+    visit::{InnerVisit, Visitor},
 };
 use spirv_headers::{Decoration, ExecutionModel, StorageClass};
 use spirv_tools::{
-    binary::Binary,
-    opt::{Optimizer, Options as OptimizerOptions},
-    val::Validator,
     TargetEnv,
+    binary::Binary,
+    opt::{Optimizer, Options as OptimizerOptions, Passes},
+    val::Validator,
 };
 use std::{
     collections::{BTreeMap, BTreeSet},
     rc::Rc,
 };
-use syn::{buffer, Ident, LitInt};
+use syn::{Ident, LitInt, buffer};
 
 #[derive(Default)]
 pub struct BindingsBuilder {
@@ -70,7 +69,8 @@ impl BindingsBuilder {
             let path = manifest_dir.join("krnl.spv");
             std::fs::read(path)?
         };
-        for kernel in process(spirv) {
+        let kernels = process(spirv);
+        for kernel in kernels {
             let name = &kernel.sig.name;
             let path = name.replace("::", "__");
             let output = kernel.emit();
@@ -81,11 +81,13 @@ impl BindingsBuilder {
     }
 }
 
-fn process(spirv: Vec<u8>) -> impl Iterator<Item = Kernel> {
+fn process(spirv: Vec<u8>) -> Vec<Kernel> {
+    let target_family = std::env::var("CARGO_CFG_TARGET_FAMILY").unwrap();
+    let debug_assertions = std::env::var("CARGO_CFG_DEBUG_ASSERTIONS").is_ok();
+    let non_semantic_info = target_family != "wasm" && debug_assertions;
     let context = Rc::new(Context::new());
     context.register_custom_ext_inst_set(KrnlInst::SET_NAME, krnl_inst_set());
     let mut module = Module::lower_from_spv_bytes(context.clone(), spirv).unwrap();
-    //println!("{}", spirt::print::Plan::for_module(&module).pretty_print());
     let sigs: Vec<_> = module
         .exports
         .keys()
@@ -100,37 +102,45 @@ fn process(spirv: Vec<u8>) -> impl Iterator<Item = Kernel> {
     );
     rename_entry_points(&mut module, "main");
     spirt::passes::legalize::structurize_func_cfgs(&mut module);
-    /*
-    {
-        let words = assemble(&module).unwrap();
-        validate(&words).expect("spirv-val");
-    }
-    */
-    let mut spirvs: Vec<_> = split_entry_points(&module).collect();
-    spirvs.par_iter_mut().for_each(|spirv| {
-        use rspirv::binary::{Assemble, Disassemble};
-        {
-            use rspirv::binary::{Assemble, Disassemble};
-
-            let module = rspirv::dr::load_words(&spirv).unwrap();
-            let mut builder = rspirv::dr::Builder::new_from_module(module);
-            fix_execution_mode(&mut builder);
-            *spirv = builder.module().assemble();
-            validate(spirv).expect("spirv-val after fix_execution_mode");
-        }
-        let binary = spirv_tools::opt::create(Some(TargetEnv::Vulkan_1_3))
-            .register_performance_passes()
-            .optimize(&spirv, &mut |_| (), None)
-            .unwrap();
-        *spirv = if let Binary::OwnedU32(words) = binary {
-            words
-        } else {
-            binary.as_words().to_vec()
-        };
-    });
-    sigs.into_iter()
+    let spirvs: Vec<_> = split_entry_points(&module, target_family == "wasm").collect();
+    let kernels = sigs
+        .into_par_iter()
         .zip(spirvs)
-        .map(|(sig, spirv)| Kernel { sig, spirv })
+        .map(|(sig, mut spirv)| {
+            use rspirv::binary::{Assemble, Disassemble};
+            {
+                use rspirv::binary::{Assemble, Disassemble};
+
+                let module = rspirv::dr::load_words(&spirv).unwrap();
+                let mut builder = rspirv::dr::Builder::new_from_module(module);
+                if target_family != "wasm" {
+                    fix_execution_mode(&mut builder);
+                }
+                spirv = builder.module().assemble();
+                validate(&spirv).expect("spirv-val after fix_execution_mode");
+            }
+            let mut optimizer = spirv_tools::opt::create(Some(TargetEnv::Vulkan_1_3));
+            if !non_semantic_info {
+                optimizer.register_pass(Passes::StripNonSemanticInfo);
+            }
+            optimizer.register_performance_passes();
+            let options = OptimizerOptions {
+                preserve_bindings: true,
+                preserve_spec_constants: true,
+                ..OptimizerOptions::default()
+            };
+            let binary = optimizer
+                .optimize(&spirv, &mut |_| (), Some(options))
+                .unwrap();
+            spirv = if let Binary::OwnedU32(words) = binary {
+                words
+            } else {
+                binary.as_words().to_vec()
+            };
+            Kernel { sig, spirv }
+        })
+        .collect();
+    kernels
 }
 
 fn rename_entry_points(module: &mut Module, entry_point: &str) {
@@ -153,10 +163,13 @@ fn rename_entry_points(module: &mut Module, entry_point: &str) {
         .collect();
 }
 
-fn split_entry_points(module: &Module) -> impl Iterator<Item = Vec<u32>> + '_ {
-    module.exports.iter().map(|(key, value)| {
+fn split_entry_points(module: &Module, wgsl: bool) -> impl Iterator<Item = Vec<u32>> + '_ {
+    module.exports.iter().map(move |(key, value)| {
         let mut module = module.clone();
         module.exports = std::iter::once((key.clone(), value.clone())).collect();
+        Features::reflect(&module)
+            .wgsl(wgsl)
+            .write_to_module(&mut module);
         assemble(&module).unwrap()
     })
 }
@@ -555,8 +568,10 @@ impl KernelSig {
                                 }
                             }
                             KrnlInst::DataType => {
-                                if let &[Value::DataInstOutput(access_chain), Value::Const(data_type_ct)] =
-                                    data_inst_def.inputs.as_slice()
+                                if let &[
+                                    Value::DataInstOutput(access_chain),
+                                    Value::Const(data_type_ct),
+                                ] = data_inst_def.inputs.as_slice()
                                 {
                                     let data_type_def = &cx[data_type_ct];
                                     let scalar_type =
@@ -658,10 +673,6 @@ impl Kernel {
         use syn::LitInt;
 
         let inputs = self.sig.inputs.iter();
-        let spirv_lits = self
-            .spirv
-            .iter()
-            .map(|x| LitInt::new(&x.to_string(), Span::call_site()));
         let safety = quote! {
             krnl::kernel::Safe
         };
@@ -714,6 +725,10 @@ impl Kernel {
                 }
             }
         });
+        let spirv_lits = self
+            .spirv
+            .iter()
+            .map(|x| LitInt::new(&x.to_string(), Span::call_site()));
         quote! {
             #[allow(non_camel_case_types, dead_code)]
             struct __krnl_Kernel {

@@ -12,6 +12,7 @@ doctest = false
 dry.workspace = true
 krnl = { workspace = true }
 paste.workspace = true
+num-traits.workspace = true
 
 [target.'cfg(target_family = "wasm")'.dependencies]
 wasm-bindgen-test = "0.3.50"

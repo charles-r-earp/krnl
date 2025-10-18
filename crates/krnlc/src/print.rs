@@ -1,39 +1,40 @@
-//use crate::kernel_desc::KernelDesc;
-use crate::spirv::{
-    assemble, get_element_size, krnl_inst_set, op_constant, op_decorate_block,
-    op_member_decorate_offset, op_member_name, op_type_int, op_type_pointer, op_type_struct,
-    pointee_type, struct_element_type, validate, variable_name,
+use crate::{
+    reflect::Features,
+    spirv::{
+        assemble, get_element_size, krnl_inst_set, op_constant, op_decorate_block,
+        op_member_decorate_offset, op_member_name, op_type_int, op_type_pointer, op_type_struct,
+        pointee_type, struct_element_type, validate, variable_name,
+    },
 };
 use camino::{Utf8Path, Utf8PathBuf};
 use cargo_metadata::{Metadata, Package};
 use clap_cargo::{Manifest, Workspace};
 use fxhash::FxBuildHasher;
 use indexmap::{
-    map::{MutableEntryKey, MutableKeys},
     IndexMap, IndexSet,
+    map::{MutableEntryKey, MutableKeys},
 };
 use krnl_core::__private::__KrnlInst as KrnlInst;
 use smallvec::SmallVec;
 use spirt::{
-    spv::{
-        encode_literal_string, extract_literal_string,
-        spec::{ExtInstSetDesc, ExtInstSetInstructionDesc, Spec},
-        Imm, Inst,
-    },
-    transform::{InnerInPlaceTransform, Transformer},
-    visit::{InnerVisit, Visitor},
     AddrSpace, Attr, AttrSet, AttrSetDef, Const, ConstDef, ConstKind, Context, DataInst,
     DataInstDef, DataInstForm, DataInstFormDef, DataInstKind, DeclDef, ExportKey, Exportee, Func,
     GlobalVar, GlobalVarDecl, GlobalVarDefBody, InternedStr, Module, Type, TypeDef, TypeKind,
     TypeOrConst, Value,
+    spv::{
+        Imm, Inst, encode_literal_string, extract_literal_string,
+        spec::{ExtInstSetDesc, ExtInstSetInstructionDesc, Spec},
+    },
+    transform::{InnerInPlaceTransform, Transformer},
+    visit::{InnerVisit, Visitor},
 };
 use spirv_headers::{Decoration, ExecutionModel, StorageClass};
 use spirv_tools::opt::Passes;
 use spirv_tools::{
+    TargetEnv,
     binary::Binary,
     opt::{Optimizer, Options as OptimizerOptions},
     val::Validator,
-    TargetEnv,
 };
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -73,6 +74,7 @@ pub fn print_to_string(spirv: Vec<u8>, filter: Option<&str>) -> String {
                 }
             })
             .collect();
+        Features::reflect(&module).write_to_module(&mut module);
     }
     spirt::passes::legalize::structurize_func_cfgs(&mut module);
     let words = assemble(&module).unwrap();

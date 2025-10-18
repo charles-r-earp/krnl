@@ -1,19 +1,12 @@
 use crate::{
     Result,
-    context::{Buffer as RawBuffer, Context, Device, Slice as RawSlice, SliceMut as RawSliceMut},
-    scalar::Element,
+    context::{Buffer as RawBuffer, Context, Slice as RawSlice, SliceMut as RawSliceMut},
 };
 use bytemuck::Pod;
 use rayon::iter::{
     IndexedParallelIterator, IntoParallelRefIterator, IntoParallelRefMutIterator, ParallelIterator,
 };
-use std::{marker::PhantomData, mem::ManuallyDrop, sync::Arc};
-
-/*
-pub fn sync_unsafe_slice<'a, T: Pod + Send + Sync>(slice: &mut [T]) -> &[SyncUnsafeCell<T>] {
-    unsafe { std::slice::from_raw_parts(slice.as_ptr().cast(), slice.len()) }
-}
-*/
+use std::sync::Arc;
 
 pub trait Data: Sized {
     type Elem;
@@ -325,6 +318,7 @@ impl<T: Pod, S: Data<Elem = T>> BufferBase<S> {
     }
 }
 
+/*
 impl Slice<'_, u8> {
     pub fn bytes_of<T: Pod>(slice: Slice<T>) -> Self {
         todo!()
@@ -336,6 +330,7 @@ impl SliceMut<'_, u8> {
         todo!()
     }
 }
+*/
 
 pub struct Zip<T = ()>(pub T);
 

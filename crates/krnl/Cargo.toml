@@ -24,6 +24,7 @@ test = false
 doctest = false
 bench = false
 
+
 [target.'cfg(not(target_arch = "spirv"))'.build-dependencies]
 krnlc = { workspace = true, default-features = false, features = [
     "use-installed-tools",
@@ -45,9 +46,6 @@ tinyvec = "1.10.0"
 spirv-std.workspace = true
 
 [target.'cfg(not(target_arch = "spirv"))'.dependencies]
-#krnlc = { workspace = true, default-features = false, features = [
-#    "jit",
-#], optional = true }
 derive_more = { workspace = true, default-features = false, features = [
     "from",
     "deref",
@@ -71,13 +69,34 @@ web-sys = { version = "0.3.77", features = [
     "Gpu",
     "GpuAdapter",
     "GpuDevice",
+    "GpuSupportedLimits",
     "GpuQueue",
     "GpuBuffer",
     "GpuBufferDescriptor",
     "GpuCommandEncoder",
+    "GpuComputePassEncoder",
     "GpuCommandBuffer",
+    "GpuShaderModule",
+    "GpuShaderModuleDescriptor",
+    "gpu_shader_stage",
+    "GpuBindGroup",
+    "GpuBindGroupDescriptor",
+    "GpuBindGroupEntry",
+    "GpuBindGroupLayout",
+    "GpuBindGroupLayoutEntry",
+    "GpuBindGroupLayoutDescriptor",
+    "GpuBufferBindingLayout",
+    "GpuBufferBinding",
+    "GpuBufferBindingType",
+    "GpuPipelineLayout",
+    "GpuPipelineLayoutDescriptor",
+    "GpuComputePipeline",
+    "GpuComputePipelineDescriptor",
+    "GpuProgrammableStage",
+    "console",
 ], optional = true }
 wasm-bindgen-futures = { version = "0.4.50", optional = true }
+naga = { version = "27.0.0", features = ["spv-in", "spv-out", "wgsl-out"], optional = true }
 
 [features]
 default = ["device"]
@@ -87,6 +106,7 @@ device = [
     "dep:web-sys",
     "dep:wasm-bindgen-futures",
     "dep:rspirv",
+    "dep:naga",
 ]
 
 [lints.rust]

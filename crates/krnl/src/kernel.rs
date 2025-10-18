@@ -1,4 +1,3 @@
-use derive_more::Debug;
 use krnl_macros::host_only;
 
 host_only! {
@@ -6,27 +5,23 @@ host_only! {
     use crate::{scalar::DeviceCopy, context::device::BufferBindingVec};
     use crate::{
         Result,
-        buffer::{Buffer, Slice, SliceMut},
+        buffer::{Slice, SliceMut},
         context::{
             Context,
-            device::{Device, Kernel as RawKernel},
+            device::{Kernel as RawKernel},
         },
-        scalar::{Scalar, Element},
+        scalar::Element,
     };
-    use bytemuck::Pod;
-    use num_traits::{Num, NumAssignOps};
     use std::{
-        any::TypeId,
-        cell::UnsafeCell,
         marker::PhantomData,
-        sync::Arc,
-        num::{NonZeroU32, NonZeroUsize},
         collections::BTreeMap,
     };
     #[cfg(feature = "device")]
+    use derive_more::Debug;
+    #[cfg(feature = "device")]
     use fxhash::FxHashMap;
     #[cfg(feature = "device")]
-    use tinyvec::{array_vec, ArrayVec};
+    use tinyvec::ArrayVec;
 
     pub enum Safe {}
 
@@ -66,7 +61,7 @@ host_only! {
             self.subgroup_threads.replace(subgroup_threads);
             self
         }
-        pub fn build(mut self, context: Context) -> Result<Kernel<T, T::Safety>> {
+        pub fn build(self, context: Context) -> Result<Kernel<T, T::Safety>> {
             match context {
                 Context::Host => todo!(),
                 #[cfg(not(feature = "device"))]
@@ -128,7 +123,7 @@ host_only! {
 
     #[cfg(feature = "device")]
     impl BuildArgsVisitor for KernelKeyProtoBuilder {
-        fn __visit_spirv(&mut self, spirv: &'static [u32]) {
+        fn __visit_spirv(&mut self, _spirv: &'static [u32]) {
             self.byte_count += size_of::<usize>();
         }
         fn __visit_buffer<T: Element>(&mut self, _name: &'static str) {}
@@ -175,7 +170,7 @@ host_only! {
     }
 
     #[cfg(feature = "device")]
-    #[derive(Default, Clone, Copy, Debug)]
+    #[derive(Default, Clone, Copy)]
     pub(crate) struct BufferMutabilityMask(u32);
 
     #[cfg(feature = "device")]
@@ -185,6 +180,14 @@ host_only! {
         }
         fn insert(&mut self, index: u32) {
             self.0 |= 1 << index
+        }
+    }
+
+    #[cfg(feature = "device")]
+    impl std::fmt::Debug for BufferMutabilityMask {
+        fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+            let values: Vec<u32> = (0..32).filter(|i| self.get(*i)).collect();
+            values.fmt(f)
         }
     }
 
@@ -204,11 +207,14 @@ host_only! {
             builder.desc.subgroup_threads = subgroup_threads;
             builder.spec_constants.insert(0, ArrayVec::from_array_len([threads, 0], 1));
             let spirv = builder.spirv.expect("no spirv!");
-            std::fs::write("kernel.spv", bytemuck::cast_slice(spirv)).unwrap();
+            let mut desc = builder.desc;
+            if desc.push_constant_bytes % 4 != 0 {
+                desc.push_constant_bytes += 4 - (desc.push_constant_bytes % 4);
+            }
             Self {
                 spirv,
                 spec_constants: builder.spec_constants,
-                desc: builder.desc,
+                desc,
             }
         }
     }
@@ -228,12 +234,6 @@ host_only! {
     #[cfg(feature = "device")]
     impl BuildArgsVisitor for KernelCreateInfoBuilder {
         fn __visit_spirv(&mut self, spirv: &'static [u32]) {
-            /*
-            use rspirv::binary::Disassemble;
-
-            println!("{}", rspirv::dr::load_words(spirv).unwrap().disassemble());
-            */
-
             self.spirv.replace(spirv);
         }
         fn __visit_buffer<T: Element>(&mut self, _name: &'static str) {
@@ -255,7 +255,7 @@ host_only! {
         fn __visit_spec_id<T: DeviceCopy>(&mut self, name: &'static str, id: u32) {
             self.spec_ids.insert(name, id);
         }
-        fn __visit_spec<T: DeviceCopy>(&mut self, name: &'static str, spec: &T) {
+        fn __visit_spec<T: DeviceCopy>(&mut self, _name: &'static str, _spec: &T) {
             todo!()
             /*
             let mut words = [0u32; 2];
@@ -344,7 +344,7 @@ host_only! {
                     ..
                 } = visitor;
                 let mut groups = self.groups;
-                if let Some(items) = visitor.items {
+                if let Some(items) = items {
                     if groups == 0 {
                         let threads = desc.threads as usize;
                         groups = items / threads + (items % threads != 0) as usize;
@@ -381,7 +381,7 @@ host_only! {
     impl ArgsVisitor for KernelArgsVisitor<'_> {
         fn __visit_slice<T: Element>(
             &mut self,
-            name: &'static str,
+            _name: &'static str,
             slice: &Slice<T>,
         ) -> Result<()> {
             if let crate::context::Slice::Device(slice) = slice.as_context_slice() {
@@ -393,7 +393,7 @@ host_only! {
         }
         fn __visit_slice_mut<T: Element>(
             &mut self,
-            name: &'static str,
+            _name: &'static str,
             slice: &mut SliceMut<T>,
         ) -> Result<()> {
             if let crate::context::SliceMut::Device(slice) = slice.as_context_slice_mut() {
@@ -480,9 +480,8 @@ pub mod __private {
 
     #[cfg(all(krnlc, target_arch = "spirv"))]
     pub mod __intrinsics {
-        use crate::scalar::{DeviceCopy, Element, Scalar};
+        use crate::scalar::{DeviceCopy, Element};
         use core::cell::UnsafeCell;
-        use core::marker::PhantomData;
         use krnl_core::__private::{__group_slice as group_slice, __input, __item as item, __spec};
         pub use krnl_core::__private::{__safe, __threads};
 
