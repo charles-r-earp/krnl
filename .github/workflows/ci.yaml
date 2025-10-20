@@ -78,10 +78,10 @@ jobs:
           stripdown: true
           install_swiftshader: true
           install_lavapipe: true
-      - name: vulkaninfo
-        run: vulkaninfo --summary
       - name: check krnlc
         run: cargo +nightly-2023-05-27 -Zunstable-options -C=krnlc check --locked --no-default-features --features use-installed-tools -vv
+      - name: vulkaninfo
+        run: vulkaninfoSDK --summary
   krnlc:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20
