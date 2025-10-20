@@ -81,7 +81,14 @@ jobs:
       - name: check krnlc
         run: cargo +nightly-2023-05-27 -Zunstable-options -C=krnlc check --locked --no-default-features --features use-installed-tools -vv
       - name: vulkaninfo
-        run: vulkaninfoSDK --summary
+        continue-on-error: true
+        run: vulkaninfo.exe --summary
+      - name: swiftshader
+        continue-on-error: true
+        run: swiftshader.exe --version
+      - name: lavapipe
+        continue-on-error: true
+        run: lavapipe.exe --version
   krnlc:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20
