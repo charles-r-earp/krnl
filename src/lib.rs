@@ -36,7 +36,7 @@ For device functionality (kernels), install [Vulkan](https://www.vulkan.org) for
 - Alternatively, check that `cargo test --test integration_tests -- --exact none` shows your devices.
     - You can run all the tests with `cargo test`.
 */
-#![cfg_attr(doc_cfg, feature(doc_auto_cfg))]
+#![cfg_attr(doc_cfg, feature(doc_cfg))]
 #![deny(unsafe_op_in_unsafe_fn)]
 #![warn(missing_docs)]
 

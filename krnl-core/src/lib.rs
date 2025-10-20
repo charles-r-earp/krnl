@@ -4,7 +4,7 @@
     no_std,
     feature(asm_experimental_arch, min_specialization)
 )]
-#![cfg_attr(doc_cfg, feature(doc_cfg, doc_auto_cfg))]
+#![cfg_attr(doc_cfg, feature(doc_cfg))]
 #![deny(unsafe_op_in_unsafe_fn)]
 
 /// half
