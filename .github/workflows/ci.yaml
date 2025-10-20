@@ -60,6 +60,28 @@ jobs:
         env:
           RUSTFLAGS: --cfg run_in_browser
         continue-on-error: ${{ runner.os == 'macOS' }}
+  krnlc-windows:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: install toolchains
+        run: |
+          rustup set profile minimal
+          rustup toolchain install stable nightly --no-self-update
+          rustup toolchain install nightly-2023-05-27 --component rust-src,rustc-dev,llvm-tools-preview --no-self-update
+      - name: install vulkan
+        uses: jakoch/install-vulkan-sdk-action@v1
+        with:
+          install_runtime: true
+          cache: true
+          stripdown: true
+          install_swiftshader: true
+          install_lavapipe: true
+      - name: vulkaninfo
+        run: vulkaninfo --summary
+      - name: check krnlc
+        run: cargo +nightly-2023-05-27 -Zunstable-options -C=krnlc check --locked --no-default-features --features use-installed-tools -vv
   krnlc:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20
