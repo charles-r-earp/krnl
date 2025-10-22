@@ -1,6 +1,7 @@
 use super::{BufferRange, DeviceOwned, DeviceSpecifier, Properties};
 use crate::{
     Result,
+    context::device::Features,
     kernel::{KernelCreateInfo, KernelDesc, KernelKey},
 };
 use core::u64;
@@ -65,6 +66,7 @@ struct RawDevice {
     physical_device: ash::vk::PhysicalDevice,
     backend: Arc<Backend>,
     queue_family_indices: Vec<u32>,
+    features: Features,
     properties: Properties,
 }
 
@@ -143,6 +145,25 @@ impl RawDevice {
                 .instance
                 .get_physical_device_properties2(physical_device, &mut physical_device_properties);
         }
+        let mut features = Features::default();
+        if supported_physical_device_vulkan12_features.shader_int8 != 0
+            && supported_physical_device_vulkan12_features.storage_buffer8_bit_access != 0
+            && supported_physical_device_vulkan12_features.storage_push_constant8 != 0
+        {
+            features.insert(Features::INT8);
+        }
+        if supported_physical_device_features.shader_int16 != 0
+            && supported_physical_device_vulkan11_features.storage_buffer16_bit_access != 0
+            && supported_physical_device_vulkan11_features.storage_push_constant16 != 0
+        {
+            features.insert(Features::INT16);
+        }
+        if supported_physical_device_features.shader_int64 != 0 {
+            features.insert(Features::INT64);
+        }
+        if supported_physical_device_features.shader_float64 != 0 {
+            features.insert(Features::FLOAT64);
+        }
         let properties = Properties {
             max_buffer_size: physical_device_properties
                 .properties
@@ -162,6 +183,7 @@ impl RawDevice {
             physical_device,
             backend,
             queue_family_indices,
+            features,
             properties,
         }))
     }
@@ -270,6 +292,9 @@ impl super::Device for Device {
             queue_selector,
             kernels,
         }))
+    }
+    fn features(&self) -> Features {
+        self.raw.features
     }
     fn event(self: &Arc<Self>) -> Arc<Self::Event> {
         let queue_events = self.queues().cloned().map(|x| x.event()).collect();
@@ -1351,6 +1376,13 @@ impl RawKernel {
             spec_constants,
             desc,
         } = info;
+        if !device.features.contains(desc.features) {
+            todo!(
+                "Device features ({:?}) does not contain ({:?})!",
+                device.features,
+                desc.features
+            );
+        }
         let module_create_info = ash::vk::ShaderModuleCreateInfo::default().code(spirv);
         let vk_device = &device.device;
         let module = unsafe {

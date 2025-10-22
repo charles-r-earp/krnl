@@ -102,11 +102,11 @@ fn process(spirv: Vec<u8>) -> Vec<Kernel> {
     );
     rename_entry_points(&mut module, "main");
     spirt::passes::legalize::structurize_func_cfgs(&mut module);
-    let spirvs: Vec<_> = split_entry_points(&module, target_family == "wasm").collect();
+    let features_spirvs: Vec<_> = split_entry_points(&module, target_family == "wasm").collect();
     let kernels = sigs
         .into_par_iter()
-        .zip(spirvs)
-        .map(|(sig, mut spirv)| {
+        .zip(features_spirvs)
+        .map(|(sig, (features, mut spirv))| {
             use rspirv::binary::{Assemble, Disassemble};
             {
                 use rspirv::binary::{Assemble, Disassemble};
@@ -137,7 +137,11 @@ fn process(spirv: Vec<u8>) -> Vec<Kernel> {
             } else {
                 binary.as_words().to_vec()
             };
-            Kernel { sig, spirv }
+            Kernel {
+                sig,
+                features,
+                spirv,
+            }
         })
         .collect();
     kernels
@@ -163,14 +167,17 @@ fn rename_entry_points(module: &mut Module, entry_point: &str) {
         .collect();
 }
 
-fn split_entry_points(module: &Module, wgsl: bool) -> impl Iterator<Item = Vec<u32>> + '_ {
+fn split_entry_points(
+    module: &Module,
+    wgsl: bool,
+) -> impl Iterator<Item = (Features, Vec<u32>)> + '_ {
     module.exports.iter().map(move |(key, value)| {
         let mut module = module.clone();
         module.exports = std::iter::once((key.clone(), value.clone())).collect();
-        Features::reflect(&module)
-            .wgsl(wgsl)
-            .write_to_module(&mut module);
-        assemble(&module).unwrap()
+        let features = Features::reflect(&module).wgsl(wgsl);
+        features.write_to_module(&mut module);
+        let spirv = assemble(&module).unwrap();
+        (features, spirv)
     })
 }
 
@@ -663,6 +670,7 @@ impl KernelSig {
 
 struct Kernel {
     sig: KernelSig,
+    features: Features,
     spirv: Vec<u32>,
 }
 
@@ -670,6 +678,7 @@ impl Kernel {
     fn emit(&self) -> String {
         use proc_macro2::Span;
         use quote::{format_ident, quote};
+        use spirv_headers::Capability;
         use syn::LitInt;
 
         let inputs = self.sig.inputs.iter();
@@ -725,6 +734,19 @@ impl Kernel {
                 }
             }
         });
+        let visit_features: TokenStream = self
+            .features
+            .capabilities_iter()
+            .filter_map(|x| match x {
+                Capability::Int8 => Some(quote!(INT8)),
+                Capability::Int16 => Some(quote!(INT16)),
+                Capability::Int64 => Some(quote!(INT64)),
+                Capability::Float16 => Some(quote!(FLOAT16)),
+                Capability::Float64 => Some(quote!(FLOAT64)),
+                _ => None,
+            })
+            .map(|x| quote! { v.__visit_features(krnl::context::device::Features::#x); })
+            .collect();
         let spirv_lits = self
             .spirv
             .iter()
@@ -739,6 +761,7 @@ impl Kernel {
             impl __krnl_Kernel {
                 fn visit<V:  krnl::kernel::__private::__BuildArgsVisitor>(&self, v: &mut V) {
                     v.__visit_spirv([#(#spirv_lits),*].as_slice());
+                    #visit_features
                     #(#visit_inputs)*
                 }
             }

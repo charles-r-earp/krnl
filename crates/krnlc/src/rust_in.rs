@@ -96,7 +96,7 @@ fn compile(name: &str, path: &Utf8Path, target_dir: &Utf8Path) -> Vec<u8> {
     if target_dir != path.join("target") {
         builder
             .target_dir_path
-            .replace(target_dir.join("spirv-builder").into_string());
+            .replace(target_dir.join("spirv-builder").into_std_path_buf());
     }
     let capabilites = {
         use spirv_builder::Capability::*;

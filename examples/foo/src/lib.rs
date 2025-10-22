@@ -19,7 +19,11 @@ fn axpy<T: Scalar + Num + NumAssign>(alpha: T, #[kernel(item)] x: T, #[kernel(it
 
 #[cfg(not(target_arch = "spirv"))]
 pub fn main() {
-    let context = Context::Device(Device::builder().build().unwrap());
+    let context = if cfg!(feature = "device") {
+        Context::Device(Device::builder().build().unwrap())
+    } else {
+        Context::Host
+    };
     let alpha = 2f32;
     let x = Buffer::from(vec![1f32])
         .into_context(context.clone())
@@ -41,7 +45,6 @@ pub fn main() {
             .exec((alpha, x.as_slice(), y.as_slice_mut()))
             .unwrap();
     }
-
     let y = y.into_vec().unwrap();
     dbg!(y);
 }

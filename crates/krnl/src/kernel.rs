@@ -8,7 +8,7 @@ host_only! {
         buffer::{Slice, SliceMut},
         context::{
             Context,
-            device::{Kernel as RawKernel},
+            device::{Kernel as RawKernel, Features},
         },
         scalar::Element,
     };
@@ -126,10 +126,12 @@ host_only! {
         fn __visit_spirv(&mut self, _spirv: &'static [u32]) {
             self.byte_count += size_of::<usize>();
         }
+        /*
         fn __visit_buffer<T: Element>(&mut self, _name: &'static str) {}
         fn __visit_buffer_mut<T: Element>(&mut self, _name: &'static str) {}
         fn __visit_push<T: DeviceCopy>(&mut self, _name: &'static str, _offset: u32) {}
         fn __visit_spec_id<T: DeviceCopy>(&mut self, _name: &'static str, id: u32) {}
+        */
         fn __visit_spec<T: DeviceCopy>(&mut self, _name: &'static str, _spec: &T) {
             self.byte_count += size_of::<T>();
         }
@@ -148,10 +150,12 @@ host_only! {
         fn __visit_spirv(&mut self, spirv: &'static [u32]) {
             self.bytes.extend((spirv.as_ptr() as usize).to_ne_bytes());
         }
+        /*
         fn __visit_buffer<T: Element>(&mut self, _name: &'static str) {}
         fn __visit_buffer_mut<T: Element>(&mut self, _name: &'static str) {}
         fn __visit_push<T: DeviceCopy>(&mut self, _name: &'static str, _offset: u32) {}
         fn __visit_spec_id<T: DeviceCopy>(&mut self, _name: &'static str, id: u32) {}
+        */
         fn __visit_spec<T: DeviceCopy>(&mut self, _name: &'static str, spec: &T) {
             self.bytes.extend(bytemuck::bytes_of(spec));
         }
@@ -160,6 +164,7 @@ host_only! {
     #[cfg(feature = "device")]
     #[derive(Default, Debug)]
     pub(crate) struct KernelDesc {
+        pub(crate) features: Features,
         pub(crate) threads: u32,
         pub(crate) subgroup_threads: Option<u32>,
         pub(crate) buffers: u32,
@@ -235,6 +240,9 @@ host_only! {
     impl BuildArgsVisitor for KernelCreateInfoBuilder {
         fn __visit_spirv(&mut self, spirv: &'static [u32]) {
             self.spirv.replace(spirv);
+        }
+        fn __visit_features(&mut self, features: Features) {
+            self.desc.features.insert(features);
         }
         fn __visit_buffer<T: Element>(&mut self, _name: &'static str) {
             self.desc.buffers += 1;
@@ -431,6 +439,7 @@ host_only! {
 pub mod __private {
     #[cfg(not(target_arch = "spirv"))]
     pub mod __visit {
+        pub use crate::context::device::Features;
         use crate::{
             Result,
             buffer::{Slice, SliceMut},
@@ -442,13 +451,15 @@ pub mod __private {
         }
         use sealed::Sealed;
 
+        #[allow(unused_variables)]
         pub trait __BuildArgsVisitor: Sealed {
-            fn __visit_spirv(&mut self, spirv: &'static [u32]);
-            fn __visit_buffer<T: Element>(&mut self, name: &'static str);
-            fn __visit_buffer_mut<T: Element>(&mut self, name: &'static str);
-            fn __visit_push<T: DeviceCopy>(&mut self, name: &'static str, offset: u32);
-            fn __visit_spec_id<T: DeviceCopy>(&mut self, name: &'static str, id: u32);
-            fn __visit_spec<T: DeviceCopy>(&mut self, name: &'static str, spec: &T);
+            fn __visit_spirv(&mut self, spirv: &'static [u32]) {}
+            fn __visit_features(&mut self, features: Features) {}
+            fn __visit_buffer<T: Element>(&mut self, name: &'static str) {}
+            fn __visit_buffer_mut<T: Element>(&mut self, name: &'static str) {}
+            fn __visit_push<T: DeviceCopy>(&mut self, name: &'static str, offset: u32) {}
+            fn __visit_spec_id<T: DeviceCopy>(&mut self, name: &'static str, id: u32) {}
+            fn __visit_spec<T: DeviceCopy>(&mut self, name: &'static str, spec: &T) {}
         }
 
         pub trait __ArgsVisitor: Sealed {

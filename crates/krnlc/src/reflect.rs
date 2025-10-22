@@ -746,6 +746,35 @@ impl Features {
             .collect();
         dialect.extensions = self.extensions.clone();
     }
+    pub(crate) fn capabilities_iter(&self) -> impl Iterator<Item = Capability> + '_ {
+        self.capabilities.iter().copied()
+    }
+    /*
+    pub(crate) fn to_device_features(&self) -> DeviceFeatures {
+        let mut f = DeviceFeatures::default();
+        for cap in self.capabilities.iter().copied() {
+            match cap {
+                Capability::Int8 => {
+                    f.insert(DeviceFeatures::INT8);
+                }
+                Capability::Int16 => {
+                    f.insert(DeviceFeatures::INT16);
+                }
+                Capability::Int64 => {
+                    f.insert(DeviceFeatures::INT64);
+                }
+                Capability::Float16 => {
+                    f.insert(DeviceFeatures::FLOAT16);
+                }
+                Capability::Float64 => {
+                    f.insert(DeviceFeatures::FLOAT64);
+                }
+                _ => (),
+            }
+        }
+        f
+    }
+    */
 }
 
 #[derive(Default)]

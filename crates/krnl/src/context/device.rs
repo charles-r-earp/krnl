@@ -136,6 +136,16 @@ impl Device {
     pub fn wait(&self) -> Result<()> {
         self.event().wait()
     }
+    pub fn features(&self) -> Features {
+        #[cfg(feature = "device")]
+        {
+            self.raw.features()
+        }
+        #[cfg(not(feature = "device"))]
+        {
+            unreachable!()
+        }
+    }
     pub fn event(&self) -> Event {
         Event {
             #[cfg(feature = "device")]
@@ -164,6 +174,66 @@ impl Device {
     }
     pub fn default_subgroup_threads(&self) -> usize {
         self.max_subgroup_threads()
+    }
+}
+
+#[derive(Default, Clone, Copy, PartialEq, Eq)]
+pub struct Features(u32);
+
+impl Features {
+    pub const INT8: Self = Self(1);
+    pub const INT16: Self = Self(2);
+    pub const INT64: Self = Self(4);
+    pub const FLOAT16: Self = Self(8);
+    pub const FLOAT64: Self = Self(16);
+
+    pub fn contains(&self, other: Self) -> bool {
+        self.0 | other.0 == self.0
+    }
+    pub fn union(self, other: Self) -> Self {
+        Self(self.0 | other.0)
+    }
+    pub fn insert(&mut self, other: Self) {
+        self.0 |= other.0;
+    }
+}
+
+impl std::ops::BitOr for Features {
+    type Output = Self;
+    fn bitor(self, rhs: Self) -> Self::Output {
+        self.union(rhs)
+    }
+}
+
+impl std::ops::BitOrAssign for Features {
+    fn bitor_assign(&mut self, rhs: Self) {
+        self.insert(rhs);
+    }
+}
+
+impl std::fmt::Debug for Features {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        if self.0 == 0 {
+            return write!(f, "()");
+        }
+        let mut empty = true;
+        for (x, n) in [
+            (Self::INT8, "INT8"),
+            (Self::INT16, "INT16"),
+            (Self::INT64, "INT64"),
+            (Self::FLOAT16, "FLOAT16"),
+            (Self::FLOAT64, "FLOAT64"),
+        ] {
+            if self.contains(x) {
+                if empty {
+                    write!(f, "{n}")?;
+                } else {
+                    write!(f, " | {n}")?;
+                }
+                empty = false;
+            }
+        }
+        Ok(())
     }
 }
 

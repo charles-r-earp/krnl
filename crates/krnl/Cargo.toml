@@ -70,6 +70,7 @@ web-sys = { version = "0.3.77", features = [
     "GpuAdapter",
     "GpuDevice",
     "GpuSupportedLimits",
+    "GpuSupportedFeatures",
     "GpuQueue",
     "GpuBuffer",
     "GpuBufferDescriptor",

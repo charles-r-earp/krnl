@@ -1,6 +1,6 @@
-use crate::Result;
 #[cfg(feature = "device")]
 use crate::kernel::{KernelCreateInfo, KernelDesc, KernelKey};
+use crate::{Result, context::device::Features};
 use std::sync::Arc;
 
 #[cfg(all(feature = "device", not(target_family = "wasm")))]
@@ -49,6 +49,7 @@ pub(super) trait Device {
     fn create(backend: Arc<Self::Backend>, specifier: DeviceSpecifier) -> Result<Arc<Self>>;
     #[cfg(target_family = "wasm")]
     async fn create_async(backend: Arc<Self::Backend>) -> Result<Arc<Self>>;
+    fn features(&self) -> Features;
     fn event(self: &Arc<Self>) -> Arc<Self::Event>;
     fn properties(&self) -> &Properties;
 }

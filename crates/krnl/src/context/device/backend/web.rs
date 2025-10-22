@@ -1,7 +1,7 @@
 use super::{BufferRange, DeviceOwned, DeviceSpecifier, Properties};
 use crate::{
     Result,
-    context::device,
+    context::device::Features,
     kernel::{KernelCreateInfo, KernelDesc, KernelKey},
 };
 use fxhash::FxHashMap;
@@ -50,6 +50,7 @@ struct RawDevice {
     device: web_sys::GpuDevice,
     adapter: web_sys::GpuAdapter,
     backend: Arc<Backend>,
+    features: Features,
     properties: Properties,
 }
 
@@ -67,6 +68,14 @@ impl RawDevice {
             .unwrap();
         let limits = device.limits();
         let max_buffer_size = limits.max_buffer_size() as u32;
+        let features = {
+            let mut features = Features::default();
+            let supported_features = device.features();
+            if supported_features.has("shader-f16") {
+                features.insert(Features::FLOAT16);
+            }
+            features
+        };
         let properties = Properties {
             max_buffer_size,
             max_subgroup_threads: 128,
@@ -76,6 +85,7 @@ impl RawDevice {
             device,
             adapter,
             backend,
+            features,
             properties,
         }))
     }
@@ -110,6 +120,9 @@ impl super::Device for Device {
             push_constant_buffer,
             kernels,
         }))
+    }
+    fn features(&self) -> Features {
+        self.raw.features
     }
     fn event(self: &Arc<Self>) -> Arc<Event> {
         Arc::new(Event {
@@ -451,6 +464,13 @@ impl RawKernel {
             spec_constants,
             desc,
         } = info;
+        if !device.features.contains(desc.features) {
+            todo!(
+                "Device features ({:?}) does not contain ({:?})!",
+                device.features,
+                desc.features
+            );
+        }
         let mut has_push_constants = false;
         let wgsl = spirv_to_wgsl(spirv, &spec_constants, &mut has_push_constants)?;
         let module = device
