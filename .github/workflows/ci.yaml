@@ -31,6 +31,12 @@ jobs:
             browser: safari
     steps:
       - uses: actions/checkout@v4
+      - name: Install Vulkan SDK
+        uses: jakoch/install-vulkan-sdk-action@v1
+        with:
+          vulkan_version: 1.4.321.0
+          cache: true
+          stripdown: true
       - name: install vulkan and lavapipe
         if: ${{ runner.os == 'Linux' }}
         run: sudo apt install -y mesa-vulkan-drivers libvulkan1 vulkan-tools vulkan-validationlayers
