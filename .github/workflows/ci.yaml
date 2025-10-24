@@ -31,8 +31,7 @@ jobs:
             browser: safari
     steps:
       - uses: actions/checkout@v4
-      - name: Install Vulkan SDK
-        uses: jakoch/install-vulkan-sdk-action@v1
+      - uses: jakoch/install-vulkan-sdk-action@v1
         with:
           vulkan_version: 1.4.321.0
           cache: true
@@ -54,10 +53,10 @@ jobs:
         run: cargo install wasm-pack -vv
       - name: wasm test
         working-directory: tests/integration
-        run: wasm-pack test --headless --${{ matrix.browser }} --features run_in_browser -- -vv
+        run: wasm-pack test --headless --${{ matrix.browser }} --features run_in_browser -vv
   deny:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
-      - uses: EmbarkStudios/cargo-deny-action@v1
+      - uses: EmbarkStudios/cargo-deny-action@v2
