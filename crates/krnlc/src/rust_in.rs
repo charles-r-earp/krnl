@@ -135,7 +135,6 @@ fn process(crate_name: &str, spirv: Vec<u8>) -> Vec<u32> {
     context.register_custom_ext_inst_set(KrnlInst::SET_NAME, krnl_inst_set());
     let mut module = Module::lower_from_spv_bytes(context.clone(), spirv).unwrap();
     strip_module_source(&mut module);
-    //println!("{}", Plan::for_module(&module).pretty_print());
     let module_globals = UsedGlobals::parse_module(&module, None);
     rename_krnl_vars(&mut module);
     remap_spec_constants(&mut module);
@@ -732,47 +731,6 @@ fn unify_push_constants(module: &mut Module) {
                 }
             }
         }
-        /*
-        fn in_place_transform_control_node_def(
-            &mut self,
-            mut func_at_control_node: spirt::func_at::FuncAtMut<'_, spirt::ControlNode>,
-        ) {
-            let mut insts2 = EntityList::empty();
-            if let ControlNodeKind::Block { insts } =
-                &mut func_at_control_node.reborrow().def().kind
-            {
-                std::mem::swap(insts, &mut insts2);
-            }
-            if !insts2.is_empty() {
-                let mut iter = insts2.iter();
-                while let Some((data_inst, next)) =
-                    iter.split_first(func_at_control_node.data_insts)
-                {
-                    let data_inst_def = &func_at_control_node.data_insts[data_inst];
-                    let form_def = &self.cx[data_inst_def.form];
-                    if let &DataInstKind::SpvExtInst { ext_set, inst } = &form_def.kind {
-                        if ext_set == self.krnl_set && inst == KrnlInst::Input as u32 {
-                            if let &[Value::DataInstOutput(_access_chain), Value::Const(kind)] =
-                                data_inst_def.inputs.as_slice()
-                            {
-                                let kind = get_constant_u32(&self.cx, kind).unwrap();
-                                if kind == InputKind::Push as u32 {
-                                    insts2.remove(data_inst, func_at_control_node.data_insts);
-                                }
-                            }
-                        }
-                    }
-                    iter = next;
-                }
-                if let ControlNodeKind::Block { insts } =
-                    &mut func_at_control_node.reborrow().def().kind
-                {
-                    *insts = insts2;
-                }
-            }
-            func_at_control_node.inner_in_place_transform_with(self);
-        }
-        */
     }
     module.exports = std::mem::take(&mut module.exports)
         .into_iter()
@@ -929,8 +887,6 @@ fn rename_krnl_vars(module: &mut Module) {
 }
 
 fn fix_group_slice_len(module: &mut Module) {
-    //println!("{}", spirt::print::Plan::for_module(module).pretty_print());
-
     struct GroupSliceCollector<'a> {
         module: &'a Module,
         krnl_set: InternedStr,
@@ -1161,19 +1117,6 @@ fn fix_group_slice_len(module: &mut Module) {
                     }
                     Transformed::Unchanged
                 }
-                /*
-                 Value::ControlNodeOutput {
-                     control_node,
-                     output_idx,
-                 } => {
-                     dbg!("ControlNodeOutput");
-                     Transformed::Unchanged
-                 }
-                 Value::ControlRegionInput { region, input_idx } => {
-                     dbg!("ControlRegionInput");
-                     Transformed::Unchanged
-                 }
-                */
                 _ => Transformed::Unchanged,
             }
         }
@@ -1250,36 +1193,6 @@ fn fix_group_slice_len(module: &mut Module) {
                 }
             }
         }
-        /*
-        fn in_place_transform_control_node_def(
-            &mut self,
-            mut func_at_control_node: spirt::func_at::FuncAtMut<'_, spirt::ControlNode>,
-        ) {
-            let mut insts2 = EntityList::empty();
-            if let ControlNodeKind::Block { insts } =
-                &mut func_at_control_node.reborrow().def().kind
-            {
-                std::mem::swap(insts, &mut insts2);
-            }
-            if !insts2.is_empty() {
-                let mut iter = insts2.iter();
-                while let Some((data_inst, next)) =
-                    iter.split_first(func_at_control_node.data_insts)
-                {
-                    if self.array_length.contains_key(&data_inst) {
-                        //insts2.remove(data_inst, func_at_control_node.data_insts);
-                    }
-                    iter = next;
-                }
-                if let ControlNodeKind::Block { insts } =
-                    &mut func_at_control_node.reborrow().def().kind
-                {
-                    *insts = insts2;
-                }
-            }
-            func_at_control_node.inner_in_place_transform_with(self);
-        }
-        */
     }
 
     let mut transformer = GroupSliceTransformer {

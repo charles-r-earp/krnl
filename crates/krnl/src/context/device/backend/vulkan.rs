@@ -19,7 +19,7 @@ use vk_mem::Alloc as _;
 
 pub struct Backend {
     instance: ash::Instance,
-    entry: ash::Entry,
+    _entry: ash::Entry,
 }
 
 impl Drop for Backend {
@@ -57,13 +57,16 @@ impl super::Backend for Backend {
         let instance_create_info =
             ash::vk::InstanceCreateInfo::default().application_info(&app_info);
         let instance = unsafe { entry.create_instance(&instance_create_info, None).unwrap() };
-        Ok(Arc::new(Self { entry, instance }))
+        Ok(Arc::new(Self {
+            instance,
+            _entry: entry,
+        }))
     }
 }
 
 struct RawDevice {
     device: ash::Device,
-    physical_device: ash::vk::PhysicalDevice,
+    //physical_device: ash::vk::PhysicalDevice,
     backend: Arc<Backend>,
     queue_family_indices: Vec<u32>,
     features: Features,
@@ -180,7 +183,7 @@ impl RawDevice {
         };
         Ok(Arc::new(RawDevice {
             device,
-            physical_device,
+            //physical_device,
             backend,
             queue_family_indices,
             features,
@@ -205,7 +208,7 @@ pub struct Device {
     compute_queues: Vec<Arc<Queue>>,
     transfer_queue: Option<Arc<Queue>>,
     buffer_allocator: Arc<BufferAllocator>,
-    command_buffer_allocators: FxHashMap<u32, Arc<CommandBufferAllocator>>,
+    //command_buffer_allocators: FxHashMap<u32, Arc<CommandBufferAllocator>>,
     queue_selector: Option<Mutex<QueueSelector>>,
     kernels: Mutex<FxHashMap<KernelKey, Result<Arc<RawKernel>, CompileError>>>,
 }
@@ -288,7 +291,7 @@ impl super::Device for Device {
             compute_queues: queues,
             transfer_queue,
             buffer_allocator,
-            command_buffer_allocators,
+            //command_buffer_allocators,
             queue_selector,
             kernels,
         }))

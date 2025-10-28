@@ -4,10 +4,6 @@
 pub mod bindings;
 #[cfg(feature = "cli")]
 pub mod cli;
-#[cfg(feature = "jit")]
-pub mod jit;
-//#[cfg(feature = "bindings")]
-//mod kernel_desc;
 #[cfg(feature = "print")]
 mod print;
 #[cfg(feature = "rust-in")]

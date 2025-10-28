@@ -126,12 +126,6 @@ host_only! {
         fn __visit_spirv(&mut self, _spirv: &'static [u32]) {
             self.byte_count += size_of::<usize>();
         }
-        /*
-        fn __visit_buffer<T: Element>(&mut self, _name: &'static str) {}
-        fn __visit_buffer_mut<T: Element>(&mut self, _name: &'static str) {}
-        fn __visit_push<T: DeviceCopy>(&mut self, _name: &'static str, _offset: u32) {}
-        fn __visit_spec_id<T: DeviceCopy>(&mut self, _name: &'static str, id: u32) {}
-        */
         fn __visit_spec<T: DeviceCopy>(&mut self, _name: &'static str, _spec: &T) {
             self.byte_count += size_of::<T>();
         }
@@ -150,12 +144,6 @@ host_only! {
         fn __visit_spirv(&mut self, spirv: &'static [u32]) {
             self.bytes.extend((spirv.as_ptr() as usize).to_ne_bytes());
         }
-        /*
-        fn __visit_buffer<T: Element>(&mut self, _name: &'static str) {}
-        fn __visit_buffer_mut<T: Element>(&mut self, _name: &'static str) {}
-        fn __visit_push<T: DeviceCopy>(&mut self, _name: &'static str, _offset: u32) {}
-        fn __visit_spec_id<T: DeviceCopy>(&mut self, _name: &'static str, id: u32) {}
-        */
         fn __visit_spec<T: DeviceCopy>(&mut self, _name: &'static str, spec: &T) {
             self.bytes.extend(bytemuck::bytes_of(spec));
         }
