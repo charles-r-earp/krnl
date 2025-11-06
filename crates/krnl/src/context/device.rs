@@ -2,6 +2,8 @@ use crate::Result;
 #[cfg(feature = "device")]
 use crate::kernel::{KernelCreateInfo, KernelDesc, KernelKey};
 use bytemuck::{Pod, cast_slice, cast_slice_mut};
+#[cfg(feature = "device")]
+use core::ops::RangeBounds;
 use parking_lot::Mutex;
 use std::{
     marker::PhantomData,
@@ -12,8 +14,8 @@ use std::{
 mod backend;
 #[cfg(feature = "device")]
 use backend::{
-    Backend as _, Buffer as _, Device as _, DeviceOwned, DeviceSpecifier, Event as _, Kernel as _,
-    Slice as _,
+    Backend as _, Buffer as _, BufferRange, Device as _, DeviceOwned, DeviceSpecifier, Event as _,
+    Kernel as _, Slice as _,
     backend_impl::{
         Backend, Buffer as RawBuffer, Device as RawDevice, Event as RawEvent, Kernel as RawKernel,
         Slice as RawSlice,
@@ -331,6 +333,22 @@ impl<T> Slice<'_, T> {
             _m: PhantomData,
         }
     }
+    pub(super) fn slice(self, bounds: impl RangeBounds<usize>) -> Self {
+        let start_bound = bounds.start_bound().map(|x| *x * size_of::<T>());
+        let end_bound = bounds.end_bound().map(|x| *x * size_of::<T>());
+        let size = self.len() * size_of::<T>();
+        let raw = self.raw.slice(
+            BufferRange {
+                start: 0,
+                end: size,
+            }
+            .slice((start_bound, end_bound)),
+        );
+        Self {
+            raw,
+            _m: PhantomData,
+        }
+    }
 }
 
 #[cfg(feature = "device")]
@@ -370,6 +388,22 @@ impl<T> SliceMut<'_, T> {
     pub(super) fn as_slice_mut(&mut self) -> SliceMut<'_, T> {
         SliceMut {
             raw: self.raw.clone(),
+            _m: PhantomData,
+        }
+    }
+    pub(super) fn slice_mut(self, bounds: impl RangeBounds<usize>) -> Self {
+        let start_bound = bounds.start_bound().map(|x| *x * size_of::<T>());
+        let end_bound = bounds.end_bound().map(|x| *x * size_of::<T>());
+        let size = self.len() * size_of::<T>();
+        let raw = self.raw.slice(
+            BufferRange {
+                start: 0,
+                end: size,
+            }
+            .slice((start_bound, end_bound)),
+        );
+        Self {
+            raw,
             _m: PhantomData,
         }
     }
@@ -437,26 +471,24 @@ pub(crate) struct BufferBindingVec(Vec<RawBufferBinding>);
 
 #[cfg(feature = "device")]
 impl BufferBindingVec {
-    pub(crate) fn set_slice<T: Pod>(&mut self, index: usize, slice: &Slice<T>) {
-        self.0[index] = RawBufferBinding {
-            slice: slice.raw.clone(),
-            mutable: false,
-        };
-    }
-
     pub(crate) fn with_capacity(capacity: usize) -> Self {
         Self(Vec::with_capacity(capacity))
     }
     pub(crate) fn push_slice<T: Pod>(&mut self, slice: &Slice<T>) {
-        self.0.push(RawBufferBinding {
-            slice: slice.raw.clone(),
-            mutable: false,
-        });
+        self.0.push(RawBufferBinding::new(
+            slice.raw.clone(),
+            false,
+            size_of::<T>(),
+        ));
     }
     pub(crate) fn push_slice_mut<T: Pod>(&mut self, slice: &mut SliceMut<T>) {
-        self.0.push(RawBufferBinding {
-            slice: slice.raw.clone(),
-            mutable: true,
-        });
+        self.0.push(RawBufferBinding::new(
+            slice.raw.clone(),
+            true,
+            size_of::<T>(),
+        ));
+    }
+    pub(crate) fn buffer_offsets(&self) -> impl Iterator<Item = u32> {
+        self.0.iter().map(|x| x.offset())
     }
 }

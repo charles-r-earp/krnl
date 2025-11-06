@@ -167,7 +167,16 @@ impl RawDevice {
         if supported_physical_device_features.shader_float64 != 0 {
             features.insert(Features::FLOAT64);
         }
+        // https://registry.khronos.org/vulkan/specs/latest/html/vkspec.html#limits-minmax
+        // Limited to 256 in vulkan
+        let min_buffer_align = physical_device_properties
+            .properties
+            .limits
+            .min_storage_buffer_offset_alignment
+            .try_into()
+            .unwrap();
         let properties = Properties {
+            min_buffer_align,
             max_buffer_size: physical_device_properties
                 .properties
                 .limits
@@ -831,12 +840,16 @@ impl RawCommandBuffer {
     ) {
         let command_buffer = self.command_buffer.unwrap();
         let device = &self.device.device;
+        let min_buffer_align = self.device.properties.min_buffer_align as usize;
         let buffer_infos: Vec<_> = buffers
             .iter()
-            .map(|buffer| ash::vk::DescriptorBufferInfo {
-                buffer: buffer.slice.buffer.raw.as_ref().unwrap().buffer,
-                offset: buffer.slice.range.start as u64,
-                range: buffer.slice.range.len() as u64,
+            .map(|buffer| {
+                let aligned = buffer.slice.range.aligned_offset(min_buffer_align).0;
+                ash::vk::DescriptorBufferInfo {
+                    buffer: buffer.slice.buffer.raw.as_ref().unwrap().buffer,
+                    offset: aligned.start as u64,
+                    range: aligned.len() as u64,
+                }
             })
             .collect();
         let mut descriptor_writes: Vec<_> = (0..buffers.len())
@@ -891,7 +904,7 @@ impl RawCommandBuffer {
                     kernel.pipeline_layout,
                     ash::vk::ShaderStageFlags::COMPUTE,
                     offset,
-                    push_constants,
+                    &push_constants,
                 );
             }
         }
@@ -1222,7 +1235,11 @@ impl super::Slice for Slice {
         self.range
     }
     fn slice(self: Arc<Self>, range: BufferRange) -> Arc<Self> {
-        todo!()
+        let range = self.range.slice(range);
+        Arc::new(Self {
+            range,
+            buffer: self.buffer.clone(),
+        })
     }
     unsafe fn upload(&self, bytes: &[u8]) -> Result<()> {
         debug_assert_eq!(self.len(), bytes.len());

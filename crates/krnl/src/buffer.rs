@@ -3,6 +3,7 @@ use crate::{
     context::{Buffer as RawBuffer, Context, Slice as RawSlice, SliceMut as RawSliceMut},
 };
 use bytemuck::Pod;
+use core::ops::RangeBounds;
 use rayon::iter::{
     IndexedParallelIterator, IntoParallelRefIterator, IntoParallelRefMutIterator, ParallelIterator,
 };
@@ -184,12 +185,22 @@ impl<'a, T> From<&'a [T]> for Slice<'a, T> {
 }
 
 impl<'a, T> Slice<'a, T> {
+    pub(crate) fn as_context_slice(&self) -> &crate::context::Slice<'a, T> {
+        &self.data.raw
+    }
     pub fn into_host_slice(self) -> Option<&'a [T]> {
         #[allow(irrefutable_let_patterns)]
         if let RawSlice::Host(slice) = self.data.raw {
             Some(slice)
         } else {
             None
+        }
+    }
+    pub fn slice(self, bounds: impl RangeBounds<usize>) -> Self {
+        Self {
+            data: SliceRepr {
+                raw: self.data.raw.slice(bounds),
+            },
         }
     }
 }
@@ -202,6 +213,16 @@ impl<'a, T> SliceMut<'a, T> {
         } else {
             None
         }
+    }
+    pub fn slice_mut(self, bounds: impl RangeBounds<usize>) -> Self {
+        Self {
+            data: SliceMutRepr {
+                raw: self.data.raw.slice_mut(bounds),
+            },
+        }
+    }
+    pub(crate) fn as_context_slice_mut(&mut self) -> &mut crate::context::SliceMut<'a, T> {
+        &mut self.data.raw
     }
 }
 
@@ -263,18 +284,6 @@ impl<S: Data> BufferBase<S> {
         SliceMut {
             data: self.data.__as_slice_mut(),
         }
-    }
-}
-
-impl<'a, T> Slice<'a, T> {
-    pub(crate) fn as_context_slice(&self) -> &crate::context::Slice<'a, T> {
-        &self.data.raw
-    }
-}
-
-impl<'a, T> SliceMut<'a, T> {
-    pub(crate) fn as_context_slice_mut(&mut self) -> &mut crate::context::SliceMut<'a, T> {
-        &mut self.data.raw
     }
 }
 

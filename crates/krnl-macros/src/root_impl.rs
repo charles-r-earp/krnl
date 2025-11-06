@@ -16,7 +16,6 @@ pub fn root() -> Result<TokenStream> {
     let kernel_tokens: TokenStream = kernels
         .into_iter()
         .flat_map(|(name, binary)| {
-            dbg!(&name);
             let binary: Punctuated<Literal, syn::token::Comma> =
                 binary.into_iter().map(Literal::u8_unsuffixed).collect();
             let (module, name) = name.rsplit_once("::").unwrap();

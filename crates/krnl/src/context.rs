@@ -1,3 +1,5 @@
+use core::ops::RangeBounds;
+
 use crate::Result;
 use bytemuck::Pod;
 use derive_more::From;
@@ -100,6 +102,17 @@ impl<T> Slice<'_, T> {
             Self::Device(x) => Slice::Device(x.as_slice()),
         }
     }
+    pub(crate) fn slice(self, bounds: impl RangeBounds<usize>) -> Self {
+        match self {
+            Self::Host(x) => {
+                let start_bound = bounds.start_bound().map(|x| *x);
+                let end_bound = bounds.end_bound().map(|x| *x);
+                Self::Host(&x[(start_bound, end_bound)])
+            }
+            #[cfg(feature = "device")]
+            Self::Device(x) => Self::Device(x.slice(bounds)),
+        }
+    }
 }
 
 impl<T: Pod> Slice<'_, T> {
@@ -172,6 +185,17 @@ impl<T> SliceMut<'_, T> {
             Self::Host(x) => SliceMut::Host(x),
             #[cfg(feature = "device")]
             Self::Device(x) => SliceMut::Device(x.as_slice_mut()),
+        }
+    }
+    pub(crate) fn slice_mut(self, bounds: impl RangeBounds<usize>) -> Self {
+        match self {
+            Self::Host(x) => {
+                let start_bound = bounds.start_bound().map(|x| *x);
+                let end_bound = bounds.end_bound().map(|x| *x);
+                Self::Host(&mut x[(start_bound, end_bound)])
+            }
+            #[cfg(feature = "device")]
+            Self::Device(x) => Self::Device(x.slice_mut(bounds)),
         }
     }
 }

@@ -234,14 +234,18 @@ host_only! {
         }
         fn __visit_buffer<T: Element>(&mut self, _name: &'static str) {
             self.desc.buffers += 1;
+            self.desc.push_constant_bytes += 4;
         }
         fn __visit_buffer_mut<T: Element>(&mut self, _name: &'static str) {
             self.desc.mutability.insert(self.desc.buffers);
-            self.desc.buffers += 1;
+            self.__visit_buffer::<T>(_name);
         }
         fn __visit_push<T: DeviceCopy>(&mut self, name: &'static str, offset: u32) {
-            if name == "krnl::items" {
-                self.desc.items_offset.replace(offset);
+            if name.starts_with("krnl") {
+                if name == "krnl::items" {
+                    self.desc.items_offset.replace(offset);
+                }
+                // if name starts with "krnl::offset_" do nothing
             } else {
                 self.desc.push_offsets.push(offset);
             }
@@ -352,6 +356,12 @@ host_only! {
                 }
                 if groups == 0 {
                     todo!();
+                }
+                {
+                    let start = (desc.push_constant_bytes - 4 * desc.buffers) as usize;
+                    for (offset, chunk) in buffers.buffer_offsets().zip(push_constants[start..].chunks_exact_mut(4)) {
+                        chunk.copy_from_slice(&offset.to_ne_bytes());
+                    }
                 }
                 unsafe { self.raw.exec(groups, &buffers, &push_constants) }
             }
