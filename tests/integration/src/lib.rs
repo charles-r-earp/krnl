@@ -8,7 +8,7 @@ use krnl::{
     scalar::{bf16, f16},
 };
 #[cfg(test)]
-use num_traits::{AsPrimitive, Bounded, ConstOne};
+use num_traits::{AsPrimitive, Bounded};
 use paste::paste;
 #[cfg(feature = "device")]
 use {maybe_async::maybe_async, std::sync::OnceLock};
@@ -118,8 +118,8 @@ where
     usize: AsPrimitive<T> + Copy,
 {
     let y_max: f64 = T::max_value().as_();
-    let n_max = n.min(y_max.round() as usize);
-    (1..=n_max).cycle().take(n).map(|x| x.as_()).collect()
+    let n_max = y_max.round() as usize;
+    (1..n_max).cycle().take(n).map(|x| x.as_()).collect()
 }
 
 macro_for!($n in [1, 10, 100, 1000] {
@@ -128,9 +128,9 @@ macro_for!($n in [1, 10, 100, 1000] {
             #[test]
             fn [<fill_ $T _ $n _host>]() {
                 let mut y = Buffer::from(gen_fill_vec($n));
-                y.fill($T::ONE).unwrap();
+                y.fill($T::MAX).unwrap();
                 let y = y.into_vec().unwrap();
-                assert_eq!(y, vec![$T::ONE; $n]);
+                assert_eq!(y, vec![$T::MAX; $n]);
             }
 
             #[cfg(all(not(target_family = "wasm"), feature = "device"))]
@@ -140,9 +140,9 @@ macro_for!($n in [1, 10, 100, 1000] {
                 let mut y = Buffer::from(gen_fill_vec($n))
                     .into_context(device.into())
                     .unwrap();
-                y.fill($T::ONE).unwrap();
+                y.fill($T::MAX).unwrap();
                 let y = y.into_vec().unwrap();
-                assert_eq!(y, vec![$T::ONE; $n]);
+                assert_eq!(y, vec![$T::MAX; $n]);
             }
         }
     });
@@ -156,9 +156,9 @@ macro_for!($n in [1, 10, 100, 1000] {
                 let mut y = Buffer::from(gen_fill_vec($n))
                     .into_context(device.into())
                     .unwrap();
-                y.fill($T::ONE).unwrap();
+                y.fill($T::MAX).unwrap();
                 let y = y.into_vec_async().await.unwrap();
-                assert_eq!(y, vec![$T::ONE; $n]);
+                assert_eq!(y, vec![$T::MAX; $n]);
             }
         }
     });
@@ -171,11 +171,11 @@ macro_for!($o in [1, 2, 5] {
             fn [<fill_10_offset_ $o _ $T _host>]() {
                 let n = 10;
                 let mut y = Buffer::from(gen_fill_vec(n));
-                y.as_slice_mut().slice_mut($o..).fill($T::ONE).unwrap();
+                y.as_slice_mut().slice_mut($o..).fill($T::MAX).unwrap();
                 let y = y.into_vec().unwrap();
                 let mut y_true = gen_fill_vec(n);
                 for y in y_true[$o..].iter_mut() {
-                    *y = $T::ONE;
+                    *y = $T::MAX;
                 }
                 assert_eq!(y, y_true);
             }
@@ -188,11 +188,11 @@ macro_for!($o in [1, 2, 5] {
                 let mut y = Buffer::from(gen_fill_vec(n))
                     .into_context(device.into())
                     .unwrap();
-                y.as_slice_mut().slice_mut($o..).fill($T::ONE).unwrap();
+                y.as_slice_mut().slice_mut($o..).fill($T::MAX).unwrap();
                 let y = y.into_vec().unwrap();
                 let mut y_true = gen_fill_vec(n);
                 for y in y_true[$o..].iter_mut() {
-                    *y = $T::ONE;
+                    *y = $T::MAX;
                 }
                 assert_eq!(y, y_true);
             }
@@ -209,11 +209,11 @@ macro_for!($o in [1, 2, 5] {
                 let mut y = Buffer::from(gen_fill_vec(n))
                     .into_context(device.into())
                     .unwrap();
-                y.as_slice_mut().slice_mut($o..).fill($T::ONE).unwrap();
+                y.as_slice_mut().slice_mut($o..).fill($T::MAX).unwrap();
                 let y = y.into_vec_async().await.unwrap();
                 let mut y_true = gen_fill_vec(n);
                 for y in y_true[$o..].iter_mut() {
-                    *y = $T::ONE;
+                    *y = $T::MAX;
                 }
                 assert_eq!(y, y_true);
             }

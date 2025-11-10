@@ -411,6 +411,56 @@ pub(crate) fn op_array_length(cx: &Context, array: Value, member: Value) -> Data
     }
 }
 
+pub(crate) fn op_shift_right_logical(
+    cx: &Context,
+    output_type: Type,
+    base: Value,
+    shift: Value,
+) -> DataInstDef {
+    let opcode = Opcode::try_from_u16_with_name_and_def(Op::ShiftRightLogical as u16)
+        .unwrap()
+        .0;
+    let spv_inst = Inst {
+        opcode,
+        imms: SmallVec::default(),
+    };
+    let form_def = DataInstFormDef {
+        kind: DataInstKind::SpvInst(spv_inst),
+        output_type: Some(output_type),
+    };
+    let form = cx.intern(form_def);
+    DataInstDef {
+        attrs: AttrSet::default(),
+        form,
+        inputs: [base, shift].into_iter().collect(),
+    }
+}
+
+pub(crate) fn op_bitwise_and(
+    cx: &Context,
+    output_type: Type,
+    lhs: Value,
+    rhs: Value,
+) -> DataInstDef {
+    let opcode = Opcode::try_from_u16_with_name_and_def(Op::BitwiseAnd as u16)
+        .unwrap()
+        .0;
+    let spv_inst = Inst {
+        opcode,
+        imms: SmallVec::default(),
+    };
+    let form_def = DataInstFormDef {
+        kind: DataInstKind::SpvInst(spv_inst),
+        output_type: Some(output_type),
+    };
+    let form = cx.intern(form_def);
+    DataInstDef {
+        attrs: AttrSet::default(),
+        form,
+        inputs: [lhs, rhs].into_iter().collect(),
+    }
+}
+
 pub(crate) fn op_i_add(cx: &Context, output_type: Type, lhs: Value, rhs: Value) -> DataInstDef {
     let opcode = Opcode::try_from_u16_with_name_and_def(Op::IAdd as u16)
         .unwrap()

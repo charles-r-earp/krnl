@@ -201,8 +201,12 @@ host_only! {
             builder.spec_constants.insert(0, ArrayVec::from_array_len([threads, 0], 1));
             let spirv = builder.spirv.expect("no spirv!");
             let mut desc = builder.desc;
-            if desc.push_constant_bytes % 4 != 0 {
-                desc.push_constant_bytes += 4 - (desc.push_constant_bytes % 4);
+            while desc.push_constant_bytes % 4 != 0 {
+                desc.push_constant_bytes += 1;
+            }
+            desc.push_constant_bytes += desc.buffers;
+            while desc.push_constant_bytes % 4 != 0 {
+                desc.push_constant_bytes += 1;
             }
             Self {
                 spirv,
@@ -234,7 +238,6 @@ host_only! {
         }
         fn __visit_buffer<T: Element>(&mut self, _name: &'static str) {
             self.desc.buffers += 1;
-            self.desc.push_constant_bytes += 4;
         }
         fn __visit_buffer_mut<T: Element>(&mut self, _name: &'static str) {
             self.desc.mutability.insert(self.desc.buffers);
@@ -358,9 +361,10 @@ host_only! {
                     todo!();
                 }
                 {
-                    let start = (desc.push_constant_bytes - 4 * desc.buffers) as usize;
-                    for (offset, chunk) in buffers.buffer_offsets().zip(push_constants[start..].chunks_exact_mut(4)) {
-                        chunk.copy_from_slice(&offset.to_ne_bytes());
+                    let offset_bytes = (desc.buffers / 4 + (desc.buffers % 4 != 0) as u32) * 4;
+                    let start = (desc.push_constant_bytes - offset_bytes) as usize;
+                    for (offset, push) in buffers.buffer_offsets().zip(push_constants[start..].iter_mut()) {
+                        *push = offset as u8;
                     }
                 }
                 unsafe { self.raw.exec(groups, &buffers, &push_constants) }
