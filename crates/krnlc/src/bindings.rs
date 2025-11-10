@@ -166,7 +166,7 @@ fn rename_entry_points(module: &mut Module, entry_point: &str) {
         .collect();
 }
 
-fn add_buffer_offsets(module: &mut Module, sig: &KernelSig) {
+fn add_buffer_offsets(module: &mut Module, sig: &mut KernelSig) {
     #[derive(Default)]
     struct FuncCollector {
         funcs: IndexSet<Func, FxBuildHasher>,
@@ -195,7 +195,7 @@ fn add_buffer_offsets(module: &mut Module, sig: &KernelSig) {
     }
 
     impl ModuleTransformer {
-        fn new(module: &mut Module, sig: &KernelSig) -> Self {
+        fn new(module: &mut Module, sig: &mut KernelSig) -> Self {
             let cx = module.cx();
             let module_globals = UsedGlobals::parse_module(&module, None);
             let buffer_count = module_globals
@@ -235,11 +235,12 @@ fn add_buffer_offsets(module: &mut Module, sig: &KernelSig) {
             for (i, _) in (0..buffer_count).step_by(4).enumerate() {
                 let member = push_constant_field_types.len() as u32;
                 push_constant_field_types.push(ty_u32);
-                let offset_name = format!("krnl::offset_{i}");
+                let name = format!("krnl::buffer_offset_{i}");
                 push_constant_attrs.extend([
-                    op_member_name(member, &offset_name),
+                    op_member_name(member, &name),
                     op_member_decorate_offset(member, offset),
                 ]);
+                sig.buffer_offsets.push(offset);
                 offset += 4;
             }
             let buffer_names: Vec<_> = sig
@@ -525,9 +526,7 @@ fn add_buffer_offsets(module: &mut Module, sig: &KernelSig) {
 
     let mut collector = FuncCollector::default();
     module.inner_visit_with(&mut collector);
-
-    let mut transformer = ModuleTransformer::new(module, &sig);
-
+    let mut transformer = ModuleTransformer::new(module, sig);
     for func in collector.funcs {
         transformer.in_place_transform_func_decl(&mut module.funcs[func]);
     }
@@ -542,14 +541,14 @@ fn split_entry_points(
         .exports
         .iter()
         .zip(sigs)
-        .map(move |((key, value), sig)| {
+        .map(move |((key, value), mut sig)| {
             let mut module = module.clone();
             module.exports = std::iter::once((key.clone(), value.clone())).collect();
             let features = Features::reflect(&module).wgsl(wgsl);
             features.write_to_module(&mut module);
-            add_buffer_offsets(&mut module, &sig);
+            add_buffer_offsets(&mut module, &mut sig);
             let spirv = assemble(&module).unwrap();
-            validate(&spirv).expect("spirv-val after split");
+            validate(&spirv).expect(&format!("spirv-val after split {}", sig.name));
             Kernel {
                 sig,
                 features,
@@ -731,12 +730,7 @@ impl ToTokens for KernelInput {
             }
             Self::Push(desc) => {
                 let name = desc.name();
-                let name = if name == "krnl::items" {
-                    "__krnl_items"
-                } else {
-                    name
-                };
-                let ident = Ident::new(name, Span::call_site());
+                let ident = Ident::new(&name, Span::call_site());
                 let scalar_type = desc.scalar_type();
                 let mut elem_ty =
                     Ident::new(&scalar_type.to_string(), Span::call_site()).to_token_stream();
@@ -764,6 +758,7 @@ struct KernelSig {
     name: String,
     safe: bool,
     inputs: Vec<KernelInput>,
+    buffer_offsets: Vec<u32>,
 }
 
 impl KernelSig {
@@ -1041,7 +1036,12 @@ impl KernelSig {
         module.funcs[entry_func].inner_visit_with(&mut visitor);
         let safe = visitor.safe;
         let inputs = visitor.inputs;
-        Self { name, safe, inputs }
+        Self {
+            name,
+            safe,
+            inputs,
+            buffer_offsets: Vec::new(),
+        }
     }
 }
 
@@ -1111,6 +1111,19 @@ impl Kernel {
                 }
             }
         });
+        let visit_buffer_offsets =
+            self.sig
+                .buffer_offsets
+                .iter()
+                .copied()
+                .enumerate()
+                .map(|(id, offset)| {
+                    let id = LitInt::new(&id.to_string(), Span::call_site());
+                    let offset = LitInt::new(&offset.to_string(), Span::call_site());
+                    quote! {
+                        v.__visit_buffer_offset(#id, #offset);
+                    }
+                });
         let visit_features: TokenStream = self
             .features
             .capabilities_iter()
@@ -1140,6 +1153,7 @@ impl Kernel {
                     v.__visit_spirv([#(#spirv_lits),*].as_slice());
                     #visit_features
                     #(#visit_inputs)*
+                    #(#visit_buffer_offsets)*
                 }
             }
         }

@@ -158,8 +158,8 @@ host_only! {
         pub(crate) buffers: u32,
         pub(crate) mutability: BufferMutabilityMask,
         pub(crate) push_constant_bytes: u32,
-        pub(crate) items_offset: Option<u32>,
         pub(crate) push_offsets: Vec<u32>,
+        buffer_offsets: Vec<u32>,
     }
 
     #[cfg(feature = "device")]
@@ -204,10 +204,6 @@ host_only! {
             while desc.push_constant_bytes % 4 != 0 {
                 desc.push_constant_bytes += 1;
             }
-            desc.push_constant_bytes += desc.buffers;
-            while desc.push_constant_bytes % 4 != 0 {
-                desc.push_constant_bytes += 1;
-            }
             Self {
                 spirv,
                 spec_constants: builder.spec_constants,
@@ -243,15 +239,14 @@ host_only! {
             self.desc.mutability.insert(self.desc.buffers);
             self.__visit_buffer::<T>(_name);
         }
-        fn __visit_push<T: DeviceCopy>(&mut self, name: &'static str, offset: u32) {
-            if name.starts_with("krnl") {
-                if name == "krnl::items" {
-                    self.desc.items_offset.replace(offset);
-                }
-                // if name starts with "krnl::offset_" do nothing
-            } else {
-                self.desc.push_offsets.push(offset);
-            }
+        fn __visit_buffer_offset(&mut self, id: u32, offset: u32) {
+            assert_eq!(self.desc.buffer_offsets.len() as u32, id);
+            self.desc.buffer_offsets.push(offset);
+            let range = offset + size_of::<u32>() as u32;
+            self.desc.push_constant_bytes = self.desc.push_constant_bytes.max(range);
+        }
+        fn __visit_push<T: DeviceCopy>(&mut self, _name: &'static str, offset: u32) {
+            self.desc.push_offsets.push(offset);
             let range = offset + size_of::<T>() as u32;
             self.desc.push_constant_bytes = self.desc.push_constant_bytes.max(range);
         }
@@ -346,26 +341,16 @@ host_only! {
                     items,
                     ..
                 } = visitor;
+                for (value, offset) in buffers.buffer_offsets().zip(desc.buffer_offsets.iter().copied()) {
+                    push_constants[offset as usize..][..4].copy_from_slice(&value.to_ne_bytes());
+                }
                 let mut groups = self.groups;
-                if let Some(items) = items {
-                    if groups == 0 {
-                        let threads = desc.threads as usize;
-                        groups = items / threads + (items % threads != 0) as usize;
-                    }
-                    let items: u32 = items.try_into().unwrap();
-                    let offset = desc.items_offset.unwrap() as usize;
-                    let size = 4;
-                    push_constants[offset..offset+size].copy_from_slice(bytemuck::bytes_of(&items));
+                if let Some(items) = items && groups == 0 {
+                    let threads = desc.threads as usize;
+                    groups = items / threads + (items % threads != 0) as usize;
                 }
                 if groups == 0 {
                     todo!();
-                }
-                {
-                    let offset_bytes = (desc.buffers / 4 + (desc.buffers % 4 != 0) as u32) * 4;
-                    let start = (desc.push_constant_bytes - offset_bytes) as usize;
-                    for (offset, push) in buffers.buffer_offsets().zip(push_constants[start..].iter_mut()) {
-                        *push = offset as u8;
-                    }
                 }
                 unsafe { self.raw.exec(groups, &buffers, &push_constants) }
             }
@@ -430,6 +415,7 @@ host_only! {
             self.__visit_slice_mut(name, slice)
         }
         fn __visit_push<T: DeviceCopy>(&mut self, _name: &'static str, push: &T) {
+            dbg!(_name);
             let offset = self.desc.push_offsets[self.push_index] as usize;
             let size = size_of::<T>();
             self.push_constants[offset..offset+size].copy_from_slice(bytemuck::bytes_of(push));
@@ -459,6 +445,7 @@ pub mod __private {
             fn __visit_features(&mut self, features: Features) {}
             fn __visit_buffer<T: Element>(&mut self, name: &'static str) {}
             fn __visit_buffer_mut<T: Element>(&mut self, name: &'static str) {}
+            fn __visit_buffer_offset(&mut self, id: u32, offset: u32) {}
             fn __visit_push<T: DeviceCopy>(&mut self, name: &'static str, offset: u32) {}
             fn __visit_spec_id<T: DeviceCopy>(&mut self, name: &'static str, id: u32) {}
             fn __visit_spec<T: DeviceCopy>(&mut self, name: &'static str, spec: &T) {}
