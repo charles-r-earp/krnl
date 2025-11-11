@@ -324,7 +324,7 @@ impl Kernel {
             .inputs
             .iter()
             .filter(|x| x.is_spec())
-            .map(|x| &x.ty); //self.sig.generics.const_params().map(|x| &x.ty);
+            .map(|x| &x.ty);
         let args = self.sig.inputs.iter().filter_map(|x| x.host_arg_ty());
         let kernel_import_visit = self.kernel_import_visit();
         let visit_build_args = self
@@ -416,7 +416,6 @@ impl Kernel {
                 }
             });
             quote! {
-                let __krnl_items = *__krnl_items as usize;
                 let mut __krnl_item_id = __krnl_global_thread_id;
                 while __krnl_item_id < __krnl_items {
                     #(#item_loads_stores)*
@@ -517,14 +516,6 @@ impl Kernel {
         ]
         .into_iter()
         .map(FnArg::unwrap_pat_type);
-        let items = if self.is_item() {
-            Some(FnArg::unwrap_pat_type(parse_quote! {
-                #[spirv(push_constant)]
-                __krnl_items: &u32
-            }))
-        } else {
-            None
-        };
         let mut binding = 0;
         let args = self
             .sig
@@ -537,7 +528,7 @@ impl Kernel {
             .iter()
             .enumerate()
             .map(move |(i, x)| x.entry_point_arg(&mut binding));
-        builtins.chain(items).chain(args).chain(group_buffers)
+        builtins.chain(args).chain(group_buffers)
     }
     fn is_item(&self) -> bool {
         self.sig.inputs.iter().any(|x| x.is_item())
@@ -640,26 +631,27 @@ impl Kernel {
             let __krnl_global_threads = __krnl_groups * __krnl_threads;
             let __krnl_global_thread_id = __krnl_group_id * __krnl_threads + __krnl_thread_id;
         };
-        /*
-        let specs = self
-            .sig
-            .generics
-            .const_params()
-            .map(|ConstParam { ident, ty, .. }| -> Stmt {
-                parse_quote! {
-                    let #ident = {
-                        unsafe { krnl::kernel::__private::__spec_constant::<#ty>(&#ident) };
-                        *#ident
-                    };
+        let items = {
+            let mut items = self
+                .sig
+                .inputs
+                .iter()
+                .filter(|x| x.is_item())
+                .map(|x| x.ident.clone())
+                .peekable();
+            if let Some(first) = items.next() {
+                if items.peek().is_some() {
+                    quote! {
+                        let __krnl_items = #first.len() #(.min(#items.len()))*;
+                    }
+                } else {
+                    quote! {
+                        let __krnl_items = #first.len();
+                    }
                 }
-            });
-        */
-        let items = if self.is_item() {
-            quote! {
-                unsafe { krnl::kernel::__private::__push_constant(__krnl_items) };
+            } else {
+                TokenStream::new()
             }
-        } else {
-            TokenStream::new()
         };
         let inputs = self.sig.inputs.iter().map(move |x| x.device_decl());
         quote! {
@@ -715,14 +707,7 @@ impl Kernel {
                 }
             }
         }
-        let items = if self.is_item() {
-            Some(KernelImportInput::items())
-        } else {
-            None
-        };
-        let inputs = items
-            .into_iter()
-            .chain(self.sig.inputs.iter().filter_map(|x| x.kernel_import()));
+        let inputs = self.sig.inputs.iter().filter_map(|x| x.kernel_import());
         let is_generic = !self.sig.generics.params.is_empty();
         let safety = if self.sig.unsafety.is_some() {
             quote!(())
@@ -1196,16 +1181,6 @@ impl KernelImportInput {
             colon_token: const_param.colon_token,
             kind: format_ident!("__Spec"),
             ty: parse2(const_param.ty.to_token_stream()).unwrap(),
-        }
-    }
-    fn items() -> Self {
-        KernelImportInput {
-            ident: format_ident!("__krnl_items"),
-            kind: format_ident!("__Push"),
-            colon_token: Colon {
-                spans: [Span::call_site()],
-            },
-            ty: parse_quote!(u32),
         }
     }
 }

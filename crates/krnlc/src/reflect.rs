@@ -574,7 +574,10 @@ impl ElementType {
     }
 }
 
-fn get_struct_field_types(cx: &Context, ty: Type) -> Option<impl Iterator<Item = Type> + '_> {
+pub(crate) fn get_struct_field_types(
+    cx: &Context,
+    ty: Type,
+) -> Option<impl Iterator<Item = Type> + '_> {
     let type_def = &cx[ty];
     if let TypeKind::SpvInst {
         spv_inst,
@@ -594,6 +597,34 @@ fn get_struct_field_types(cx: &Context, ty: Type) -> Option<impl Iterator<Item =
         }
     }
     None
+}
+
+pub(crate) fn get_struct_size(cx: &Context, ty: Type) -> Option<u32> {
+    let type_def = &cx[ty];
+    let attrs = &cx[type_def.attrs].attrs;
+    if let Some((member, field)) = get_struct_field_types(cx, ty).unwrap().enumerate().last() {
+        let size = get_element_size(cx, field).unwrap();
+        let offset = attrs
+            .iter()
+            .find_map(|x| {
+                if let Attr::SpvAnnotation(inst) = x {
+                    if inst.opcode == Spec::get().well_known.OpMemberDecorate {
+                        if let [Imm::Short(_, a), Imm::Short(_, b), Imm::Short(_, c)] =
+                            inst.imms.as_slice()
+                        {
+                            if *b == Decoration::Offset as u32 && *a == member as u32 {
+                                return Some(*c);
+                            }
+                        }
+                    }
+                }
+                None
+            })
+            .unwrap();
+        Some(offset + size)
+    } else {
+        Some(0)
+    }
 }
 
 #[derive(Default, Clone, Debug)]

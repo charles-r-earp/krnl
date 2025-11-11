@@ -76,7 +76,13 @@ impl RawDevice {
             }
             features
         };
+        let min_buffer_align = if PUSH_UNIFORM {
+            limits.min_uniform_buffer_offset_alignment()
+        } else {
+            limits.min_storage_buffer_offset_alignment()
+        };
         let properties = Properties {
+            min_buffer_align,
             max_buffer_size,
             max_subgroup_threads: 128,
             min_subgroup_threads: 1,
@@ -340,8 +346,12 @@ impl super::Slice for Slice {
     fn range(&self) -> BufferRange {
         self.range
     }
-    fn slice(self: Arc<Self>, _range: BufferRange) -> Arc<Self> {
-        todo!()
+    fn slice(self: Arc<Self>, range: BufferRange) -> Arc<Self> {
+        let range = self.range.slice(range);
+        Arc::new(Self {
+            range,
+            buffer: self.buffer.clone(),
+        })
     }
     unsafe fn upload(&self, bytes: &[u8]) -> Result<()> {
         assert_eq!(self.len(), bytes.len());
@@ -683,10 +693,16 @@ impl super::Kernel for Kernel {
         compute_pass.set_pipeline(&self.raw.pipeline);
         let bindgroup_entries =
             Array::new_with_length(buffers.len() as u32 + self.raw.has_push_constants as u32);
+        let min_buffer_align = self.device.raw.properties.min_buffer_align;
         for (binding, buffer) in buffers.iter().enumerate() {
             let resource = GpuBufferBinding::new(&buffer.slice.buffer.raw.as_ref().unwrap().buffer);
-            resource.set_offset(buffer.slice.range.start as f64);
-            resource.set_size(buffer.slice.range.len() as f64);
+            let range = buffer
+                .slice
+                .range
+                .aligned_offset(min_buffer_align as usize)
+                .0;
+            resource.set_offset(range.start as f64);
+            resource.set_size(range.len() as f64);
             let binding = binding as u32;
             let bindgroup_entry = GpuBindGroupEntry::new(binding, &resource);
             bindgroup_entries.set(binding, bindgroup_entry.into());

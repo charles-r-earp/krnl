@@ -8,7 +8,7 @@ use krnl::{
     scalar::{bf16, f16},
 };
 #[cfg(test)]
-use num_traits::{AsPrimitive, Bounded, ConstOne};
+use num_traits::{AsPrimitive, Bounded};
 use paste::paste;
 #[cfg(feature = "device")]
 use {maybe_async::maybe_async, std::sync::OnceLock};
@@ -107,13 +107,6 @@ macro_for!($n in [1, 10, 100, 1_000, 1_000_000, 32_000_000] {
             let y = y.into_vec().unwrap();
             #[cfg(target_family = "wasm")]
             let y = y.into_vec_async().await.unwrap();
-            assert_eq!(y.len(), $n);
-            assert_eq!(x.len(), y.len());
-            if $n > 100 {
-                for i in 0 .. y.len() {
-                    assert_eq!(x[i], y[i], "[{}] {} != {} {:?}", i, x[i], y[i], &y[..100]);
-                }
-            }
             assert_eq!(x, y);
         }
     }
@@ -125,54 +118,104 @@ where
     usize: AsPrimitive<T> + Copy,
 {
     let y_max: f64 = T::max_value().as_();
-    let n_max = n.min(y_max.round() as usize);
-    (1..=n_max).cycle().take(n).map(|x| x.as_()).collect()
+    let n_max = y_max.round() as usize;
+    (1..n_max).cycle().take(n).map(|x| x.as_()).collect()
 }
 
 macro_for!($n in [1, 10, 100, 1000] {
-    macro_for!($T in [u8, u16, u32, u64] {
+    macro_for!($T in [u8, i8, u16, i16, f16, bf16, u32, i32, f32, u64, i64, f64] {
         paste! {
             #[test]
             fn [<fill_ $T _ $n _host>]() {
                 let mut y = Buffer::from(gen_fill_vec($n));
-                y.fill($T::ONE).unwrap();
+                y.fill($T::MAX).unwrap();
                 let y = y.into_vec().unwrap();
-                assert_eq!(y, vec![$T::ONE; $n]);
+                assert_eq!(y, vec![$T::MAX; $n]);
+            }
+
+            #[cfg(all(not(target_family = "wasm"), feature = "device"))]
+            #[test]
+            fn [<fill_ $T _ $n _device>]() {
+                let device = test_device();
+                let mut y = Buffer::from(gen_fill_vec($n))
+                    .into_context(device.into())
+                    .unwrap();
+                y.fill($T::MAX).unwrap();
+                let y = y.into_vec().unwrap();
+                assert_eq!(y, vec![$T::MAX; $n]);
             }
         }
     });
 
-    macro_for!($T in [u32] {
+    macro_for!($T in [u32, i32, f32] {
         paste! {
-            #[cfg(feature = "device")]
-            #[maybe_async]
+            #[cfg(all(target_family = "wasm", feature = "device"))]
             #[test]
             async fn [<fill_ $T _ $n _device>]() {
                 let device = test_device().await;
                 let mut y = Buffer::from(gen_fill_vec($n))
                     .into_context(device.into())
                     .unwrap();
-                y.fill($T::ONE).unwrap();
-                #[cfg(not(target_family = "wasm"))]
-                let y = y.into_vec().unwrap();
-                #[cfg(target_family = "wasm")]
+                y.fill($T::MAX).unwrap();
                 let y = y.into_vec_async().await.unwrap();
-                assert_eq!(y, vec![$T::ONE; $n]);
+                assert_eq!(y, vec![$T::MAX; $n]);
             }
         }
     });
-    macro_for!($T in [u64] {
+});
+
+macro_for!($o in [1, 2, 5] {
+    macro_for!($T in [u8, i8, u16, i16, f16, bf16, u32, i32, f32, u64, i64, f64] {
         paste! {
+            #[test]
+            fn [<fill_10_offset_ $o _ $T _host>]() {
+                let n = 10;
+                let mut y = Buffer::from(gen_fill_vec(n));
+                y.as_slice_mut().slice_mut($o..).fill($T::MAX).unwrap();
+                let y = y.into_vec().unwrap();
+                let mut y_true = gen_fill_vec(n);
+                for y in y_true[$o..].iter_mut() {
+                    *y = $T::MAX;
+                }
+                assert_eq!(y, y_true);
+            }
+
             #[cfg(all(not(target_family = "wasm"), feature = "device"))]
             #[test]
-            fn [<fill_ $n _ device>]() {
+            fn [<fill_10_offset_ $o _ $T _device>]() {
                 let device = test_device();
-                let mut y = Buffer::from(gen_fill_vec($n))
+                let n = 10;
+                let mut y = Buffer::from(gen_fill_vec(n))
                     .into_context(device.into())
                     .unwrap();
-                y.fill($T::ONE).unwrap();
+                y.as_slice_mut().slice_mut($o..).fill($T::MAX).unwrap();
                 let y = y.into_vec().unwrap();
-                assert_eq!(y, vec![$T::ONE; $n]);
+                let mut y_true = gen_fill_vec(n);
+                for y in y_true[$o..].iter_mut() {
+                    *y = $T::MAX;
+                }
+                assert_eq!(y, y_true);
+            }
+        }
+    });
+
+    macro_for!($T in [u32, i32, f32] {
+        paste! {
+            #[cfg(all(target_family = "wasm", feature = "device"))]
+            #[test]
+            async fn [<fill_10_offset_ $o _ $T _device>]() {
+                let device = test_device().await;
+                let n = 10;
+                let mut y = Buffer::from(gen_fill_vec(n))
+                    .into_context(device.into())
+                    .unwrap();
+                y.as_slice_mut().slice_mut($o..).fill($T::MAX).unwrap();
+                let y = y.into_vec_async().await.unwrap();
+                let mut y_true = gen_fill_vec(n);
+                for y in y_true[$o..].iter_mut() {
+                    *y = $T::MAX;
+                }
+                assert_eq!(y, y_true);
             }
         }
     });

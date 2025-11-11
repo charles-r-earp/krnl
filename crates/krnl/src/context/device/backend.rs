@@ -1,6 +1,7 @@
 #[cfg(feature = "device")]
 use crate::kernel::{KernelCreateInfo, KernelDesc, KernelKey};
 use crate::{Result, context::device::Features};
+use core::ops::{Bound, RangeBounds};
 use std::sync::Arc;
 
 #[cfg(all(feature = "device", not(target_family = "wasm")))]
@@ -28,12 +29,19 @@ pub(super) trait Backend {
 
 #[derive(Clone, Copy, Debug)]
 pub(super) struct Properties {
+    min_buffer_align: u32,
     max_buffer_size: u32,
     min_subgroup_threads: u32,
     max_subgroup_threads: u32,
 }
 
 impl Properties {
+    pub(super) fn min_buffer_align(&self) -> usize {
+        self.min_buffer_align as usize
+    }
+    pub(super) fn max_buffer_size(&self) -> usize {
+        self.max_buffer_size as usize
+    }
     pub(super) fn min_subgroup_threads(&self) -> usize {
         self.min_subgroup_threads as usize
     }
@@ -106,6 +114,15 @@ pub(super) struct BufferRange {
     pub(super) end: usize,
 }
 
+impl RangeBounds<usize> for BufferRange {
+    fn start_bound(&self) -> Bound<&usize> {
+        Bound::Included(&self.start)
+    }
+    fn end_bound(&self) -> Bound<&usize> {
+        Bound::Excluded(&self.end)
+    }
+}
+
 impl BufferRange {
     pub(super) fn len(&self) -> usize {
         self.end - self.start
@@ -113,9 +130,52 @@ impl BufferRange {
     pub(super) fn is_aligned_to(&self, size: usize) -> bool {
         self.start % size == 0 && self.end % size == 0
     }
+    pub(super) fn aligned_offset(&self, align: usize) -> (Self, usize) {
+        let rem = self.start % align;
+        let aligned = self.start - rem;
+        (
+            Self {
+                start: aligned,
+                end: self.end,
+            },
+            rem,
+        )
+    }
+    pub(super) fn slice(self, bounds: impl RangeBounds<usize>) -> Self {
+        let start = match bounds.start_bound() {
+            Bound::Unbounded => self.start,
+            Bound::Included(x) => self.start + x,
+            Bound::Excluded(x) => self.start + x + 1,
+        };
+        let end = match bounds.end_bound() {
+            Bound::Excluded(x) => self.start + x,
+            Bound::Included(x) => self.start + x + 1,
+            Bound::Unbounded => self.end,
+        };
+        assert!(start < self.end);
+        assert!(start < end);
+        assert!(end <= self.end);
+        Self { start, end }
+    }
 }
 
 pub(super) struct BufferBinding<T> {
-    pub(super) slice: Arc<T>,
-    pub(super) mutable: bool,
+    slice: Arc<T>,
+    mutable: bool,
+    offset: u32,
+}
+
+impl<T: Slice> BufferBinding<T> {
+    pub(super) fn new(slice: Arc<T>, mutable: bool, elem_size: usize) -> Self {
+        let min_buffer_align = slice.device().properties().min_buffer_align();
+        let offset = (slice.range().aligned_offset(min_buffer_align).1 / elem_size) as u32;
+        Self {
+            slice,
+            mutable,
+            offset,
+        }
+    }
+    pub(super) fn offset(&self) -> u32 {
+        self.offset
+    }
 }

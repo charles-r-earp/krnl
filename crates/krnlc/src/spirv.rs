@@ -1,25 +1,24 @@
 use fxhash::{FxBuildHasher, FxHashSet};
 use indexmap::{
-    map::{MutableEntryKey, MutableKeys},
     IndexMap, IndexSet,
+    map::{MutableEntryKey, MutableKeys},
 };
 use krnl_core::__private::__KrnlInst as KrnlInst;
-use smallvec::{smallvec, SmallVec};
+use smallvec::{SmallVec, smallvec};
 use spirt::{
-    spv::{
-        encode_literal_string, extract_literal_string,
-        spec::{ExtInstSetDesc, ExtInstSetInstructionDesc, Opcode, OperandMode, Spec},
-        Imm, Inst,
-    },
-    transform::{InnerInPlaceTransform, Transformer},
-    visit::{InnerVisit, Visitor},
     AddrSpace, Attr, AttrSet, AttrSetDef, Const, ConstDef, ConstKind, Context, DataInst,
     DataInstDef, DataInstForm, DataInstFormDef, DataInstKind, DeclDef, ExportKey, Exportee, Func,
     GlobalVar, GlobalVarDecl, GlobalVarDefBody, InternedStr, Module, Type, TypeDef, TypeKind,
     TypeOrConst, Value,
+    spv::{
+        Imm, Inst, encode_literal_string, extract_literal_string,
+        spec::{ExtInstSetDesc, ExtInstSetInstructionDesc, Opcode, OperandMode, Spec},
+    },
+    transform::{InnerInPlaceTransform, Transformer},
+    visit::{InnerVisit, Visitor},
 };
 use spirv_headers::{Capability, Decoration, ExecutionModel, Op, StorageClass};
-use spirv_tools::{binary::Binary, opt::Optimizer, val::Validator, TargetEnv};
+use spirv_tools::{TargetEnv, binary::Binary, opt::Optimizer, val::Validator};
 use std::{
     collections::{BTreeMap, BTreeSet},
     rc::Rc,
@@ -316,33 +315,48 @@ pub(crate) fn get_element_size(cx: &Context, ty: Type) -> Option<u32> {
     None
 }
 
-/*
-fn op_variable(cx: &Context, pointer_ty: Type, storage_class: StorageClass) -> DataInstDef {
-    let opcode = Spec::get().well_known.OpVariable;
-    let operand_kinds: Vec<_> = opcode.def().all_operands().map(|(_, x)| x).collect();
-    let spv_inst = Inst {
-        opcode,
-        imms: [Imm::Short(operand_kinds[0], storage_class as u32)]
-            .into_iter()
-            .collect(),
+pub(crate) fn op_nop(cx: &Context) -> DataInstDef {
+    let inst = Inst {
+        opcode: Spec::get().well_known.OpNop,
+        imms: SmallVec::default(),
     };
-    let form_def = DataInstFormDef {
-        kind: DataInstKind::SpvInst(spv_inst),
-        output_type: Some(pointer_ty),
+    let data_inst_form_def = DataInstFormDef {
+        kind: DataInstKind::SpvInst(inst),
+        output_type: None,
     };
-    let form = cx.intern(form_def);
-    DataInstDef {
+    let data_inst_form = cx.intern(data_inst_form_def);
+    let data_inst_def = DataInstDef {
         attrs: AttrSet::default(),
-        form,
-        inputs: Default::default(),
-    }
+        form: data_inst_form,
+        inputs: SmallVec::default(),
+    };
+    data_inst_def
 }
 
-fn op_access_chain(
+pub(crate) fn op_variable(
+    module: &mut Module,
+    pointer_ty: Type,
+    storage_class: StorageClass,
+    attrs: AttrSet,
+) -> GlobalVar {
+    let cx = module.cx();
+    module.global_vars.define(
+        &cx,
+        GlobalVarDecl {
+            attrs,
+            type_of_ptr_to: pointer_ty,
+            shape: None,
+            addr_space: AddrSpace::SpvStorageClass(storage_class as u32),
+            def: DeclDef::Present(GlobalVarDefBody { initializer: None }),
+        },
+    )
+}
+
+pub(crate) fn op_access_chain(
     cx: &Context,
     pointer_ty: Type,
     base: Value,
-    indices: SmallVec<[Value; 2]>,
+    indices: impl IntoIterator<Item = Value>,
 ) -> DataInstDef {
     let spv_inst = Inst {
         opcode: Spec::get().well_known.OpAccessChain,
@@ -356,10 +370,136 @@ fn op_access_chain(
     DataInstDef {
         attrs: AttrSet::default(),
         form,
-        inputs: indices,
+        inputs: std::iter::once(base).chain(indices).collect(),
     }
 }
-*/
+
+pub(crate) fn op_load(cx: &Context, output_type: Type, pointer: Value) -> DataInstDef {
+    let spv_inst = Inst {
+        opcode: Spec::get().well_known.OpLoad,
+        imms: SmallVec::default(),
+    };
+    let form_def = DataInstFormDef {
+        kind: DataInstKind::SpvInst(spv_inst),
+        output_type: Some(output_type),
+    };
+    let form = cx.intern(form_def);
+    DataInstDef {
+        attrs: AttrSet::default(),
+        form,
+        inputs: std::iter::once(pointer).collect(),
+    }
+}
+
+pub(crate) fn op_array_length(cx: &Context, array: Value, member: Value) -> DataInstDef {
+    let opcode = Spec::get().well_known.OpArrayLength;
+    let operand_kind = opcode.def().all_operands().nth(1).unwrap().1;
+    let spv_inst = Inst {
+        opcode,
+        imms: std::iter::once(Imm::Short(operand_kind, 0)).collect(),
+    };
+    let ty_u32 = op_type_int(cx, 32, false);
+    let form_def = DataInstFormDef {
+        kind: DataInstKind::SpvInst(spv_inst),
+        output_type: Some(ty_u32),
+    };
+    let form = cx.intern(form_def);
+    DataInstDef {
+        attrs: AttrSet::default(),
+        form,
+        inputs: [array].into_iter().collect(),
+    }
+}
+
+pub(crate) fn op_shift_right_logical(
+    cx: &Context,
+    output_type: Type,
+    base: Value,
+    shift: Value,
+) -> DataInstDef {
+    let opcode = Opcode::try_from_u16_with_name_and_def(Op::ShiftRightLogical as u16)
+        .unwrap()
+        .0;
+    let spv_inst = Inst {
+        opcode,
+        imms: SmallVec::default(),
+    };
+    let form_def = DataInstFormDef {
+        kind: DataInstKind::SpvInst(spv_inst),
+        output_type: Some(output_type),
+    };
+    let form = cx.intern(form_def);
+    DataInstDef {
+        attrs: AttrSet::default(),
+        form,
+        inputs: [base, shift].into_iter().collect(),
+    }
+}
+
+pub(crate) fn op_bitwise_and(
+    cx: &Context,
+    output_type: Type,
+    lhs: Value,
+    rhs: Value,
+) -> DataInstDef {
+    let opcode = Opcode::try_from_u16_with_name_and_def(Op::BitwiseAnd as u16)
+        .unwrap()
+        .0;
+    let spv_inst = Inst {
+        opcode,
+        imms: SmallVec::default(),
+    };
+    let form_def = DataInstFormDef {
+        kind: DataInstKind::SpvInst(spv_inst),
+        output_type: Some(output_type),
+    };
+    let form = cx.intern(form_def);
+    DataInstDef {
+        attrs: AttrSet::default(),
+        form,
+        inputs: [lhs, rhs].into_iter().collect(),
+    }
+}
+
+pub(crate) fn op_i_add(cx: &Context, output_type: Type, lhs: Value, rhs: Value) -> DataInstDef {
+    let opcode = Opcode::try_from_u16_with_name_and_def(Op::IAdd as u16)
+        .unwrap()
+        .0;
+    let spv_inst = Inst {
+        opcode,
+        imms: SmallVec::default(),
+    };
+    let form_def = DataInstFormDef {
+        kind: DataInstKind::SpvInst(spv_inst),
+        output_type: Some(output_type),
+    };
+    let form = cx.intern(form_def);
+    DataInstDef {
+        attrs: AttrSet::default(),
+        form,
+        inputs: [lhs, rhs].into_iter().collect(),
+    }
+}
+
+pub(crate) fn op_i_sub(cx: &Context, output_type: Type, lhs: Value, rhs: Value) -> DataInstDef {
+    let opcode = Opcode::try_from_u16_with_name_and_def(Op::ISub as u16)
+        .unwrap()
+        .0;
+    let spv_inst = Inst {
+        opcode,
+        imms: SmallVec::default(),
+    };
+    let form_def = DataInstFormDef {
+        kind: DataInstKind::SpvInst(spv_inst),
+        output_type: Some(output_type),
+    };
+    let form = cx.intern(form_def);
+    DataInstDef {
+        attrs: AttrSet::default(),
+        form,
+        inputs: [lhs, rhs].into_iter().collect(),
+    }
+}
 
 pub(crate) fn op_type_bool(cx: &Context) -> Type {
     let opcode = Spec::get().well_known.OpTypeBool;
@@ -653,23 +793,7 @@ pub(crate) fn strip_krnl_insts(
 
     let cx = module.cx();
     let krnl_set = module.cx_ref().intern(KrnlInst::SET_NAME);
-    let nop = {
-        let inst = Inst {
-            opcode: Spec::get().well_known.OpNop,
-            imms: SmallVec::default(),
-        };
-        let data_inst_form_def = DataInstFormDef {
-            kind: DataInstKind::SpvInst(inst),
-            output_type: None,
-        };
-        let data_inst_form = cx.intern(data_inst_form_def);
-        let data_inst_def = DataInstDef {
-            attrs: AttrSet::default(),
-            form: data_inst_form,
-            inputs: SmallVec::default(),
-        };
-        data_inst_def
-    };
+    let nop = op_nop(&cx);
 
     let mut transformer = KrnlInstTransformer {
         cx,

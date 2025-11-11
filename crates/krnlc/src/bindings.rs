@@ -1,12 +1,14 @@
 use crate::reflect::{
     BufferDesc, ElementType, Features, KernelDesc, PushConstantDesc, UsedGlobals, get_scalar_type,
+    get_struct_field_types, get_struct_size,
 };
 use crate::scalar::ScalarType;
 use crate::spirv::{
     assemble, constant_name, get_constant_u32, get_element_size, get_name_from_attrs,
-    krnl_inst_set, op_constant, op_decorate_block, op_member_decorate_offset, op_member_name,
-    op_type_int, op_type_pointer, op_type_struct, pointee_type, strip_krnl_insts,
-    struct_element_type, validate, variable_name,
+    krnl_inst_set, op_access_chain, op_array_length, op_bitwise_and, op_constant,
+    op_decorate_block, op_i_add, op_i_sub, op_load, op_member_decorate_offset, op_member_name,
+    op_name, op_nop, op_shift_right_logical, op_type_int, op_type_pointer, op_type_struct,
+    op_variable, pointee_type, strip_krnl_insts, struct_element_type, validate, variable_name,
 };
 use camino::{Utf8Path, Utf8PathBuf};
 use derive_more::IsVariant;
@@ -18,8 +20,11 @@ use indexmap::{
 use krnl_core::__private::__KrnlInst as KrnlInst;
 use proc_macro2::{Span, TokenStream};
 use quote::{ToTokens, format_ident, quote};
-use rayon::iter::{IndexedParallelIterator, IntoParallelIterator, ParallelIterator};
+use rayon::iter::{
+    IndexedParallelIterator, IntoParallelIterator, IntoParallelRefMutIterator, ParallelIterator,
+};
 use smallvec::SmallVec;
+use spirt::spv::spec::Opcode;
 use spirt::{
     AddrSpace, Attr, AttrSet, AttrSetDef, Const, ConstDef, ConstKind, Context, ControlNodeKind,
     DataInst, DataInstDef, DataInstForm, DataInstFormDef, DataInstKind, DeclDef, ExportKey,
@@ -29,9 +34,10 @@ use spirt::{
         Imm, Inst, encode_literal_string, extract_literal_string,
         spec::{ExtInstSetDesc, ExtInstSetInstructionDesc, Spec},
     },
-    transform::{InnerInPlaceTransform, Transformer},
+    transform::{InnerInPlaceTransform, Transformed, Transformer},
     visit::{InnerVisit, Visitor},
 };
+use spirt::{EntityList, FuncDefBody};
 use spirv_headers::{Decoration, ExecutionModel, StorageClass};
 use spirv_tools::{
     TargetEnv,
@@ -39,6 +45,7 @@ use spirv_tools::{
     opt::{Optimizer, Options as OptimizerOptions, Passes},
     val::Validator,
 };
+use std::array;
 use std::{
     collections::{BTreeMap, BTreeSet},
     rc::Rc,
@@ -48,6 +55,7 @@ use syn::{Ident, LitInt, buffer};
 #[derive(Default)]
 pub struct BindingsBuilder {
     spirv: Option<Vec<u8>>,
+    buffer_offsets: bool,
 }
 
 impl BindingsBuilder {
@@ -88,7 +96,7 @@ fn process(spirv: Vec<u8>) -> Vec<Kernel> {
     let context = Rc::new(Context::new());
     context.register_custom_ext_inst_set(KrnlInst::SET_NAME, krnl_inst_set());
     let mut module = Module::lower_from_spv_bytes(context.clone(), spirv).unwrap();
-    let sigs: Vec<_> = module
+    let sigs: Vec<KernelSig> = module
         .exports
         .keys()
         .cloned()
@@ -102,48 +110,39 @@ fn process(spirv: Vec<u8>) -> Vec<Kernel> {
     );
     rename_entry_points(&mut module, "main");
     spirt::passes::legalize::structurize_func_cfgs(&mut module);
-    let features_spirvs: Vec<_> = split_entry_points(&module, target_family == "wasm").collect();
-    let kernels = sigs
-        .into_par_iter()
-        .zip(features_spirvs)
-        .map(|(sig, (features, mut spirv))| {
+    let mut kernels: Vec<_> = split_entry_points(&module, sigs, target_family == "wasm").collect();
+    kernels.par_iter_mut().for_each(|kernel| {
+        use rspirv::binary::{Assemble, Disassemble};
+        {
             use rspirv::binary::{Assemble, Disassemble};
-            {
-                use rspirv::binary::{Assemble, Disassemble};
 
-                let module = rspirv::dr::load_words(&spirv).unwrap();
-                let mut builder = rspirv::dr::Builder::new_from_module(module);
-                if target_family != "wasm" {
-                    fix_execution_mode(&mut builder);
-                }
-                spirv = builder.module().assemble();
-                validate(&spirv).expect("spirv-val after fix_execution_mode");
+            let module = rspirv::dr::load_words(&kernel.spirv).unwrap();
+            let mut builder = rspirv::dr::Builder::new_from_module(module);
+            if target_family != "wasm" {
+                fix_execution_mode(&mut builder);
             }
-            let mut optimizer = spirv_tools::opt::create(Some(TargetEnv::Vulkan_1_3));
-            if !non_semantic_info {
-                optimizer.register_pass(Passes::StripNonSemanticInfo);
-            }
-            optimizer.register_performance_passes();
-            let options = OptimizerOptions {
-                preserve_bindings: true,
-                preserve_spec_constants: true,
-                ..OptimizerOptions::default()
-            };
-            let binary = optimizer
-                .optimize(&spirv, &mut |_| (), Some(options))
-                .unwrap();
-            spirv = if let Binary::OwnedU32(words) = binary {
-                words
-            } else {
-                binary.as_words().to_vec()
-            };
-            Kernel {
-                sig,
-                features,
-                spirv,
-            }
-        })
-        .collect();
+            kernel.spirv = builder.module().assemble();
+            validate(&kernel.spirv).expect("spirv-val after fix_execution_mode");
+        }
+        let mut optimizer = spirv_tools::opt::create(Some(TargetEnv::Vulkan_1_3));
+        if !non_semantic_info {
+            optimizer.register_pass(Passes::StripNonSemanticInfo);
+        }
+        optimizer.register_performance_passes();
+        let options = OptimizerOptions {
+            preserve_bindings: true,
+            preserve_spec_constants: true,
+            ..OptimizerOptions::default()
+        };
+        let binary = optimizer
+            .optimize(&kernel.spirv, &mut |_| (), Some(options))
+            .unwrap();
+        kernel.spirv = if let Binary::OwnedU32(words) = binary {
+            words
+        } else {
+            binary.as_words().to_vec()
+        };
+    });
     kernels
 }
 
@@ -167,18 +166,395 @@ fn rename_entry_points(module: &mut Module, entry_point: &str) {
         .collect();
 }
 
+fn add_buffer_offsets(module: &mut Module, sig: &mut KernelSig) {
+    #[derive(Default)]
+    struct FuncCollector {
+        funcs: IndexSet<Func, FxBuildHasher>,
+    }
+
+    impl Visitor<'_> for FuncCollector {
+        fn visit_attr_set_use(&mut self, _attrs: AttrSet) {}
+        fn visit_type_use(&mut self, _ty: Type) {}
+        fn visit_const_use(&mut self, _ct: Const) {}
+        fn visit_data_inst_form_use(&mut self, _data_inst_form: DataInstForm) {}
+        fn visit_global_var_use(&mut self, _gv: GlobalVar) {}
+        fn visit_func_use(&mut self, func: Func) {
+            self.funcs.insert(func);
+        }
+    }
+
+    struct ModuleTransformer {
+        cx: Rc<Context>,
+        old_push_gv: Option<GlobalVar>,
+        push_constants: Value,
+        buffer_pointers: IndexMap<GlobalVar, Const, FxBuildHasher>,
+        buffer_offset_base: u32,
+        buffer_offset_indices: IndexMap<GlobalVar, u32, FxBuildHasher>,
+        buffer_offsets: IndexMap<GlobalVar, DataInst, FxBuildHasher>,
+        array_lengths: IndexMap<GlobalVar, DataInst, FxBuildHasher>,
+    }
+
+    impl ModuleTransformer {
+        fn new(module: &mut Module, sig: &mut KernelSig) -> Self {
+            let cx = module.cx();
+            let module_globals = UsedGlobals::parse_module(&module, None);
+            let buffer_count = module_globals
+                .vars
+                .iter()
+                .filter(|x| *x.1 == StorageClass::StorageBuffer)
+                .count();
+            let mut push_constant_field_types = Vec::new();
+            let mut push_constant_attrs = BTreeSet::default();
+            let push_constants = module_globals
+                .vars
+                .iter()
+                .find(|x| *x.1 == StorageClass::PushConstant)
+                .map(|x| x.0)
+                .copied();
+            let old_push_gv = push_constants;
+            let mut offset = 0;
+            if let Some(push_constants) = push_constants {
+                let push_constants_decl = &mut module.global_vars[push_constants];
+                let pointer_ty = push_constants_decl.type_of_ptr_to;
+                let push_struct = pointee_type(&cx, pointer_ty).unwrap();
+                offset = get_struct_size(&cx, push_struct).unwrap();
+                push_constant_field_types =
+                    get_struct_field_types(&cx, push_struct).unwrap().collect();
+                let push_struct_def = &cx[push_struct];
+                push_constant_attrs = cx[push_struct_def.attrs].attrs.clone();
+            } else {
+                push_constant_attrs.insert(op_decorate_block());
+            }
+            while offset % 4 != 0 {
+                offset += 1;
+            }
+            let ty_u32 = op_type_int(&cx, 32, false);
+            let buffer_offset_base = push_constant_field_types.len() as u32;
+            let mut buffer_pointers = IndexMap::default();
+            let mut buffer_offset_indices = IndexMap::default();
+            for (i, _) in (0..buffer_count).step_by(4).enumerate() {
+                let member = push_constant_field_types.len() as u32;
+                push_constant_field_types.push(ty_u32);
+                let name = format!("krnl::buffer_offset_{i}");
+                push_constant_attrs.extend([
+                    op_member_name(member, &name),
+                    op_member_decorate_offset(member, offset),
+                ]);
+                sig.buffer_offsets.push(offset);
+                offset += 4;
+            }
+            let buffer_names: Vec<_> = sig
+                .inputs
+                .iter()
+                .filter_map(|x| match x {
+                    KernelInput::Buffer(x) => Some(x.name()),
+                    KernelInput::Item(x) => Some(x.name()),
+                    _ => None,
+                })
+                .collect();
+            debug_assert_eq!(buffer_names.len(), buffer_count);
+            for gv in module_globals
+                .vars
+                .iter()
+                .filter(|x| *x.1 == StorageClass::StorageBuffer)
+                .map(|x| x.0)
+                .copied()
+            {
+                let name = variable_name(module, gv).unwrap();
+                let index = buffer_names.iter().position(|x| *x == name).unwrap() as u32;
+                buffer_offset_indices.insert(gv, index);
+                let pointer = cx.intern(ConstDef {
+                    attrs: AttrSet::default(),
+                    ty: module.global_vars[gv].type_of_ptr_to,
+                    kind: ConstKind::PtrToGlobalVar(gv),
+                });
+                buffer_pointers.insert(gv, pointer);
+            }
+            let push_constant_attrs = cx.intern(AttrSetDef {
+                attrs: push_constant_attrs,
+            });
+            let push_struct = op_type_struct(&cx, push_constant_attrs, push_constant_field_types);
+            let push_ptr = op_type_pointer(&cx, push_struct, StorageClass::PushConstant);
+            let push_constants = if let Some(push_constants) = push_constants {
+                let push_constants_decl = &mut module.global_vars[push_constants];
+                push_constants_decl.type_of_ptr_to = push_ptr;
+                push_constants
+            } else {
+                let attrs = cx.intern(AttrSetDef {
+                    attrs: [op_name("krnl::push_constants")].into_iter().collect(),
+                });
+                let push_constants =
+                    op_variable(module, push_ptr, StorageClass::PushConstant, attrs);
+                push_constants
+            };
+            let push_constants = Value::Const(cx.intern(ConstDef {
+                attrs: AttrSet::default(),
+                ty: push_ptr,
+                kind: ConstKind::PtrToGlobalVar(push_constants),
+            }));
+            Self {
+                cx,
+                old_push_gv,
+                push_constants,
+                buffer_pointers,
+                buffer_offset_base,
+                buffer_offset_indices,
+                buffer_offsets: IndexMap::default(),
+                array_lengths: IndexMap::default(),
+            }
+        }
+        fn in_place_transform_func_def_body(&mut self, func_def_body: &mut FuncDefBody) {
+            let cx = self.cx.clone();
+            self.buffer_offsets.clear();
+            self.array_lengths.clear();
+            let ty_u32 = op_type_int(&cx, 32, false);
+            let zero_u32 = op_constant(&cx, ty_u32, [0]);
+            let ptr_u32_push = op_type_pointer(&cx, ty_u32, StorageClass::PushConstant);
+            let func_at_mut_body = func_def_body.at_mut_body();
+            let func_at_mut_children = func_at_mut_body.at_children();
+            let mut func_at_mut_children_iter = func_at_mut_children.into_iter();
+            let mut func_at_node = func_at_mut_children_iter.next().unwrap();
+            let mut new_insts = EntityList::empty();
+            let data_insts = &mut func_at_node.data_insts;
+            let mask = op_constant(&cx, ty_u32, [255]);
+            let num_loads = (self.buffer_offset_indices.len() / 4)
+                + (self.buffer_offset_indices.len() % 4 != 0) as usize;
+            let mut offset_loads: Vec<DataInst> = (0..num_loads as u32)
+                .map(|index1| {
+                    let index = op_constant(&cx, ty_u32, [self.buffer_offset_base + index1]);
+                    let offset_access_chain = data_insts.define(
+                        &cx,
+                        op_access_chain(
+                            &self.cx,
+                            ptr_u32_push,
+                            self.push_constants,
+                            [Value::Const(index)],
+                        )
+                        .into(),
+                    );
+                    let offset_load = data_insts.define(
+                        &cx,
+                        op_load(&cx, ty_u32, Value::DataInstOutput(offset_access_chain)).into(),
+                    );
+                    new_insts.insert_last(offset_access_chain, data_insts);
+                    new_insts.insert_last(offset_load, data_insts);
+                    offset_load
+                })
+                .collect();
+            for (gv, index) in self.buffer_offset_indices.iter().map(|(a, b)| (*a, *b)) {
+                let index1 = (index / 4) as usize;
+                let offset_load = offset_loads[index1];
+                let index2 = index % 4;
+                let shift_bytes = 3 - index2;
+                let shift_bits = shift_bytes * 8;
+                let shift = op_constant(&cx, ty_u32, [shift_bits]);
+                let offset_shift = data_insts.define(
+                    &cx,
+                    op_shift_right_logical(
+                        &cx,
+                        ty_u32,
+                        Value::DataInstOutput(offset_load),
+                        Value::Const(shift),
+                    )
+                    .into(),
+                );
+                let offset_mask = data_insts.define(
+                    &cx,
+                    op_bitwise_and(
+                        &cx,
+                        ty_u32,
+                        Value::DataInstOutput(offset_shift),
+                        Value::Const(mask),
+                    )
+                    .into(),
+                );
+                new_insts.insert_last(offset_shift, data_insts);
+                new_insts.insert_last(offset_mask, data_insts);
+                self.buffer_offsets.insert(gv, offset_load);
+                let array: Value = Value::Const(self.buffer_pointers.get(&gv).copied().unwrap());
+                let array_length = data_insts.define(
+                    &cx,
+                    op_array_length(&cx, array, Value::Const(zero_u32)).into(),
+                );
+                new_insts.insert_last(array_length, data_insts);
+                self.array_lengths.insert(gv, array_length);
+            }
+            let mut old_insts =
+                if let ControlNodeKind::Block { insts } = &mut func_at_node.reborrow().def().kind {
+                    std::mem::take(insts)
+                } else {
+                    unreachable!()
+                };
+            let mut vars = EntityList::empty();
+            let mut iter = func_at_node.reborrow().at(old_insts.iter());
+            while let Some(mut func_at_inst) = iter.next() {
+                let data_inst_def = func_at_inst.reborrow().def();
+                let form_def = &cx[data_inst_def.form];
+                if let DataInstKind::SpvInst(inst) = &form_def.kind {
+                    if inst.opcode == Spec::get().well_known.OpVariable {
+                        let var = func_at_inst.position;
+                        old_insts.remove(var, func_at_inst.data_insts);
+                        vars.insert_first(var, func_at_inst.data_insts);
+                    }
+                }
+            }
+            new_insts.prepend(vars, func_at_node.data_insts);
+            new_insts.append(old_insts, func_at_node.data_insts);
+            if let ControlNodeKind::Block { insts } = &mut func_at_node.reborrow().def().kind {
+                *insts = new_insts;
+            } else {
+                unreachable!()
+            };
+        }
+        fn in_place_transform_buffer_access_chain(
+            &mut self,
+            mut func_at_data_inst: spirt::func_at::FuncAtMut<'_, DataInst>,
+            insts: &mut EntityList<DataInst>,
+            base: GlobalVar,
+        ) {
+            let cx = self.cx.clone();
+            let data_inst_def = func_at_data_inst.reborrow().def();
+            let ty_u32 = op_type_int(&cx, 32, false);
+            let buffer_offset_index = self.buffer_offset_indices.get(&base).copied().unwrap();
+            let index = data_inst_def.inputs.last().copied().unwrap();
+
+            let offset_load = self.buffer_offsets.get(&base).copied().unwrap();
+            let index_add = func_at_data_inst.data_insts.define(
+                &cx,
+                op_i_add(&cx, ty_u32, index, Value::DataInstOutput(offset_load)).into(),
+            );
+            insts.insert_before(
+                index_add,
+                func_at_data_inst.position,
+                func_at_data_inst.data_insts,
+            );
+            let data_inst_def = func_at_data_inst.reborrow().def();
+            *data_inst_def.inputs.last_mut().unwrap() = Value::DataInstOutput(index_add);
+        }
+        fn in_place_transform_buffer_array_length(
+            &mut self,
+            mut func_at_data_inst: spirt::func_at::FuncAtMut<'_, DataInst>,
+            insts: &mut EntityList<DataInst>,
+            base: GlobalVar,
+        ) {
+            let cx = self.cx.clone();
+            let data_inst_def = func_at_data_inst.reborrow().def();
+            let ty_u32 = op_type_int(&cx, 32, false);
+            let buffer_offset_index = self.buffer_offset_indices.get(&base).copied().unwrap();
+            let array_len_def = data_inst_def.clone();
+
+            let offset_load = self.buffer_offsets.get(&base).copied().unwrap();
+            let array_length = self.array_lengths.get(&base).copied().unwrap();
+            let data_inst_def = func_at_data_inst.reborrow().def();
+            *data_inst_def = op_i_sub(
+                &cx,
+                ty_u32,
+                Value::DataInstOutput(array_length),
+                Value::DataInstOutput(offset_load),
+            );
+        }
+    }
+
+    impl Transformer for ModuleTransformer {
+        fn transform_value_use(&mut self, v: &Value) -> Transformed<Value> {
+            if let Some(old_push_gv) = self.old_push_gv {
+                if let Value::Const(ct) = *v {
+                    let ct_def = &self.cx[ct];
+                    if let ConstKind::PtrToGlobalVar(gv) = ct_def.kind {
+                        if gv == old_push_gv {
+                            return Transformed::Changed(self.push_constants);
+                        }
+                    }
+                }
+            }
+            Transformed::Unchanged
+        }
+        fn in_place_transform_func_decl(&mut self, func_decl: &mut spirt::FuncDecl) {
+            if let DeclDef::Present(func_def_body) = &mut func_decl.def {
+                self.in_place_transform_func_def_body(func_def_body);
+            }
+            func_decl.inner_in_place_transform_with(self);
+        }
+        fn in_place_transform_control_node_def(
+            &mut self,
+            mut func_at_control_node: spirt::func_at::FuncAtMut<'_, spirt::ControlNode>,
+        ) {
+            if let ControlNodeKind::Block { insts } = func_at_control_node.reborrow().def().kind {
+                let mut func_at_iter = func_at_control_node.reborrow().at(insts).into_iter();
+                let mut new_insts = insts;
+                let spec = Spec::get();
+                while let Some(mut func_at_data_inst) = func_at_iter.next() {
+                    let data_inst = func_at_data_inst.position;
+                    let data_inst_def = func_at_data_inst.reborrow().def();
+                    let form_def = &self.cx[data_inst_def.form];
+                    if let DataInstKind::SpvInst(inst) = &form_def.kind {
+                        if let Some(Value::Const(base)) = data_inst_def.inputs.first().copied() {
+                            let base = &self.cx[base];
+                            if let ConstKind::PtrToGlobalVar(base) = base.kind {
+                                if inst.opcode == spec.well_known.OpAccessChain {
+                                    if self.buffer_offset_indices.contains_key(&base) {
+                                        self.in_place_transform_buffer_access_chain(
+                                            func_at_data_inst,
+                                            &mut new_insts,
+                                            base,
+                                        );
+                                    }
+                                } else if inst.opcode == spec.well_known.OpArrayLength {
+                                    if self.array_lengths.get(&base) != Some(&data_inst)
+                                        && self.buffer_offset_indices.contains_key(&base)
+                                    {
+                                        self.in_place_transform_buffer_array_length(
+                                            func_at_data_inst,
+                                            &mut new_insts,
+                                            base,
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                if let ControlNodeKind::Block { insts } =
+                    &mut func_at_control_node.reborrow().def().kind
+                {
+                    *insts = new_insts;
+                }
+            }
+            func_at_control_node.inner_in_place_transform_with(self);
+        }
+    }
+
+    let mut collector = FuncCollector::default();
+    module.inner_visit_with(&mut collector);
+    let mut transformer = ModuleTransformer::new(module, sig);
+    for func in collector.funcs {
+        transformer.in_place_transform_func_decl(&mut module.funcs[func]);
+    }
+}
+
 fn split_entry_points(
     module: &Module,
+    sigs: Vec<KernelSig>,
     wgsl: bool,
-) -> impl Iterator<Item = (Features, Vec<u32>)> + '_ {
-    module.exports.iter().map(move |(key, value)| {
-        let mut module = module.clone();
-        module.exports = std::iter::once((key.clone(), value.clone())).collect();
-        let features = Features::reflect(&module).wgsl(wgsl);
-        features.write_to_module(&mut module);
-        let spirv = assemble(&module).unwrap();
-        (features, spirv)
-    })
+) -> impl Iterator<Item = Kernel> + '_ {
+    module
+        .exports
+        .iter()
+        .zip(sigs)
+        .map(move |((key, value), mut sig)| {
+            let mut module = module.clone();
+            module.exports = std::iter::once((key.clone(), value.clone())).collect();
+            let features = Features::reflect(&module).wgsl(wgsl);
+            features.write_to_module(&mut module);
+            add_buffer_offsets(&mut module, &mut sig);
+            let spirv = assemble(&module).unwrap();
+            validate(&spirv).expect(&format!("spirv-val after split {}", sig.name));
+            Kernel {
+                sig,
+                features,
+                spirv,
+            }
+        })
 }
 
 fn fix_execution_mode(builder: &mut rspirv::dr::Builder) {
@@ -354,12 +730,7 @@ impl ToTokens for KernelInput {
             }
             Self::Push(desc) => {
                 let name = desc.name();
-                let name = if name == "krnl::items" {
-                    "__krnl_items"
-                } else {
-                    name
-                };
-                let ident = Ident::new(name, Span::call_site());
+                let ident = Ident::new(&name, Span::call_site());
                 let scalar_type = desc.scalar_type();
                 let mut elem_ty =
                     Ident::new(&scalar_type.to_string(), Span::call_site()).to_token_stream();
@@ -387,6 +758,7 @@ struct KernelSig {
     name: String,
     safe: bool,
     inputs: Vec<KernelInput>,
+    buffer_offsets: Vec<u32>,
 }
 
 impl KernelSig {
@@ -664,7 +1036,12 @@ impl KernelSig {
         module.funcs[entry_func].inner_visit_with(&mut visitor);
         let safe = visitor.safe;
         let inputs = visitor.inputs;
-        Self { name, safe, inputs }
+        Self {
+            name,
+            safe,
+            inputs,
+            buffer_offsets: Vec::new(),
+        }
     }
 }
 
@@ -734,6 +1111,19 @@ impl Kernel {
                 }
             }
         });
+        let visit_buffer_offsets =
+            self.sig
+                .buffer_offsets
+                .iter()
+                .copied()
+                .enumerate()
+                .map(|(id, offset)| {
+                    let id = LitInt::new(&id.to_string(), Span::call_site());
+                    let offset = LitInt::new(&offset.to_string(), Span::call_site());
+                    quote! {
+                        v.__visit_buffer_offset(#id, #offset);
+                    }
+                });
         let visit_features: TokenStream = self
             .features
             .capabilities_iter()
@@ -763,6 +1153,7 @@ impl Kernel {
                     v.__visit_spirv([#(#spirv_lits),*].as_slice());
                     #visit_features
                     #(#visit_inputs)*
+                    #(#visit_buffer_offsets)*
                 }
             }
         }

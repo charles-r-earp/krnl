@@ -1,7 +1,7 @@
 use crate::{
     self as krnl,
     macros::{host_only, kernel},
-    scalar::Scalar,
+    scalar::{Scalar, ScalarType},
 };
 use num_traits::{AsPrimitive, FromPrimitive};
 host_only! {
@@ -33,8 +33,6 @@ pub fn cast<X: Scalar + AsPrimitive<Y> + AsPrimitive<u32>, Y: Scalar + FromPrimi
     #[kernel(item)] x: X,
     #[kernel(item)] y: &mut Y,
 ) {
-    use krnl::scalar::ScalarType;
-
     if const { ScalarType::of::<X>() as u32 == ScalarType::of::<u8>() as u32 } {
         let x: u32 = x.as_();
         if const { ScalarType::of::<Y>() as u32 == ScalarType::of::<i16>() as u32 } {

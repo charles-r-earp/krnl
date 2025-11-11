@@ -1,4 +1,5 @@
 #![cfg_attr(target_arch = "spirv", no_std)]
+
 #[cfg(not(target_arch = "spirv"))]
 use krnl::{
     buffer::Buffer,
@@ -13,7 +14,11 @@ fn axpy_impl<T: Scalar + Num + NumAssign>(alpha: T, x: T, y: &mut T) {
 }
 
 #[kernel]
-fn axpy<T: Scalar + Num + NumAssign>(alpha: T, #[kernel(item)] x: T, #[kernel(item)] y: &mut T) {
+fn axpy<#[kernel(impl=[f32])] T: Scalar + Num + NumAssign>(
+    alpha: T,
+    #[kernel(item)] x: T,
+    #[kernel(item)] y: &mut T,
+) {
     axpy_impl(alpha, x, y);
 }
 
@@ -24,12 +29,12 @@ pub fn main() {
     } else {
         Context::Host
     };
+
     let alpha = 2f32;
     let x = Buffer::from(vec![1f32])
         .into_context(context.clone())
         .unwrap();
-    let mut y = Buffer::zeros(context.clone(), 1).unwrap();
-
+    let mut y = Buffer::zeros(context.clone(), x.len()).unwrap();
     if let Some((x, y)) = x
         .as_slice()
         .into_host_slice()
