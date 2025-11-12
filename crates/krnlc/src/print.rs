@@ -1,57 +1,27 @@
 use crate::{
     reflect::Features,
-    spirv::{
-        assemble, get_element_size, krnl_inst_set, op_constant, op_decorate_block,
-        op_member_decorate_offset, op_member_name, op_type_int, op_type_pointer, op_type_struct,
-        pointee_type, struct_element_type, validate, variable_name,
-    },
+    spirv::{assemble, krnl_inst_set, validate},
 };
-use camino::{Utf8Path, Utf8PathBuf};
-use cargo_metadata::{Metadata, Package};
+use cargo_metadata::Package;
 use clap_cargo::{Manifest, Workspace};
-use fxhash::FxBuildHasher;
-use indexmap::{
-    IndexMap, IndexSet,
-    map::{MutableEntryKey, MutableKeys},
-};
 use krnl_core::__private::__KrnlInst as KrnlInst;
-use smallvec::SmallVec;
-use spirt::{
-    AddrSpace, Attr, AttrSet, AttrSetDef, Const, ConstDef, ConstKind, Context, DataInst,
-    DataInstDef, DataInstForm, DataInstFormDef, DataInstKind, DeclDef, ExportKey, Exportee, Func,
-    GlobalVar, GlobalVarDecl, GlobalVarDefBody, InternedStr, Module, Type, TypeDef, TypeKind,
-    TypeOrConst, Value,
-    spv::{
-        Imm, Inst, encode_literal_string, extract_literal_string,
-        spec::{ExtInstSetDesc, ExtInstSetInstructionDesc, Spec},
-    },
-    transform::{InnerInPlaceTransform, Transformer},
-    visit::{InnerVisit, Visitor},
-};
-use spirv_headers::{Decoration, ExecutionModel, StorageClass};
-use spirv_tools::opt::Passes;
+use spirt::{Context, ExportKey, Module, spv::extract_literal_string};
 use spirv_tools::{
     TargetEnv,
-    binary::Binary,
     opt::{Optimizer, Options as OptimizerOptions},
-    val::Validator,
 };
-use std::{
-    collections::{BTreeMap, BTreeSet},
-    rc::Rc,
-};
+use std::rc::Rc;
 
 pub fn print_workspace(workspace: &Workspace, manifest: &Manifest, filter: Option<&str>) {
     let metadata = manifest.metadata().exec().unwrap();
     let (selected, _) = workspace.partition_packages(&metadata);
     for package in selected.iter().copied() {
-        print_package(package, &metadata, filter);
+        print_package(package, filter);
     }
 }
 
-fn print_package(package: &Package, metadata: &Metadata, filter: Option<&str>) {
+fn print_package(package: &Package, filter: Option<&str>) {
     let package_dir = package.manifest_path.parent().unwrap();
-    let name = &package.name;
     let spirv = std::fs::read(package_dir.join("krnl.spv")).unwrap();
     let output = print_to_string(spirv, filter);
     println!("{output}");

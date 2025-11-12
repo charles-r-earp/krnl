@@ -2,33 +2,17 @@ use crate::{
     scalar::ScalarType,
     spirv::{get_constant_u32, get_element_size, pointee_type, struct_element_type, variable_name},
 };
-use fxhash::{FxBuildHasher, FxHasher};
-use indexmap::{
-    IndexMap, IndexSet,
-    map::{MutableEntryKey, MutableKeys},
-};
-use krnl_core::__private::__KrnlInst as KrnlInst;
+use fxhash::FxBuildHasher;
+use indexmap::{IndexMap, IndexSet};
 use num_traits::FromPrimitive;
-use smallvec::SmallVec;
 use spirt::{
-    AddrSpace, Attr, AttrSet, AttrSetDef, Const, ConstDef, ConstKind, Context, DataInst,
-    DataInstDef, DataInstForm, DataInstFormDef, DataInstKind, DeclDef, ExportKey, Exportee, Func,
-    GlobalVar, GlobalVarDecl, GlobalVarDefBody, InternedStr, Module, ModuleDialect, Type, TypeDef,
-    TypeKind, TypeOrConst, Value,
-    print::Plan,
-    spv::{
-        Imm, Inst, encode_literal_string, extract_literal_string,
-        spec::{ExtInstSetDesc, ExtInstSetInstructionDesc, Spec},
-    },
-    transform::{InnerInPlaceTransform, Transformer},
+    AddrSpace, Attr, AttrSet, Const, Context, DataInstForm, DataInstKind, Exportee, Func,
+    GlobalVar, Module, ModuleDialect, Type, TypeKind, TypeOrConst,
+    spv::{Imm, extract_literal_string, spec::Spec},
     visit::{InnerVisit, Visit, Visitor},
 };
-use spirv_headers::{Capability, Decoration, ExecutionModel, MemoryModel, StorageClass};
-use spirv_tools::{TargetEnv, binary::Binary, opt::Optimizer, val::Validator};
-use std::{
-    collections::{BTreeMap, BTreeSet},
-    rc::Rc,
-};
+use spirv_headers::{Capability, Decoration, MemoryModel, StorageClass};
+use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Debug)]
 pub struct KernelDesc {
@@ -41,50 +25,13 @@ impl KernelDesc {
         let cx = module.cx_ref();
         let globals = UsedGlobals::parse_module(module, Some(func));
 
-        let bindings: BTreeMap<u32, GlobalVar> = globals
+        let mut buffers = BTreeMap::<u32, BufferDesc>::new();
+        for gv in globals
             .vars
             .iter()
-            .filter_map(|(gv, storage_class)| {
-                let (gv, storage_class) = (*gv, *storage_class);
-                if storage_class != StorageClass::StorageBuffer {
-                    return None;
-                }
-                let spec = Spec::get();
-                let mut binding = None;
-                let var_decl = &module.global_vars[gv];
-                for attr in cx[var_decl.attrs].attrs.iter() {
-                    if let Attr::SpvAnnotation(inst) = attr {
-                        let opcode = inst.opcode;
-                        if opcode == spec.well_known.OpDecorate {
-                            if let [Imm::Short(_, decoration), Imm::Short(_, value)] =
-                                inst.imms.as_slice()
-                            {
-                                let decoration = Decoration::from_u32(*decoration).unwrap();
-                                let value = *value;
-                                match decoration {
-                                    Decoration::DescriptorSet => {
-                                        let descriptor_set = value;
-                                        assert!(descriptor_set == 0);
-                                    }
-                                    Decoration::Binding => {
-                                        binding.replace(value);
-                                    }
-                                    _ => (),
-                                }
-                            }
-                        }
-                    }
-                }
-                Some((binding.unwrap(), gv))
-            })
-            .collect();
-
-        let mut kernel_desc = KernelDesc {
-            buffers: Vec::new(),
-            push_constants: Vec::new(),
-        };
-
-        for gv in bindings.values().copied() {
+            .filter(|x| *x.1 == StorageClass::StorageBuffer)
+            .map(|x| *x.0)
+        {
             let var_decl = &module.global_vars[gv];
             let ptr_ty = var_decl.type_of_ptr_to;
             let struct_ty = pointee_type(&cx, ptr_ty).unwrap();
@@ -131,13 +78,19 @@ impl KernelDesc {
                 }
             }
             let binding = binding.unwrap();
-            kernel_desc.buffers.push(BufferDesc {
-                name,
-                scalar_type,
-                array,
-                access,
-            });
+            buffers.insert(
+                binding,
+                BufferDesc {
+                    name,
+                    scalar_type,
+                    array,
+                    access,
+                },
+            );
         }
+        let buffers = (0..buffers.len())
+            .map(|binding| buffers.remove(&(binding as u32)).unwrap())
+            .collect();
 
         let push_var = globals.vars.iter().find_map(|(gv, storage_class)| {
             if *storage_class == StorageClass::PushConstant {
@@ -146,9 +99,8 @@ impl KernelDesc {
                 None
             }
         });
-        if let Some(gv) = push_var {
+        let push_constants = if let Some(gv) = push_var {
             let var_decl = &module.global_vars[gv];
-            let name = variable_name(module, gv);
             let ptr_ty = var_decl.type_of_ptr_to;
             let struct_ty = pointee_type(&cx, ptr_ty).unwrap();
             let field_types = get_struct_field_types(cx, struct_ty).unwrap();
@@ -198,160 +150,14 @@ impl KernelDesc {
                     }
                 }
             }
-            kernel_desc.push_constants = push_constants;
-        }
-        kernel_desc
-
-        /*
-        struct KernelVisitor<'a> {
-            module: &'a Module,
-            func: Func,
-            buffers: IndexMap<GlobalVar, (u32, BufferDesc), FxBuildHasher>,
-            push_constants_var: Option<GlobalVar>,
-            push_constants: Vec<PushConstantDesc>,
-        }
-
-        impl KernelVisitor<'_> {
-            fn visit_buffer(&mut self, gv: GlobalVar) {
-                let cx = self.module.cx_ref();
-            }
-            fn visit_push_constants(&mut self, gv: GlobalVar) {
-                self.push_constants_var.replace(gv);
-
-                }
-            }
-        }
-
-        impl Visitor<'_> for KernelVisitor<'_> {
-            fn visit_attr_set_use(&mut self, _attrs: AttrSet) {}
-            fn visit_type_use(&mut self, _ty: Type) {}
-            fn visit_const_use(&mut self, ct: Const) {
-                let const_def = &self.module.cx_ref()[ct];
-                if let ConstKind::PtrToGlobalVar(gv) = const_def.kind {
-                    self.visit_global_var_use(gv);
-                }
-            }
-            fn visit_data_inst_form_use(&mut self, data_inst_form: DataInstForm) {}
-            fn visit_global_var_use(&mut self, gv: GlobalVar) {
-                let var_decl = &self.module.global_vars[gv];
-                if let AddrSpace::SpvStorageClass(storage_class) = var_decl.addr_space {
-                    let storage_class = StorageClass::from_u32(storage_class).unwrap();
-                    match storage_class {
-                        StorageClass::StorageBuffer => {
-                            self.visit_buffer(gv);
-                        }
-                        StorageClass::PushConstant => {
-                            self.visit_push_constants(gv);
-                        }
-                        _ => (),
-                    }
-                }
-            }
-            fn visit_func_use(&mut self, func: Func) {
-                self.func = func;
-                self.module.funcs[func].inner_visit_with(self);
-            }
-
-            fn visit_data_inst_def(&mut self, data_inst_def: &DataInstDef) {
-                let cx = self.module.cx_ref();
-                let form_def = &cx[data_inst_def.form];
-                if let DataInstKind::SpvExtInst { ext_set, inst } = &form_def.kind {
-                    let ext_set_str = &cx[*ext_set];
-                    if ext_set_str == KrnlInst::SET_NAME && *inst == KrnlInst::DataType as u32 {
-                        let (var, type_name) = if let [Value::DataInstOutput(var), Value::Const(type_name)] =
-                            data_inst_def.inputs.as_slice()
-                        {
-                            (*var, *type_name)
-                        } else {
-                            unreachable!()
-                        };
-                        let scalar_type = {
-                            let const_def = &cx[type_name];
-                            if let ConstKind::SpvStringLiteralForExtInst(type_name) = const_def.kind
-                            {
-                                match &cx[type_name] {
-                                    "f16" => ScalarType::F16,
-                                    "bf16" => ScalarType::BF16,
-                                    _ => unreachable!(),
-                                }
-                            } else {
-                                unreachable!();
-                            }
-                        };
-                        let func_decl = &self.module.funcs[self.func];
-                        let body = if let DeclDef::Present(body) = &func_decl.def {
-                            body
-                        } else {
-                            unreachable!()
-                        };
-                        let data_inst_def = &body.data_insts[var];
-                        let form_def = &cx[data_inst_def.form];
-                        if let [Value::Const(var), Value::Const(index1), Value::Const(index2)] =
-                            data_inst_def.inputs.as_slice()
-                        {
-                            let const_def = &cx[*var];
-                            let gv = if let ConstKind::PtrToGlobalVar(gv) = const_def.kind {
-                                gv
-                            } else {
-                                unreachable!()
-                            };
-                            let var_decl = &self.module.global_vars[gv];
-                            let storage_class = if let AddrSpace::SpvStorageClass(storage_class) =
-                                var_decl.addr_space
-                            {
-                                StorageClass::from_u32(storage_class).unwrap()
-                            } else {
-                                unreachable!()
-                            };
-                            match storage_class {
-                                StorageClass::StorageBuffer => {
-                                    if cfg!(debug_assertions) {
-                                        let index1 = get_constant_u32(cx, *index1).unwrap();
-                                        let index2 = get_constant_u32(cx, *index2).unwrap();
-                                        debug_assert!(index1 == 0);
-                                        debug_assert!(index2 == 0);
-                                    }
-                                    self.buffers[&gv].1.scalar_type = scalar_type;
-                                }
-                                StorageClass::PushConstant => {
-                                    if cfg!(debug_assertions) {
-                                        let index1 = get_constant_u32(cx, *index1).unwrap();
-                                        debug_assert!(index1 == 0);
-                                    }
-                                    let member = get_constant_u32(cx, *index2).unwrap();
-                                    self.push_constants[member as usize].scalar_type = scalar_type;
-                                }
-                                _ => (),
-                            }
-                        } else {
-                            unreachable!();
-                        }
-                    }
-                }
-                data_inst_def.inner_visit_with(self);
-            }
-        }
-
-        let mut visitor = KernelVisitor {
-            module,
-            func,
-            buffers: IndexMap::default(),
-            push_constants_var: None,
-            push_constants: Vec::new(),
+            push_constants
+        } else {
+            Vec::new()
         };
-        module.funcs[func].inner_visit_with(&mut visitor);
-
-        let mut buffers: Vec<BufferDesc> = (0..visitor.buffers.len())
-            .map(|_| BufferDesc::null())
-            .collect();
-        for (_gv, (binding, desc)) in visitor.buffers {
-            buffers[binding as usize] = desc;
-        }
-        Self {
+        KernelDesc {
             buffers,
-            push_constants: visitor.push_constants,
+            push_constants,
         }
-        */
     }
     pub fn push_constant_bytes(&self) -> usize {
         self.push_constants
@@ -405,26 +211,20 @@ impl BufferDesc {
     pub fn name(&self) -> &str {
         &self.name
     }
-    fn null() -> Self {
-        Self {
-            name: String::new(),
-            scalar_type: ScalarType::U8,
-            array: None,
-            access: AccessMode::UNUSED,
-        }
-    }
     pub fn mutable(&self) -> bool {
         self.access.mutable()
     }
-    pub fn scalar_type(&self) -> ScalarType {
+    pub(crate) fn scalar_type(&self) -> ScalarType {
         self.scalar_type
     }
     pub(crate) fn array(&self) -> Option<u32> {
         self.array
     }
+    /*
     fn elem_size(&self) -> usize {
         self.array.unwrap_or(1) as usize * self.scalar_type.size()
     }
+    */
 }
 
 #[derive(Clone, Debug)]
@@ -442,7 +242,7 @@ impl PushConstantDesc {
     pub fn offset(&self) -> u32 {
         self.offset
     }
-    pub fn scalar_type(&self) -> ScalarType {
+    pub(crate) fn scalar_type(&self) -> ScalarType {
         self.scalar_type
     }
     pub(crate) fn array(&self) -> Option<u32> {
@@ -702,7 +502,7 @@ impl Features {
             fn visit_const_use(&mut self, _ct: Const) {}
             fn visit_data_inst_form_use(&mut self, data_inst_form: DataInstForm) {
                 let form_def = &self.module.cx_ref()[data_inst_form];
-                if let DataInstKind::SpvExtInst { ext_set, inst } = &form_def.kind {
+                if let DataInstKind::SpvExtInst { ext_set, inst: _ } = &form_def.kind {
                     let ext_set_str = &self.module.cx_ref()[*ext_set];
                     if ext_set_str.starts_with("NonSemantic.") {
                         let non_semantic_info = "SPV_KHR_non_semantic_info";
@@ -780,32 +580,6 @@ impl Features {
     pub(crate) fn capabilities_iter(&self) -> impl Iterator<Item = Capability> + '_ {
         self.capabilities.iter().copied()
     }
-    /*
-    pub(crate) fn to_device_features(&self) -> DeviceFeatures {
-        let mut f = DeviceFeatures::default();
-        for cap in self.capabilities.iter().copied() {
-            match cap {
-                Capability::Int8 => {
-                    f.insert(DeviceFeatures::INT8);
-                }
-                Capability::Int16 => {
-                    f.insert(DeviceFeatures::INT16);
-                }
-                Capability::Int64 => {
-                    f.insert(DeviceFeatures::INT64);
-                }
-                Capability::Float16 => {
-                    f.insert(DeviceFeatures::FLOAT16);
-                }
-                Capability::Float64 => {
-                    f.insert(DeviceFeatures::FLOAT64);
-                }
-                _ => (),
-            }
-        }
-        f
-    }
-    */
 }
 
 #[derive(Default)]
@@ -851,7 +625,6 @@ impl UsedGlobals {
             }
         }
 
-        let mut output = Self::default();
         let mut collector = Collector {
             module,
             output: UsedGlobals::default(),

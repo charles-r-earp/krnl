@@ -66,42 +66,6 @@ pub mod __private {
         }
     }
 
-    /*
-    #[cfg(all(krnlc, target_arch = "spirv"))]
-    pub unsafe fn __spec_name<T, const ID: u32, const NAME: u32>(var: T) {
-        unsafe {
-            asm! {
-                "%void = OpTypeVoid",
-                "%u32 = OpTypeInt 32 0",
-                "%ext = OpExtInstImport \"NonSemantic.rust.krnl\"",
-                "%id = OpConstant %u32 {id}",
-                "%name = OpConstant %u32 {name}",
-                "%result = OpExtInst %void %ext {inst} {var} %id %name",
-                inst = const KrnlInst::SpecName as u32,
-                id = const ID,
-                name = const NAME,
-                var = in(reg) &var,
-            }
-        }
-    }
-
-    #[cfg(all(krnlc, target_arch = "spirv"))]
-    pub unsafe fn __push_name<V, const NAME: u32>(var: *const V) {
-        unsafe {
-            asm! {
-                "%void = OpTypeVoid",
-                "%u32 = OpTypeInt 32 0",
-                "%ext = OpExtInstImport \"NonSemantic.rust.krnl\"",
-                "%name = OpConstant %u32 {name}",
-                "%result = OpExtInst %void %ext {inst} {var} %name",
-                inst = const KrnlInst::PushName as u32,
-                var = in(reg) var,
-                name = const NAME,
-            }
-        }
-    }
-    */
-
     #[cfg(all(krnlc, target_arch = "spirv"))]
     pub unsafe fn __spec<V>(var: *const V) {
         unsafe {
@@ -193,52 +157,15 @@ pub mod __private {
             asm! {
                 "%void = OpTypeVoid",
                 "%u32 = OpTypeInt 32 0",
-                //"%uvec3 = OpTypeVector %u32 3",
                 "%one = OpConstant %u32 1",
                 "%ext = OpExtInstImport \"NonSemantic.rust.krnl\"",
                 "%threads = OpSpecConstant %u32 1",
                 "OpDecorate %threads SpecId 0",
                 "OpName %threads \"krnl::threads\"",
-                //"%workgroup_size = OpSpecConstantComposite %uvec3 %threads %one %one",
-                //"OpDecorate %workgroup_size BuiltIn WorkgroupSize",
-                //"%result = OpExtInst %void %ext {inst} %workgroup_size",
                 "OpStore {result_slot} %threads",
-                //inst = const KrnlInst::WorkgroupSize as u32,
                 result_slot = in(reg) result_slot.as_mut_ptr()
             }
             result_slot.assume_init()
         }
     }
-
-    /*
-    #[cfg(all(krnlc, target_arch = "spirv"))]
-    pub unsafe fn __spec_constant_u32<T, const ID: u32>() -> T {
-        let mut result_slot = MaybeUninit::uninit();
-        unsafe {
-            asm! {
-                "%spec = OpSpecConstant typeof*{result_slot} 0",
-                "OpDecorate %spec SpecId {id}",
-                "OpStore {result_slot} %spec",
-                id = const ID,
-                result_slot = in(reg) result_slot.as_mut_ptr()
-            }
-            result_slot.assume_init()
-        }
-    }
-
-    #[cfg(all(krnlc, target_arch = "spirv"))]
-    pub unsafe fn __spec_constant_u64<T, const ID: u32>() -> T {
-        let mut result_slot = MaybeUninit::uninit();
-        unsafe {
-            asm! {
-                "%spec = OpSpecConstant typeof*{result_slot} 0 0",
-                "OpDecorate %spec SpecId {id}",
-                "OpStore {result_slot} %spec",
-                id = const ID,
-                result_slot = in(reg) result_slot.as_mut_ptr()
-            }
-            result_slot.assume_init()
-        }
-    }
-    */
 }

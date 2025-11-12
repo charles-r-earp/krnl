@@ -13,7 +13,7 @@ Developed for [autograph](https://github.com/charles-r-earp/autograph).
 - Similar functionality to CUDA and OpenCL.
 - Native GPU acceleration via Vulkan 1.3.
 - MacOS / iOS supported via [MoltenVK](https://github.com/KhronosGroup/MoltenVK).
-- Web GPU acceleration via [WebGPU](https://gpuweb.github.io/gpuweb/). **under construction**
+- Web GPU acceleration via [WebGPU](https://gpuweb.github.io/gpuweb/).
 - Kernels are written inline, entirely in Rust.
   - Simple iterator patterns can be implemented without unsafe.
   - Supports inline [SPIR-V](https://www.khronos.org/spir) assembly.
@@ -44,13 +44,37 @@ For device functionality (kernels), install [Vulkan](https://www.vulkan.org) for
   - spirv-tools
     - This is used by krnlc for spirv validation and optimization.
       - krnlc builds by default without needing spirv-tools to be installed.
-
-## Test
-
 - Check that `vulkaninfo --summary` shows your devices.
   - Instance version should be >= 1.3.
-- Alternatively, check that `cargo test --test integration_tests -- --exact none` shows your devices. **under construction**
-  - You can run all the tests with `cargo test --all-features`.
+
+# Test
+
+- You can run all the tests with `cargo test`.
+
+## Web
+
+Tests can be run with wasm-pack.
+
+Install wasm-pack `cargo install wasm-pack`.
+
+wasm-pack must be run in the test crate directory `cd tests/integration`.
+
+WebGPU requires a [supported browser](https://github.com/gpuweb/gpuweb/wiki/Implementation-Status).
+
+Tests can be run with either `--firefox` or `--chrome` flags:
+```
+wasm-pack test --firefox
+```
+
+You should get an output like this:
+```
+Interactive browsers tests are now available at http://127.0.0.1:8000
+
+Note that interactive mode is enabled because `NO_HEADLESS`
+is specified in the environment of this process. Once you're
+done with testing you'll need to kill this server with
+Ctrl-C.
+```
 
 # Getting Started
 

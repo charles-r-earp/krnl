@@ -1,21 +1,17 @@
-use derive_more::IsVariant;
-use fxhash::{FxHashMap, FxHashSet};
 use itertools::Itertools;
 use proc_macro2::{Span, TokenStream};
-use quote::{ToTokens, TokenStreamExt, format_ident, quote};
+use quote::{ToTokens, format_ident, quote};
 use syn::{
-    Attribute, Block, ConstParam, Error, Expr, File, FnArg, GenericParam, Generics, Ident, ItemFn,
-    LitInt, LitStr, Pat, PatIdent, PatType, Result, Stmt, Type, TypeParam, TypeParamBound,
-    TypePath, TypeReference, TypeSlice, Visibility, WhereClause, bracketed, parenthesized,
+    Attribute, Block, Error, Expr, File, FnArg, Ident, LitInt, PatType, Result, Stmt, Type,
+    TypeParamBound, TypePath, Visibility, WhereClause, bracketed, parenthesized,
     parse::Parse,
     parse_quote, parse2,
     punctuated::Punctuated,
     spanned::Spanned,
     token::{
-        And, Brace, Bracket, Colon, Comma, Eq, Gt, Impl, Let, Lt, Mut, Paren, PathSep, Plus, Pound,
-        Ref, Semi, Unsafe, Where,
+        And, Brace, Bracket, Colon, Comma, Gt, Impl, Let, Lt, Mut, Paren, PathSep, Plus, Pound,
+        Semi, Unsafe,
     },
-    visit::Visit,
     visit_mut::VisitMut,
 };
 use syn_derive::{Parse, ToTokens};
@@ -293,7 +289,7 @@ impl Kernel {
         Ok(tokens)
     }
     fn host_tokens(&self) -> Result<TokenStream> {
-        let Self { attrs, vis, .. } = self;
+        let Self { attrs: _, vis, .. } = self;
         let ident = &self.sig.ident;
         let ty_generic_idents: Vec<Ident> = self
             .sig
@@ -302,7 +298,7 @@ impl Kernel {
             .iter()
             .map(|x| x.ident.clone())
             .collect();
-        let (impl_generics, ty_generics, where_clause) = self.sig.generics.split_for_impl();
+        let (impl_generics, ty_generics, _where_clause) = self.sig.generics.split_for_impl();
         let kernel_struct = if !ty_generic_idents.is_empty() {
             quote! {
                 struct #ident <#(#ty_generic_idents),*> {
@@ -376,7 +372,6 @@ impl Kernel {
         })
     }
     fn device_tokens(&self) -> Result<TokenStream> {
-        let attrs = &self.attrs;
         let ident = &self.sig.ident;
         let unsafety = self.sig.unsafety;
         let (impl_generics, ty_generics, where_clause) = self.sig.generics.split_for_impl();
@@ -397,7 +392,6 @@ impl Kernel {
         };
         let is_item = self.sig.inputs.iter().any(|x| x.is_item());
         let device_decls = self.device_decls();
-        let body = &self.block.stmts;
         let body = if is_item {
             let item_loads_stores = self.sig.inputs.iter().filter_map(|x| {
                 if x.is_item() {
@@ -530,16 +524,13 @@ impl Kernel {
             .map(move |(i, x)| x.entry_point_arg(&mut binding));
         builtins.chain(args).chain(group_buffers)
     }
-    fn is_item(&self) -> bool {
-        self.sig.inputs.iter().any(|x| x.is_item())
-    }
     fn kernel_args(&self) -> impl Iterator<Item = PatType> + '_ {
         let inputs = self.sig.inputs.iter().map(|x| x.kernel_arg());
         let group_inputs = self.group_inputs.iter().map(|x| x.kernel_arg());
         inputs.chain(group_inputs)
     }
     fn input_type_check(&self) -> TokenStream {
-        let (impl_generics, ty_generics, where_clause) = self.sig.generics.split_for_impl();
+        let (impl_generics, _ty_generics, _where_clause) = self.sig.generics.split_for_impl();
         let inputs = self.sig.inputs.iter().map(
             |KernelInput {
                  ident,
@@ -662,8 +653,6 @@ impl Kernel {
         }
     }
     fn kernel_import_visit(&self) -> TokenStream {
-        use itertools::Permutations;
-
         let no_build = self
             .kernel_attr
             .args
@@ -811,6 +800,22 @@ impl Parse for KernelAttrArg {
     }
 }
 
+impl ToTokens for KernelAttrArg {
+    fn to_tokens(&self, tokens: &mut TokenStream) {
+        match self {
+            Self::Debug(x) => {
+                x.to_tokens(tokens);
+            }
+            Self::DebugPretty(x) => {
+                x.to_tokens(tokens);
+            }
+            Self::NoBuild(x) => {
+                x.to_tokens(tokens);
+            }
+        }
+    }
+}
+
 #[derive(Parse)]
 struct KernelSignature {
     unsafety: Option<Unsafe>,
@@ -822,36 +827,6 @@ struct KernelSignature {
     #[syn(in = paren_token)]
     #[parse(Punctuated::parse_terminated)]
     inputs: Punctuated<KernelInput, Comma>,
-}
-
-impl KernelSignature {
-    /*
-    fn scalar_traits(&self) -> impl Iterator<Item = ScalarTraits> + '_ {
-        self.generics
-            .params
-            .iter()
-            .map(|x| ScalarTraits::from_bounds(&x.bounds))
-    }
-    fn generic_permutations(&self) -> impl Iterator<Item = Generics> + '_ {
-        std::iter::once(self.generics.clone()).chain(
-            self.scalar_traits()
-                .map(|x| x.scalars())
-                .multi_cartesian_product()
-                .map(|scalars| {
-                    let generics = scalars.iter().copied().map(|x| {
-                        let ident = format_ident!("{x:?}");
-                        quote! {
-                            krnl::scalar::ScalarType::#ident
-                        }
-                    });
-
-                    let mut new_generics = self.generics.clone();
-
-                    parse_quote! {}
-                }),
-        )
-    }
-    */
 }
 
 #[derive(Default)]
@@ -919,7 +894,13 @@ impl ToTokens for KernelTypeGenericsTurboFish<'_> {
 }
 
 impl KernelGenerics {
-    fn split_for_impl(&self) -> (KernelImplGenerics, KernelTypeGenerics, Option<&WhereClause>) {
+    fn split_for_impl(
+        &self,
+    ) -> (
+        KernelImplGenerics<'_>,
+        KernelTypeGenerics<'_>,
+        Option<&'_ WhereClause>,
+    ) {
         (
             KernelImplGenerics(self),
             KernelTypeGenerics(self),
@@ -1083,6 +1064,7 @@ impl ToTokens for KernelTypeParam {
     }
 }
 
+/*
 struct KernelSpecParam {
     attrs: Vec<Attribute>,
     spec: kw::spec,
@@ -1090,6 +1072,7 @@ struct KernelSpecParam {
     colon_token: Colon,
     ty: Type,
 }
+*/
 
 struct KernelInputAttr {
     pound_token: Pound,
@@ -1102,10 +1085,10 @@ struct KernelInputAttr {
 impl Parse for KernelInputAttr {
     fn parse(input: syn::parse::ParseStream) -> Result<Self> {
         let pound_token = input.parse()?;
-        let mut in_bracket;
+        let in_bracket;
         let bracket_token = bracketed!(in_bracket in input);
         let kernel = in_bracket.parse()?;
-        let mut in_paren;
+        let in_paren;
         let paren_token = parenthesized!(in_paren in in_bracket);
         let arg = in_paren.parse()?;
         Ok(Self {
@@ -1133,6 +1116,25 @@ impl Builtin {
             Self::GlobalThreadId(x) => Ident::new("__krnl_global_thread_id", x.span),
             Self::Threads(x) => Ident::new("__krnl_threads", x.span),
             Self::ThreadId(x) => Ident::new("__krnl_thread_id", x.span),
+        }
+    }
+}
+
+impl ToTokens for Builtin {
+    fn to_tokens(&self, tokens: &mut TokenStream) {
+        match self {
+            Self::GlobalThreads(x) => {
+                x.to_tokens(tokens);
+            }
+            Self::GlobalThreadId(x) => {
+                x.to_tokens(tokens);
+            }
+            Self::Threads(x) => {
+                x.to_tokens(tokens);
+            }
+            Self::ThreadId(x) => {
+                x.to_tokens(tokens);
+            }
         }
     }
 }
@@ -1167,6 +1169,22 @@ impl Parse for KernelInputAttrArg {
     }
 }
 
+impl ToTokens for KernelInputAttrArg {
+    fn to_tokens(&self, tokens: &mut TokenStream) {
+        match self {
+            Self::Spec(x) => {
+                x.to_tokens(tokens);
+            }
+            Self::Item(x) => {
+                x.to_tokens(tokens);
+            }
+            Self::Builtin(x) => {
+                x.to_tokens(tokens);
+            }
+        }
+    }
+}
+
 struct KernelImportInput {
     ident: Ident,
     colon_token: Colon,
@@ -1174,6 +1192,7 @@ struct KernelImportInput {
     ty: Type,
 }
 
+/*
 impl KernelImportInput {
     fn spec_constant(const_param: &ConstParam) -> Self {
         Self {
@@ -1184,6 +1203,7 @@ impl KernelImportInput {
         }
     }
 }
+*/
 
 impl Clone for KernelImportInput {
     fn clone(&self) -> Self {
@@ -1282,12 +1302,6 @@ impl KernelInput {
     fn is_push(&self) -> bool {
         self.kernel_attr.is_none() && self.ty.is_scalar()
     }
-    fn is_buffer(&self) -> bool {
-        if self.is_item() {
-            return true;
-        }
-        self.ty.is_buffer()
-    }
     fn host_arg_ty(&self) -> Option<Type> {
         if self.is_builtin() || self.is_spec() {
             return None;
@@ -1309,7 +1323,10 @@ impl KernelInput {
     }
     fn device_decl(&self) -> Stmt {
         let Self {
-            attrs, ident, ty, ..
+            attrs: _,
+            ident,
+            ty: _,
+            ..
         } = self;
         if let Some(KernelInputAttrArg::Builtin(builtin)) =
             self.kernel_attr.as_ref().map(|x| &x.arg)
@@ -1369,7 +1386,7 @@ impl KernelInput {
             return None;
         }
         let Self {
-            attrs,
+            attrs: _,
             ident,
             ty,
             colon_token,
@@ -1428,7 +1445,7 @@ impl KernelInput {
             return None;
         }
         let Self {
-            attrs,
+            attrs: _,
             ident,
             ty,
             colon_token,
@@ -1472,7 +1489,7 @@ impl KernelInput {
         } else {
             let mut tokens = TokenStream::new();
             if let KernelInputType::Buffer {
-                and,
+                and: _,
                 bracket,
                 elem,
                 len,
@@ -1742,7 +1759,15 @@ impl Parse for GroupInput {
 
 impl ToTokens for GroupInput {
     fn to_tokens(&self, tokens: &mut TokenStream) {
-        todo!()
+        for attr in self.attrs.iter() {
+            attr.to_tokens(tokens);
+        }
+        self.kernel_attr.to_tokens(tokens);
+        self.let_token.to_tokens(tokens);
+        self.ident.to_tokens(tokens);
+        self.colon_token.to_tokens(tokens);
+        self.ty.to_tokens(tokens);
+        self.semi.to_tokens(tokens);
     }
 }
 
@@ -1907,10 +1932,10 @@ impl GroupInputAttr {
 impl Parse for GroupInputAttr {
     fn parse(input: syn::parse::ParseStream) -> Result<Self> {
         let pound_token = input.parse()?;
-        let mut in_bracket;
+        let in_bracket;
         let bracket_token = bracketed!(in_bracket in input);
         let kernel = in_bracket.parse()?;
-        let mut in_paren;
+        let in_paren;
         let paren_token = parenthesized!(in_paren in in_bracket);
         let group = in_paren.parse()?;
         let comma = in_paren.parse().ok();
@@ -1933,7 +1958,15 @@ impl Parse for GroupInputAttr {
 
 impl ToTokens for GroupInputAttr {
     fn to_tokens(&self, tokens: &mut TokenStream) {
-        todo!()
+        self.pound_token.to_tokens(tokens);
+        self.bracket_token.surround(tokens, |tokens| {
+            self.kernel.to_tokens(tokens);
+            self.paren_token.surround(tokens, |tokens| {
+                self.group.to_tokens(tokens);
+                self.comma.to_tokens(tokens);
+                self.args.to_tokens(tokens);
+            });
+        });
     }
 }
 
@@ -1949,7 +1982,13 @@ impl Parse for GroupInputAttrArg {
 
 impl ToTokens for GroupInputAttrArg {
     fn to_tokens(&self, tokens: &mut TokenStream) {
-        todo!()
+        match self {
+            Self::Len(len, eq, slice_len) => {
+                len.to_tokens(tokens);
+                eq.to_tokens(tokens);
+                slice_len.to_tokens(tokens);
+            }
+        }
     }
 }
 

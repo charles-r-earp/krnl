@@ -6,7 +6,7 @@ pub use spirv_std;
 pub mod macros {
     pub use krnl_macros::{device_only, host_only, kernel};
 }
-use macros::host_only;
+use macros::{device_only, host_only};
 
 pub mod kernel;
 pub mod scalar;
@@ -22,5 +22,7 @@ host_only! {
     mod kernels;
 }
 
-#[cfg(all(krnlc, krnlc_pkg = "krnl", target_arch = "spirv"))]
-pub mod kernels;
+device_only! {
+    #[cfg(krnlc_pkg = "krnl")]
+    pub mod kernels;
+}

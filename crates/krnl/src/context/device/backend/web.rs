@@ -1,4 +1,4 @@
-use super::{BufferRange, DeviceOwned, DeviceSpecifier, Properties};
+use super::{BufferRange, DeviceOwned, Properties};
 use crate::{
     Result,
     context::device::Features,
@@ -6,19 +6,14 @@ use crate::{
 };
 use fxhash::FxHashMap;
 use parking_lot::{Mutex, RwLock};
-use std::{
-    collections::{BTreeMap, HashMap},
-    future::Future,
-    pin::Pin,
-    sync::Arc,
-};
+use std::{collections::BTreeMap, sync::Arc};
 use tinyvec::ArrayVec;
 use wasm_bindgen_futures::JsFuture;
 use web_sys::{
     GpuBindGroupDescriptor, GpuBindGroupEntry, GpuBindGroupLayoutDescriptor,
     GpuBindGroupLayoutEntry, GpuBufferBinding, GpuBufferBindingLayout, GpuBufferBindingType,
     GpuComputePipeline, GpuComputePipelineDescriptor, GpuPipelineLayoutDescriptor,
-    GpuProgrammableStage, GpuShaderModule, GpuShaderModuleDescriptor,
+    GpuProgrammableStage, GpuShaderModuleDescriptor,
     js_sys::{Array, Int8Array, Promise},
     wasm_bindgen::{JsCast as _, JsValue},
 };
@@ -48,8 +43,8 @@ impl super::Backend for Backend {
 
 struct RawDevice {
     device: web_sys::GpuDevice,
-    adapter: web_sys::GpuAdapter,
-    backend: Arc<Backend>,
+    _adapter: web_sys::GpuAdapter,
+    _backend: Arc<Backend>,
     features: Features,
     properties: Properties,
 }
@@ -89,8 +84,8 @@ impl RawDevice {
         };
         Ok(Arc::new(Self {
             device,
-            adapter,
-            backend,
+            _adapter: adapter,
+            _backend: backend,
             features,
             properties,
         }))
@@ -171,7 +166,7 @@ enum BufferUsage {
     CopySrc = 4,
     CopyDst = 8,
     MapRead = 1,
-    MapWrite = 2,
+    // MapWrite = 2,
     Storage = 128,
     Uniform = 64,
 }
@@ -180,7 +175,7 @@ enum BufferUsage {
 #[repr(u32)]
 enum MapMode {
     Read = 1,
-    Write = 2,
+    // Write = 2,
 }
 
 struct RawBuffer {
@@ -545,11 +540,10 @@ fn spirv_to_wgsl(
     has_push_constants: &mut bool,
 ) -> Result<String, CompileError> {
     use naga::{
-        AddressSpace, Expression, Module, Override, ResourceBinding, Scalar, ScalarKind,
-        ShaderStage, Span, StorageAccess, Type, TypeInner,
+        AddressSpace, ResourceBinding, Scalar, ShaderStage, StorageAccess, TypeInner,
         back::wgsl::{Writer as WgslWriter, WriterFlags as WgslWriterFlags},
         front::spv::{Frontend as SpvFrontend, Options as SpvOptions},
-        valid::{Capabilities, ModuleInfo, ValidationFlags, Validator},
+        valid::{Capabilities, ValidationFlags, Validator},
     };
 
     let mut module = SpvFrontend::new(

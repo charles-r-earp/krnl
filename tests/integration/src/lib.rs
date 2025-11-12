@@ -1,5 +1,5 @@
 use dry::macro_for;
-#[cfg(feature = "device")]
+#[cfg(all(test, feature = "device"))]
 use krnl::context::Device;
 #[cfg(test)]
 use krnl::{
@@ -7,19 +7,21 @@ use krnl::{
     context::Context,
     scalar::{bf16, f16},
 };
+#[cfg(feature = "device")]
+use maybe_async::maybe_async;
 #[cfg(test)]
 use num_traits::{AsPrimitive, Bounded};
 use paste::paste;
-#[cfg(feature = "device")]
-use {maybe_async::maybe_async, std::sync::OnceLock};
+#[cfg(all(test, feature = "device"))]
+use std::sync::OnceLock;
 
 #[cfg(target_family = "wasm")]
 use wasm_bindgen_test::{wasm_bindgen_test as test, wasm_bindgen_test_configure};
 
-#[cfg(all(feature = "run_in_browser", target_family = "wasm"))]
+#[cfg(target_family = "wasm")]
 wasm_bindgen_test_configure!(run_in_browser);
 
-#[cfg(feature = "device")]
+#[cfg(all(test, feature = "device"))]
 #[maybe_async]
 async fn test_device() -> Device {
     static DEVICE: OnceLock<Device> = OnceLock::new();

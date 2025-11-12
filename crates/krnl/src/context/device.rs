@@ -12,10 +12,12 @@ use std::{
 
 #[cfg(feature = "device")]
 mod backend;
+#[cfg(all(feature = "device", not(target_family = "wasm")))]
+use backend::DeviceSpecifier;
 #[cfg(feature = "device")]
 use backend::{
-    Backend as _, Buffer as _, BufferRange, Device as _, DeviceOwned, DeviceSpecifier, Event as _,
-    Kernel as _, Slice as _,
+    Backend as _, Buffer as _, BufferRange, Device as _, DeviceOwned, Event as _, Kernel as _,
+    Slice as _,
     backend_impl::{
         Backend, Buffer as RawBuffer, Device as RawDevice, Event as RawEvent, Kernel as RawKernel,
         Slice as RawSlice,
