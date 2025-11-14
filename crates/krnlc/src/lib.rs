@@ -5,7 +5,7 @@ pub mod cli;
 #[cfg(feature = "print")]
 mod print;
 #[cfg(feature = "rust-in")]
-mod rust_in;
+pub mod rust_in;
 
 pub mod reflect;
 mod scalar;

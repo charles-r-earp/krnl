@@ -520,8 +520,7 @@ impl Kernel {
         let group_buffers = self
             .group_inputs
             .iter()
-            .enumerate()
-            .map(move |(i, x)| x.entry_point_arg(&mut binding));
+            .map(move |x| x.entry_point_arg(&mut binding));
         builtins.chain(args).chain(group_buffers)
     }
     fn kernel_args(&self) -> impl Iterator<Item = PatType> + '_ {

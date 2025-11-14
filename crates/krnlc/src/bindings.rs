@@ -35,29 +35,27 @@ use spirv_tools::{
 use std::{collections::BTreeSet, rc::Rc};
 use syn::{Ident, LitInt};
 
-#[derive(Default)]
 pub struct BindingsBuilder {
-    spirv: Option<Vec<u8>>,
+    spirv: Vec<u8>,
 }
 
 impl BindingsBuilder {
-    pub fn from_spirv_bytes(bytes: Vec<u8>) -> Self {
-        Self {
-            spirv: Some(bytes),
-            ..Self::default()
-        }
+    pub fn load() -> std::io::Result<Self> {
+        let manifest_dir = Utf8PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap());
+        let path = manifest_dir.join("krnl.spv");
+        let spirv = std::fs::read(path)?;
+        Ok(Self::from_spirv_bytes(spirv))
+    }
+    pub fn from_spirv(spirv: Vec<u32>) -> Self {
+        Self::from_spirv_bytes(bytemuck::cast_slice(&spirv).to_vec())
+    }
+    pub fn from_spirv_bytes(spirv: Vec<u8>) -> Self {
+        Self { spirv }
     }
     pub fn emit(self) -> std::io::Result<()> {
         let crate_name = std::env::var("CARGO_PKG_NAME").unwrap().replace("-", "_");
         let out_dir = Utf8PathBuf::from(std::env::var("OUT_DIR").unwrap());
-        let spirv = if let Some(spirv) = self.spirv {
-            spirv
-        } else {
-            let manifest_dir = Utf8PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap());
-            let path = manifest_dir.join("krnl.spv");
-            std::fs::read(path)?
-        };
-        let kernels = process(spirv);
+        let kernels = process(self.spirv);
         for kernel in kernels {
             let name = &kernel.sig.name;
             let path = name.replace("::", "__");

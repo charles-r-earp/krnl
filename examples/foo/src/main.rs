@@ -1,1 +1,1 @@
-use foo::main;
+use axpy::main;

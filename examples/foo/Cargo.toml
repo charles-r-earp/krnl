@@ -1,5 +1,5 @@
 [package]
-name = "foo"
+name = "axpy"
 version = "0.1.0"
 authors.workspace = true
 edition.workspace = true
@@ -16,6 +16,7 @@ bench = false
 [target.'cfg(not(target_arch = "spirv"))'.build-dependencies]
 krnlc = { workspace = true, default-features = false, features = [
     "use-installed-tools",
+    "rust-in",
     "bindings",
 ] }
 

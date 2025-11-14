@@ -415,7 +415,6 @@ host_only! {
             self.__visit_slice_mut(name, slice)
         }
         fn __visit_push<T: DeviceCopy>(&mut self, _name: &'static str, push: &T) {
-            dbg!(_name);
             let offset = self.desc.push_offsets[self.push_index] as usize;
             let size = size_of::<T>();
             self.push_constants[offset..offset+size].copy_from_slice(bytemuck::bytes_of(push));

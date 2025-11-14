@@ -5,9 +5,10 @@ use crate::spirv::{
     op_type_array, op_type_bool, op_type_int, op_type_pointer, op_type_struct, pointee_type,
     runtime_array_element_type, strip_krnl_insts, struct_element_type, validate, variable_name,
 };
-use camino::Utf8Path;
+use camino::{Utf8Path, Utf8PathBuf};
 use cargo_gpu::spirv_builder;
-use cargo_metadata::{Metadata, Package};
+use cargo_metadata::Package;
+#[cfg(feature = "cli")]
 use clap_cargo::{Manifest, Workspace};
 use color_print::ceprintln;
 use fxhash::FxBuildHasher;
@@ -31,31 +32,60 @@ use spirv_tools::{
     binary::Binary,
     opt::{Optimizer, Options as OptimizerOptions},
 };
-use std::time::Instant;
-use std::{collections::BTreeSet, rc::Rc};
+use std::{collections::BTreeSet, rc::Rc, time::Instant};
 
-pub fn build_workspace(workspace: &Workspace, manifest: &Manifest) {
-    let metadata = manifest.metadata().exec().unwrap();
-    let (selected, _) = workspace.partition_packages(&metadata);
-    for package in selected.iter().copied() {
-        build_package(package, &metadata);
+pub struct ModuleBuilder {
+    package: Package,
+    target_dir: Utf8PathBuf,
+}
+
+impl ModuleBuilder {
+    pub fn new() -> Self {
+        let manifest_dir = Utf8PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap());
+        let manifest_path = manifest_dir.join("Cargo.toml");
+        Self::from_manifest_path(manifest_path, None)
+    }
+    pub fn from_manifest_path(manifest_path: Utf8PathBuf, target_dir: Option<Utf8PathBuf>) -> Self {
+        let metadata = cargo_metadata::MetadataCommand::new()
+            .manifest_path(manifest_path)
+            .exec()
+            .unwrap();
+        let package = metadata.root_package().cloned().unwrap();
+        let target_dir = target_dir.unwrap_or(metadata.target_directory);
+        Self::from_package(package, target_dir)
+    }
+    pub(crate) fn from_package(package: Package, target_dir: Utf8PathBuf) -> Self {
+        Self {
+            package,
+            target_dir,
+        }
+    }
+    pub fn build(self) -> Vec<u32> {
+        let start = Instant::now();
+        let package_dir = self.package.manifest_path.parent().unwrap();
+        let name = &self.package.name;
+        ceprintln!("<s><c>krnlc</c></s> <s><g>Compiling</g></s> {name} ({package_dir})");
+        let spirv = compile(name, package_dir, &self.target_dir);
+        let spirv = process(spirv);
+        ceprintln!(
+            "<s><c>krnlc</c></s> <s><g>Finished</g></s> {name} ({package_dir}) in {:.2?}s",
+            start.elapsed().as_secs_f32()
+        );
+        spirv
     }
 }
 
-fn build_package(package: &Package, metadata: &Metadata) {
-    let start = Instant::now();
-    let package_dir = package.manifest_path.parent().unwrap();
-    let name = &package.name;
-    ceprintln!("<s><c>krnlc</c></s> <s><g>Compiling</g></s> {name} ({package_dir})");
-    let spirv = compile(name, package_dir, &metadata.target_directory);
-    let spirv = process(spirv);
-    let spirv = bytemuck::cast_slice(spirv.as_slice());
-    let out_path = package_dir.join("krnl.spv");
-    ceprintln!(
-        "<s><c>krnlc</c></s> <s><g>Finished</g></s> {name} ({out_path}) in {:.2?}s",
-        start.elapsed().as_secs_f32()
-    );
-    std::fs::write(out_path, spirv).unwrap();
+#[cfg(feature = "cli")]
+pub(crate) fn build_workspace(workspace: &Workspace, manifest: &Manifest) {
+    let metadata = manifest.metadata().exec().unwrap();
+    let (selected, _) = workspace.partition_packages(&metadata);
+    for package in selected {
+        let spirv =
+            ModuleBuilder::from_package(package.clone(), metadata.target_directory.clone()).build();
+        let package_dir = package.manifest_path.parent().unwrap();
+        let out_path = package_dir.join("krnl.spv");
+        std::fs::write(out_path, bytemuck::cast_slice(&spirv)).unwrap();
+    }
 }
 
 fn compile(name: &str, path: &Utf8Path, target_dir: &Utf8Path) -> Vec<u8> {

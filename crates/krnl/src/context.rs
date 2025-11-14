@@ -13,6 +13,16 @@ pub enum Context {
     Device(Device),
 }
 
+impl Context {
+    pub fn new_default() -> Result<Self> {
+        if cfg!(feature = "device") {
+            Device::builder().build().map(Self::Device)
+        } else {
+            Ok(Self::Host)
+        }
+    }
+}
+
 pub(crate) enum Buffer<T> {
     Host(Vec<T>),
     #[cfg(feature = "device")]
