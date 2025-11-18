@@ -1,9 +1,10 @@
 use crate::reflect::{ElementType, Features, UsedGlobals};
 use crate::spirv::{
-    assemble, get_element_size, krnl_inst_set, op_constant, op_constant_true, op_decorate_block,
-    op_member_decorate_offset, op_member_name, op_name, op_spec_constant, op_spec_constant_select,
-    op_type_array, op_type_bool, op_type_int, op_type_pointer, op_type_struct, pointee_type,
-    runtime_array_element_type, strip_krnl_insts, struct_element_type, validate, variable_name,
+    assemble, get_element_size, get_spec_id, krnl_inst_set, op_constant, op_constant_true,
+    op_decorate_block, op_member_decorate_offset, op_member_name, op_name, op_spec_constant,
+    op_spec_constant_composite, op_spec_constant_select, op_type_array, op_type_bool, op_type_int,
+    op_type_pointer, op_type_struct, pointee_type, runtime_array_element_type, strip_krnl_insts,
+    struct_element_type, validate, variable_name,
 };
 use camino::{Utf8Path, Utf8PathBuf};
 use cargo_gpu::spirv_builder;
@@ -248,15 +249,18 @@ fn strip_op_line(module: &mut Module) {
 
 fn op_decorate_spec_id(spec_id: u32) -> Attr {
     let opcode = Spec::get().well_known.OpDecorate;
-    let operand_kinds = opcode.def().all_operands().map(|(_, x)| x);
-    let inst = Inst {
-        opcode,
-        imms: operand_kinds
-            .skip(1)
-            .zip([Decoration::SpecId as u32, spec_id])
-            .map(|(k, v)| Imm::Short(k, v))
-            .collect(),
-    };
+    let literal_integer = Spec::get().operand_kinds.lookup("LiteralInteger").unwrap();
+    let operand_kinds = opcode
+        .def()
+        .all_operands()
+        .map(|(_, x)| x)
+        .skip(1)
+        .chain(std::iter::once(literal_integer));
+    let imms = operand_kinds
+        .zip([Decoration::SpecId as u32, spec_id])
+        .map(|(k, v)| Imm::Short(k, v))
+        .collect();
+    let inst = Inst { opcode, imms };
     Attr::SpvAnnotation(inst)
 }
 
@@ -274,16 +278,16 @@ fn remap_spec_constants(module: &mut Module) {
         fn visit_spec(&mut self, gv: GlobalVar) {
             let cx = self.module.cx_ref();
             let gv_decl = &self.module.global_vars[gv];
+            let var_name = variable_name(&self.module, gv).unwrap();
             let struct_ty = pointee_type(cx, gv_decl.type_of_ptr_to).unwrap();
             let ty = struct_element_type(cx, struct_ty).unwrap();
             let element_ty = ElementType::from_type(cx, ty).unwrap();
-            let spec = Spec::get();
             let spec = match element_ty {
                 ElementType::Scalar(ty) => {
                     let attrs = {
-                        let mut attrs = cx[gv_decl.attrs].attrs.clone();
-                        let spec_id = self.spec_id;
-                        attrs.insert(op_decorate_spec_id(spec_id));
+                        let mut attrs = BTreeSet::default();
+                        attrs.insert(op_name(&var_name));
+                        attrs.insert(op_decorate_spec_id(self.spec_id));
                         self.spec_id += 1;
                         let attrs = cx.intern(AttrSetDef { attrs });
                         attrs
@@ -298,7 +302,32 @@ fn remap_spec_constants(module: &mut Module) {
                     }
                 }
                 ElementType::Array(scalar_ty, len) => {
-                    todo!()
+                    let mut elements = Vec::new();
+                    let size = get_element_size(cx, scalar_ty).unwrap();
+                    for _ in 0..len {
+                        let attrs = {
+                            let mut attrs = BTreeSet::default();
+                            attrs.insert(op_decorate_spec_id(self.spec_id));
+                            self.spec_id += 1;
+                            let attrs = cx.intern(AttrSetDef { attrs });
+                            attrs
+                        };
+                        let elem = if size == 8 {
+                            op_spec_constant(cx, attrs, scalar_ty, [0; 2])
+                        } else if size > 0 && size <= 4 {
+                            op_spec_constant(cx, attrs, scalar_ty, [0])
+                        } else {
+                            unreachable!()
+                        };
+                        elements.push(elem);
+                    }
+                    let attrs = {
+                        let mut attrs = BTreeSet::default();
+                        attrs.insert(op_name(&var_name));
+                        let attrs = cx.intern(AttrSetDef { attrs });
+                        attrs
+                    };
+                    op_spec_constant_composite(cx, attrs, ty, elements)
                 }
             };
             *self.funcs.last_mut().unwrap().1 = true;

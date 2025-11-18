@@ -1,16 +1,16 @@
 [package]
-name = "axpy"
-version = "0.1.0"
+name = "compile-tests"
+version.workspace = true
 authors.workspace = true
 edition.workspace = true
+readme.workspace = true
 license.workspace = true
 publish = false
-
 
 [lib]
 crate-type = ["rlib", "dylib"]
 test = false
-doctest = false
+doctest = true
 bench = false
 
 [target.'cfg(not(target_arch = "spirv"))'.build-dependencies]
@@ -21,15 +21,10 @@ krnlc = { workspace = true, default-features = false, features = [
 ] }
 
 [dependencies]
-krnl.workspace = true
-num-traits.workspace = true
-
-[features]
-device = ["krnl/device"]
+krnl = { workspace = true, default-features = false }
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = [
     'cfg(target_arch, values("spirv"))',
     'cfg(krnlc)',
-    'cfg(foo_kernels, values("0", "1"))',
 ] }

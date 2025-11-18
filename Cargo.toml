@@ -14,7 +14,7 @@ license = "MIT OR Apache-2.0"
 publish = false
 
 [workspace.dependencies]
-krnl = { path = "crates/krnl" }
+krnl = { path = "crates/krnl", default-features = false }
 krnlc = { path = "crates/krnlc", default-features = false }
 krnl-macros = { path = "crates/krnl-macros" }
 krnl-core = { path = "crates/krnl-core" }

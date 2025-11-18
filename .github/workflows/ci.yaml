@@ -42,18 +42,29 @@ jobs:
       - name: vulkaninfo
         if: ${{ runner.os == 'Linux' }}
         run: vulkaninfo --summary
+      - name: check krnl no-default-features
+        run: cargo check -p krnl --no-default-features -vv
+      - name: check workspace
+        run: cargo check -vv
       - name: build
-        run: cargo build -p krnl --all-features
+        run: cargo build -p krnl --all-features -vv
       - name: test
-        run: cargo test -p integration-tests
+        run: cargo test --no-default-features
       - name: test device
         if: ${{ runner.os == 'Linux' }}
-        run: cargo test -p integration-tests --features device
+        run: cargo test -p integration-tests --features device -vv
       - name: install wasm-pack
         run: cargo install wasm-pack -vv
       - name: wasm test
         working-directory: tests/integration
-        run: wasm-pack test --headless --${{ matrix.browser }} --features run_in_browser -vv
+        run: wasm-pack test --headless --${{ matrix.browser }} --no-default-features -vv
+  lint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: rustfmt
+        run: cargo fmt --check
   deny:
     runs-on: ubuntu-latest
     timeout-minutes: 5

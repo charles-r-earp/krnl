@@ -592,8 +592,8 @@ impl Kernel {
             const _: () = {
                 fn __krnl_kernel #impl_generics (#(#inputs),*) {
                     fn __krnl_builtin<T>(_: usize) {}
-                    fn __krnl_spec<T: krnl::scalar::Scalar>(_: T) {}
-                    fn __krnl_push<T: krnl::scalar::Element>(_: T) {}
+                    fn __krnl_spec<T: krnl::scalar::DeviceCopy>(_: T) {}
+                    fn __krnl_push<T: krnl::scalar::DeviceCopy>(_: T) {}
                     fn __krnl_slice<T: krnl::scalar::Element>(_: &[T]) {}
                     fn __krnl_unsafe_slice<T: krnl::scalar::Element>(_: &[::core::cell::UnsafeCell<T>]) {}
                     fn __krnl_item<T: krnl::scalar::Element>(_: T) {}
@@ -687,7 +687,7 @@ impl Kernel {
                                 __krnl_Kernel {
                                     __krnl_safety: krnl::kernel::__private::__Safety::<#safety>::__new(),
                                     #(#inputs),*
-                                }.visit(v);
+                                }.__visit(v);
                             }
                         }
                         #ident::visit(v);

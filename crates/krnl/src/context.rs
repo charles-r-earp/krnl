@@ -15,9 +15,12 @@ pub enum Context {
 
 impl Context {
     pub fn new_default() -> Result<Self> {
-        if cfg!(feature = "device") {
+        #[cfg(all(feature = "device", not(target_family = "wasm")))]
+        {
             Device::builder().build().map(Self::Device)
-        } else {
+        }
+        #[cfg(any(not(feature = "device"), target_family = "wasm"))]
+        {
             Ok(Self::Host)
         }
     }
@@ -41,6 +44,7 @@ impl<T: Pod> Buffer<T> {
             Context::Device(_) => unreachable!(),
         }
     }
+    /*
     pub(crate) fn into_context(self, context: Context) -> Result<Self> {
         if self.context() == context {
             Ok(self)
@@ -48,9 +52,11 @@ impl<T: Pod> Buffer<T> {
             self.as_slice().to_context(context)
         }
     }
+    */
 }
 
 impl<T> Buffer<T> {
+    /*
     pub(crate) fn context(&self) -> Context {
         match self {
             Self::Host(_) => Context::Host,
@@ -58,6 +64,7 @@ impl<T> Buffer<T> {
             Self::Device(x) => Context::Device(x.device()),
         }
     }
+    */
     pub(crate) fn as_slice(&self) -> Slice<'_, T> {
         match self {
             Self::Host(x) => Slice::Host(x.as_slice()),
@@ -105,6 +112,7 @@ impl<T> Slice<'_, T> {
             Self::Device(x) => x.len(),
         }
     }
+    /*
     pub(crate) fn as_slice(&self) -> Slice<'_, T> {
         match self {
             Self::Host(x) => Slice::Host(x),
@@ -112,6 +120,7 @@ impl<T> Slice<'_, T> {
             Self::Device(x) => Slice::Device(x.as_slice()),
         }
     }
+    */
     pub(crate) fn slice(self, bounds: impl RangeBounds<usize>) -> Self {
         match self {
             Self::Host(x) => {

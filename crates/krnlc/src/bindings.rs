@@ -4,8 +4,8 @@ use crate::reflect::{
 };
 use crate::scalar::ScalarType;
 use crate::spirv::{
-    assemble, constant_name, get_constant_u32, krnl_inst_set, op_access_chain, op_array_length,
-    op_bitwise_and, op_constant, op_decorate_block, op_i_add, op_i_sub, op_load,
+    assemble, constant_name, get_constant_u32, get_spec_id, krnl_inst_set, op_access_chain,
+    op_array_length, op_bitwise_and, op_constant, op_decorate_block, op_i_add, op_i_sub, op_load,
     op_member_decorate_offset, op_member_name, op_name, op_shift_right_logical, op_type_int,
     op_type_pointer, op_type_struct, op_variable, pointee_type, strip_krnl_insts, validate,
     variable_name,
@@ -777,16 +777,38 @@ impl KernelSig {
                 let cx = self.module.cx_ref();
                 let const_def = &cx[ct];
                 let ty = const_def.ty;
-                let name = constant_name(cx, ct).unwrap();
+                let name = if let Some(name) = constant_name(cx, ct) {
+                    name
+                } else {
+                    return;
+                };
                 let element_type = ElementType::from_type(cx, ty).unwrap();
                 let (scalar, array) = match element_type {
                     ElementType::Scalar(scalar) => (scalar, None),
                     ElementType::Array(scalar, array) => (scalar, Some(array)),
                 };
                 let scalar_type = get_scalar_type(cx, scalar).unwrap();
+                let id = if array.is_some() {
+                    if let ConstKind::SpvInst {
+                        spv_inst_and_const_inputs,
+                    } = &const_def.kind
+                    {
+                        let first = spv_inst_and_const_inputs.1[0];
+                        let first_const_def = &cx[first];
+                        let attrs = &cx[first_const_def.attrs].attrs;
+                        let spec_id = attrs.iter().filter_map(get_spec_id).nth(0).unwrap();
+                        spec_id
+                    } else {
+                        unreachable!()
+                    }
+                } else {
+                    let attrs = &cx[const_def.attrs].attrs;
+                    let spec_id = attrs.iter().filter_map(get_spec_id).nth(0).unwrap();
+                    spec_id
+                };
                 let input = KernelInput::Spec(SpecDesc {
                     name,
-                    id: todo!(),
+                    id,
                     scalar_type,
                     array,
                 });
@@ -982,7 +1004,6 @@ impl KernelSig {
                 }
             }
         }
-
         let mut visitor = KernelVisitor::new(module, entry_func, &kernel_desc);
         module.funcs[entry_func].inner_visit_with(&mut visitor);
         let safe = visitor.safe;
@@ -1106,7 +1127,7 @@ impl Kernel {
             }
 
             impl __krnl_Kernel {
-                fn visit<V:  krnl::kernel::__private::__BuildArgsVisitor>(&self, v: &mut V) {
+                fn __visit<V:  krnl::kernel::__private::__BuildArgsVisitor>(&self, v: &mut V) {
                     v.__visit_spirv([#(#spirv_lits),*].as_slice());
                     #visit_features
                     #(#visit_inputs)*

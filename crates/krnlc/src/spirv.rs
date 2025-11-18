@@ -492,6 +492,28 @@ pub(crate) fn op_spec_constant(
     cx.intern(const_def)
 }
 
+pub(crate) fn op_spec_constant_composite(
+    cx: &Context,
+    attrs: AttrSet,
+    ty: Type,
+    values: impl IntoIterator<Item = Const>,
+) -> Const {
+    let (opcode, _opname, _op_def) =
+        Opcode::try_from_u16_with_name_and_def(Op::SpecConstantComposite as u16).unwrap();
+    let inst = Inst {
+        opcode,
+        imms: SmallVec::default(),
+    };
+    let const_def = ConstDef {
+        attrs,
+        ty,
+        kind: ConstKind::SpvInst {
+            spv_inst_and_const_inputs: Rc::new((inst, values.into_iter().collect())),
+        },
+    };
+    cx.intern(const_def)
+}
+
 /*
 pub(crate) fn op_select(
     cx: &Context,
@@ -520,6 +542,18 @@ pub(crate) fn op_select(
     cx.intern(const_def)
 }
 */
+
+pub fn get_spec_id(attr: &Attr) -> Option<u32> {
+    if let Attr::SpvAnnotation(inst) = attr {
+        use spirt::spv::Imm;
+        if let Imm::Short(_, x) = inst.imms.last().unwrap() {
+            return Some(*x);
+        } else {
+            unreachable!()
+        }
+    }
+    None
+}
 
 #[cfg(feature = "rust-in")]
 pub(crate) fn op_spec_constant_select(

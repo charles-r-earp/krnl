@@ -2,13 +2,13 @@ use krnl_macros::host_only;
 
 host_only! {
     #[cfg(feature = "device")]
-    use crate::{scalar::DeviceCopy, context::device::BufferBindingVec};
+    use crate::{scalar::DeviceCopy, context::device::{Kernel as RawKernel, BufferBindingVec}};
     use crate::{
         Result,
         buffer::{Slice, SliceMut},
         context::{
             Context,
-            device::{Kernel as RawKernel, Features},
+            device::Features,
         },
         scalar::Element,
     };
@@ -471,7 +471,7 @@ pub mod __private {
                 name: &'static str,
                 slice: &mut SliceMut<T>,
             ) -> Result<()>;
-            fn __visit_push<T: Element>(&mut self, name: &'static str, push: &T);
+            fn __visit_push<T: DeviceCopy>(&mut self, name: &'static str, push: &T);
         }
     }
     #[cfg(not(target_arch = "spirv"))]
