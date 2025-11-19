@@ -19,7 +19,7 @@ krnlc = { path = "crates/krnlc", default-features = false }
 krnl-macros = { path = "crates/krnl-macros" }
 krnl-core = { path = "crates/krnl-core" }
 krnl-types = { path = "crates/krnl-types", default-features = false }
-spirv-std = { git = "https://github.com/Rust-GPU/rust-gpu", rev = "8ee9f2f" }
+spirv-std = { git = "https://github.com/Rust-GPU/rust-gpu", rev = "b3eda4d" }
 bytemuck = { version = "1.23.1", features = ["min_const_generics"] }
 derive_more = { version = "2.0.1", default-features = false }
 dry = "0.1.1"
