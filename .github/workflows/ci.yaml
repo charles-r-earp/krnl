@@ -44,6 +44,9 @@ jobs:
         run: vulkaninfo --summary
       - name: check krnl no-default-features
         run: cargo check -p krnl --no-default-features -vv
+      - name: check compile tests
+        # TODO forces toolchain install to fix failure when run concurrently
+        run: cargo check -p compile-tests -vv
       - name: check workspace
         run: cargo check -vv
       - name: build
