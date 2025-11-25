@@ -1,1 +1,1 @@
-use axpy::main;
+use axpy_example::main;
