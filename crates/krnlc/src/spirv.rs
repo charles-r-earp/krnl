@@ -141,7 +141,6 @@ pub(crate) fn struct_element_type(cx: &Context, struct_ty: Type) -> Option<Type>
     None
 }
 
-#[cfg(feature = "rust-in")]
 pub(crate) fn runtime_array_element_type(cx: &Context, runtime_array_ty: Type) -> Option<Type> {
     let type_def = &cx[runtime_array_ty];
     if let TypeKind::SpvInst {
