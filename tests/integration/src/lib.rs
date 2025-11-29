@@ -286,7 +286,7 @@ macro_for!($n in [1, 10, 100, 1000] {
     });
 });
 
-#[cfg(all(test, not(target_family = "wasm")))]
+#[cfg(all(test, not(target_family = "wasm"), feature = "device"))]
 #[test]
 fn group_buffer() {
     let device = test_device();
@@ -304,7 +304,7 @@ fn group_buffer() {
     assert_eq!(y, y_vec);
 }
 
-#[cfg(all(test, not(target_family = "wasm")))]
+#[cfg(all(test, not(target_family = "wasm"), feature = "device"))]
 #[test]
 fn group_buffer_spec() {
     let device = test_device();
