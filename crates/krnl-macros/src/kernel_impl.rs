@@ -1797,7 +1797,7 @@ impl GroupInput {
         }
         Ok(output)
     }
-    fn entry_point_arg(&self, binding: &mut usize) -> PatType {
+    fn entry_point_arg(&self, _binding: &mut usize) -> PatType {
         let Self {
             attrs,
             ident,
@@ -1806,11 +1806,16 @@ impl GroupInput {
             ..
         } = self;
         let arg = if kernel_attr.slice_len().is_some() {
+            // TODO: Remove this hack
+            // Random to create unique global var
+            let descriptor_set = rand::random_range(1..u32::MAX);
+            let descriptor_set_lit = LitInt::new(&descriptor_set.to_string(), Span::call_site());
+            let binding = rand::random_range(0..u32::MAX);
             let binding_lit = LitInt::new(&binding.to_string(), Span::call_site());
-            *binding += 1;
+
             parse_quote! {
                 #(#attrs)*
-                #[spirv(storage_buffer, descriptor_set = 1, binding = #binding_lit)]
+                #[spirv(storage_buffer, descriptor_set = #descriptor_set_lit, binding = #binding_lit)]
                 #ident: #ty
             }
         } else {

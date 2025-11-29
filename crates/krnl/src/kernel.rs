@@ -253,24 +253,21 @@ host_only! {
         fn __visit_spec_id<T: DeviceCopy>(&mut self, name: &'static str, id: u32) {
             self.spec_ids.insert(name, id);
         }
-        fn __visit_spec<T: DeviceCopy>(&mut self, _name: &'static str, _spec: &T) {
-            todo!()
-            /*
-            let mut words = [0u32; 2];
+        fn __visit_spec<T: DeviceCopy>(&mut self, name: &'static str, spec: &T) {
+            let mut words = ArrayVec::default();
             if const { size_of::<T>() == 1 } {
                 let x: u8 = bytemuck::cast(*spec);
-                words[0] = x as u32;
+                words.push(x as u32);
             } else if const { size_of::<T>() == 2 } {
                 let x: u16 = bytemuck::cast(*spec);
-                words[0] = x as u32;
+                words.push(x as u32);
             } else if const { size_of::<T>() == 4 } {
-                words[0] = bytemuck::cast(*spec);
+                words.push(bytemuck::cast(*spec));
             } else {
-                bytemuck::bytes_of_mut(&mut words).copy_from_slice(bytemuck::bytes_of(spec));
+                words.extend(bytemuck::cast_slice(bytemuck::bytes_of(spec)).iter().copied());
             }
-            self.spec_constants.insert(name.to_string(), words);
-            Ok(())
-            */
+            let id = self.spec_ids.get(name).copied().unwrap();
+            self.spec_constants.insert(id, words);
         }
     }
 

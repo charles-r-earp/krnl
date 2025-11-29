@@ -1,6 +1,9 @@
 use crate::{
     scalar::ScalarType,
-    spirv::{get_constant_u32, get_element_size, pointee_type, struct_element_type, variable_name},
+    spirv::{
+        get_constant_u32, get_element_size, pointee_type, runtime_array_element_type,
+        struct_element_type, variable_name,
+    },
 };
 use fxhash::FxBuildHasher;
 use indexmap::{IndexMap, IndexSet};
@@ -35,8 +38,8 @@ impl KernelDesc {
             let var_decl = &module.global_vars[gv];
             let ptr_ty = var_decl.type_of_ptr_to;
             let struct_ty = pointee_type(&cx, ptr_ty).unwrap();
-            let ptr_ty = struct_element_type(cx, struct_ty).unwrap();
-            let elem_ty = pointee_type(&cx, ptr_ty).unwrap();
+            let field_ty = struct_element_type(cx, struct_ty).unwrap();
+            let elem_ty = runtime_array_element_type(&cx, field_ty).unwrap_or(field_ty);
             let name = variable_name(module, gv).unwrap();
             let element_type = ElementType::from_type(module.cx_ref(), elem_ty).unwrap();
             let scalar = element_type.scalar_type();
@@ -435,6 +438,8 @@ pub struct Features {
 
 impl Features {
     pub(crate) fn reflect(module: &Module) -> Self {
+        println!("{}", spirt::print::Plan::for_module(module).pretty_print());
+
         struct FeaturesVisitor<'a> {
             module: &'a Module,
             features: Features,
@@ -523,8 +528,9 @@ impl Features {
                         StorageClass::StorageBuffer => {
                             let ptr_ty = var_decl.type_of_ptr_to;
                             let struct_ty = pointee_type(&cx, ptr_ty).unwrap();
-                            let ptr_ty = struct_element_type(cx, struct_ty).unwrap();
-                            let elem_ty = pointee_type(&cx, ptr_ty).unwrap();
+                            let field_ty = struct_element_type(cx, struct_ty).unwrap();
+                            let elem_ty =
+                                runtime_array_element_type(&cx, field_ty).unwrap_or(field_ty);
                             self.visit_buffer(elem_ty);
                         }
                         StorageClass::PushConstant => {

@@ -108,12 +108,16 @@ pub(crate) fn op_type_pointer(cx: &Context, ty: Type, storage_class: StorageClas
 pub(crate) fn pointee_type(cx: &Context, pointer_ty: Type) -> Option<Type> {
     let type_def = &cx[pointer_ty];
     if let TypeKind::SpvInst {
-        spv_inst: _,
+        spv_inst,
         type_and_const_inputs,
     } = &type_def.kind
     {
-        if let Some(TypeOrConst::Type(ty)) = type_and_const_inputs.first().copied() {
-            return Some(ty);
+        if spv_inst.opcode == Spec::get().well_known.OpTypePointer {
+            if let TypeOrConst::Type(ty) = type_and_const_inputs.first().copied().unwrap() {
+                return Some(ty);
+            } else {
+                unreachable!();
+            }
         }
     }
     None
@@ -126,9 +130,12 @@ pub(crate) fn struct_element_type(cx: &Context, struct_ty: Type) -> Option<Type>
         type_and_const_inputs,
     } = &type_def.kind
     {
-        assert!(spv_inst.opcode == Spec::get().well_known.OpTypeStruct);
-        if let Some(TypeOrConst::Type(ty)) = type_and_const_inputs.first().copied() {
-            return Some(ty);
+        if spv_inst.opcode == Spec::get().well_known.OpTypeStruct {
+            if let TypeOrConst::Type(ty) = type_and_const_inputs.first().copied().unwrap() {
+                return Some(ty);
+            } else {
+                unreachable!();
+            }
         }
     }
     None
@@ -142,13 +149,12 @@ pub(crate) fn runtime_array_element_type(cx: &Context, runtime_array_ty: Type) -
         type_and_const_inputs,
     } = &type_def.kind
     {
-        assert!(
-            spv_inst.opcode == Spec::get().well_known.OpTypeRuntimeArray,
-            "{}",
-            spv_inst.opcode.name()
-        );
-        if let Some(TypeOrConst::Type(ty)) = type_and_const_inputs.first().copied() {
-            return Some(ty);
+        if spv_inst.opcode == Spec::get().well_known.OpTypeRuntimeArray {
+            if let TypeOrConst::Type(ty) = type_and_const_inputs.first().copied().unwrap() {
+                return Some(ty);
+            } else {
+                unreachable!();
+            }
         }
     }
     None
@@ -546,10 +552,17 @@ pub(crate) fn op_select(
 pub fn get_spec_id(attr: &Attr) -> Option<u32> {
     if let Attr::SpvAnnotation(inst) = attr {
         use spirt::spv::Imm;
-        if let Imm::Short(_, x) = inst.imms.last().unwrap() {
-            return Some(*x);
-        } else {
-            unreachable!()
+
+        if inst.opcode == Spec::get().well_known.OpDecorate {
+            if let &[Imm::Short(_dec_kind, decoration), Imm::Short(_id_kind, id)] =
+                inst.imms.as_slice()
+            {
+                debug_assert_eq!(_dec_kind.name(), "Decoration");
+                debug_assert_eq!(_id_kind.name(), "LiteralInteger");
+                if decoration == Decoration::SpecId as u32 {
+                    return Some(id);
+                }
+            }
         }
     }
     None

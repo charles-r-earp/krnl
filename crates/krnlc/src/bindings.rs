@@ -69,8 +69,9 @@ impl BindingsBuilder {
 
 fn process(spirv: Vec<u8>) -> Vec<Kernel> {
     let target_family = std::env::var("CARGO_CFG_TARGET_FAMILY").unwrap();
-    let debug_assertions = std::env::var("CARGO_CFG_DEBUG_ASSERTIONS").is_ok();
-    let non_semantic_info = target_family != "wasm" && debug_assertions;
+    let debug = std::env::var("DEBUG").is_ok();
+    let non_semantic_info = target_family != "wasm" && debug;
+    assert!(debug);
     let context = Rc::new(Context::new());
     context.register_custom_ext_inst_set(KrnlInst::SET_NAME, krnl_inst_set());
     let mut module = Module::lower_from_spv_bytes(context.clone(), spirv).unwrap();

@@ -31,3 +31,4 @@ syn_derive = "0.2.0"
 proc-macro2.workspace = true
 quote.workspace = true
 syn = { workspace = true, features = ["full", "visit", "visit-mut"] }
+rand = "0.9.2"

@@ -285,3 +285,39 @@ macro_for!($n in [1, 10, 100, 1000] {
         });
     });
 });
+
+#[cfg(all(test, not(target_family = "wasm")))]
+#[test]
+fn group_buffer() {
+    let device = test_device();
+    let n = 64;
+    let x_vec: Vec<u32> = (1..=n as u32).collect();
+    let y_vec = vec![x_vec.iter().copied().sum()];
+    let x = Buffer::from(x_vec)
+        .into_context(device.clone().into())
+        .unwrap();
+    let mut y = Buffer::zeros(device.into(), 1).unwrap();
+    unsafe {
+        compile_tests::_group_buffer(x.as_slice(), y.as_slice_mut());
+    }
+    let y = y.into_vec().unwrap();
+    assert_eq!(y, y_vec);
+}
+
+#[cfg(all(test, not(target_family = "wasm")))]
+#[test]
+fn group_buffer_spec() {
+    let device = test_device();
+    let n = 64;
+    let x_vec: Vec<u32> = (1..=n as u32).collect();
+    let y_vec = vec![x_vec.iter().copied().sum()];
+    let x = Buffer::from(x_vec)
+        .into_context(device.clone().into())
+        .unwrap();
+    let mut y = Buffer::zeros(device.into(), 1).unwrap();
+    unsafe {
+        compile_tests::_group_buffer_spec(x.as_slice(), y.as_slice_mut());
+    }
+    let y = y.into_vec().unwrap();
+    assert_eq!(y, y_vec);
+}

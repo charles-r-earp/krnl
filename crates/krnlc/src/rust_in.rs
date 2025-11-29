@@ -1,7 +1,8 @@
-use crate::reflect::{ElementType, Features, UsedGlobals};
+use crate::reflect::{ElementType, Features, UsedGlobals, get_scalar_type};
+use crate::scalar::ScalarType;
 use crate::spirv::{
-    assemble, get_element_size, get_spec_id, krnl_inst_set, op_constant, op_constant_true,
-    op_decorate_block, op_member_decorate_offset, op_member_name, op_name, op_spec_constant,
+    assemble, get_element_size, krnl_inst_set, op_constant, op_constant_true, op_decorate_block,
+    op_member_decorate_offset, op_member_name, op_name, op_spec_constant,
     op_spec_constant_composite, op_spec_constant_select, op_type_array, op_type_bool, op_type_int,
     op_type_pointer, op_type_struct, pointee_type, runtime_array_element_type, strip_krnl_insts,
     struct_element_type, validate, variable_name,
@@ -296,7 +297,13 @@ fn remap_spec_constants(module: &mut Module) {
                     if size == 8 {
                         op_spec_constant(cx, attrs, ty, [0; 2])
                     } else if size > 0 && size <= 4 {
-                        op_spec_constant(cx, attrs, ty, [0])
+                        let scalar_type = get_scalar_type(cx, ty).unwrap();
+                        if scalar_type == ScalarType::U32 {
+                            // for array len
+                            op_spec_constant(cx, attrs, ty, [1])
+                        } else {
+                            op_spec_constant(cx, attrs, ty, [0])
+                        }
                     } else {
                         unreachable!()
                     }
@@ -916,14 +923,19 @@ fn fix_group_slice_len(module: &mut Module) {
                 &DataInstKind::SpvExtInst { ext_set, inst }
                     if ext_set == self.krnl_set && inst == KrnlInst::GroupSlice as u32 =>
                 {
-                    if let &[Value::DataInstOutput(access), Value::Const(len)] =
-                        data_inst_def.inputs.as_slice()
-                    {
+                    if let &[Value::DataInstOutput(access), len] = data_inst_def.inputs.as_slice() {
                         let gv = self.buffer_access[&access];
+                        let len = if let Value::Const(len) = len {
+                            len
+                        } else if let Value::DataInstOutput(len) = len {
+                            todo!()
+                        } else {
+                            unreachable!()
+                        };
                         self.lens.insert((gv, self.func), len);
                     } else {
                         unreachable!()
-                    }
+                    };
                 }
                 _ => (),
             }

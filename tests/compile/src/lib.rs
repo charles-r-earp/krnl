@@ -1,8 +1,35 @@
-#![cfg_attr(target_arch = "spirv", no_std)]
+#![cfg_attr(target_arch = "spirv", no_std, feature(asm_experimental_arch))]
+
+use core::cell::UnsafeCell;
 
 use krnl::macros::kernel;
 #[cfg(not(target_arch = "spirv"))]
-use krnl::{buffer::SliceMut, kernel::KernelDef};
+use krnl::{
+    buffer::{Slice, SliceMut},
+    kernel::KernelDef,
+};
+
+///```no_run
+/// use krnl::{macros::kernel, kernel::KernelDef, context::Context};
+///
+/// #[kernel(no_build)]
+/// pub fn safe_kernel() {}
+///
+/// let kernel = safe_kernel::builder(()).build(Context::Host).unwrap();
+/// kernel.exec(()).unwrap();
+///```
+struct _SafeKernel {}
+
+///```compile_fail
+/// use krnl::{macros::kernel, kernel::KernelDef, context::Context};
+///
+/// #[kernel(no_build)]
+/// pub unsafe fn unsafe_kernel() {}
+///
+/// let kernel = unsafe_kernel::builder(()).build(Context::Host).unwrap();
+/// kernel.exec(()).unwrap();
+///```
+struct _UnsafeKernel {}
 
 #[kernel]
 fn spec_constants(#[kernel(spec)] x: u32, #[kernel(item)] y: &mut u32) {
@@ -54,24 +81,83 @@ fn _push_constants_array(x: [u32; 3], y: SliceMut<[u32; 4]>) {
     kernel.exec((x, y)).unwrap();
 }
 
-///```no_run
-/// use krnl::{macros::kernel, kernel::KernelDef, context::Context};
-///
-/// #[kernel(no_build)]
-/// pub fn safe_kernel() {}
-///
-/// let kernel = safe_kernel::builder(()).build(Context::Host).unwrap();
-/// kernel.exec(()).unwrap();
-///```
-struct _SafeKernel {}
+#[kernel]
+unsafe fn group_buffer(#[kernel(thread_id)] thread_id: usize, x: &[u32], y: &[UnsafeCell<u32>]) {
+    use krnl::spirv_std::{
+        self,
+        arch::{IndexUnchecked, workgroup_memory_barrier_with_group_sync as group_barrier},
+    };
 
-///```compile_fail
-/// use krnl::{macros::kernel, kernel::KernelDef, context::Context};
-///
-/// #[kernel(no_build)]
-/// pub unsafe fn unsafe_kernel() {}
-///
-/// let kernel = unsafe_kernel::builder(()).build(Context::Host).unwrap();
-/// kernel.exec(()).unwrap();
-///```
-struct _UnsafeKernel {}
+    #[kernel(group, len = 64)]
+    let x_group: &[UnsafeCell<u32>];
+
+    unsafe {
+        *x_group[thread_id].get() = *x.index_unchecked(thread_id);
+        group_barrier();
+    }
+
+    if thread_id == 0 {
+        let mut acc = 0;
+        for i in 0..64 {
+            acc += unsafe { *x_group[i].get() };
+        }
+        unsafe {
+            *y.index_unchecked(0).get() = acc;
+        }
+    }
+}
+
+#[cfg(not(target_arch = "spirv"))]
+pub unsafe fn _group_buffer(x: Slice<u32>, y: SliceMut<u32>) {
+    assert!(x.len() == 64);
+    assert!(y.len() == 1);
+    let kernel = group_buffer::builder(())
+        .threads(64)
+        .build(y.context())
+        .unwrap();
+    unsafe {
+        kernel.groups(1).exec((x, y)).unwrap();
+    }
+}
+
+#[kernel]
+unsafe fn group_buffer_spec(
+    #[kernel(spec)] n: u32,
+    #[kernel(thread_id)] thread_id: usize,
+    x: &[u32],
+    y: &[UnsafeCell<u32>],
+) {
+    use krnl::spirv_std::arch::workgroup_memory_barrier_with_group_sync as group_barrier;
+
+    let n = n as usize;
+
+    #[kernel(group, len = n)]
+    let x_group: &[UnsafeCell<u32>];
+
+    unsafe {
+        *x_group[thread_id].get() = x[thread_id];
+        group_barrier();
+    }
+    if thread_id == 0 {
+        let mut acc = 0;
+        for i in 0..n {
+            acc += unsafe { *x_group[i].get() };
+        }
+        unsafe {
+            *y[0].get() = acc;
+        }
+    }
+}
+
+#[cfg(not(target_arch = "spirv"))]
+pub unsafe fn _group_buffer_spec(x: Slice<u32>, y: SliceMut<u32>) {
+    let n = x.len();
+    assert!(y.len() == 1);
+    let kernel = group_buffer_spec::builder((n as u32,))
+        .threads(n)
+        .build(y.context())
+        .unwrap();
+    unsafe {
+        kernel.groups(1).exec((x, y)).unwrap();
+    }
+}
