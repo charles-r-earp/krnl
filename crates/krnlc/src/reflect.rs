@@ -438,8 +438,6 @@ pub struct Features {
 
 impl Features {
     pub(crate) fn reflect(module: &Module) -> Self {
-        println!("{}", spirt::print::Plan::for_module(module).pretty_print());
-
         struct FeaturesVisitor<'a> {
             module: &'a Module,
             features: Features,
