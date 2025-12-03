@@ -24,13 +24,13 @@ jobs:
       matrix:
         include:
           - os: ubuntu-latest
-            timeout-minutes: 15
+            timeout-minutes: 20
             browser: firefox
           - os: windows-latest
             timeout-minutes: 30
             browser: chrome
           - os: macos-latest
-            timeout-minutes: 20
+            timeout-minutes: 30
             browser: safari
     steps:
       - uses: actions/checkout@v4
