@@ -31,6 +31,46 @@ struct _SafeKernel {}
 ///```
 struct _UnsafeKernel {}
 
+///```no_run
+/// use krnl::{macros::kernel, kernel::KernelDef, context::Context};
+///
+/// #[kernel(no_build)]
+/// pub fn builtins(
+///   #[kernel(global_thread_id)] global_thread_id: usize,
+///   #[kernel(thread_id)] thread_id: usize,
+/// ) {}
+///
+/// let kernel = builtins::builder(()).build(Context::Host).unwrap();
+/// kernel.exec(()).unwrap();
+///```
+struct _Builtins {}
+
+///```compile_fail
+/// use krnl::{macros::kernel, kernel::KernelDef, context::Context};
+///
+/// #[kernel(no_build)]
+/// pub fn invalid_builtin_type(
+///   #[kernel(global_thread_id)] invalid: i32,
+/// ) {}
+///
+/// let kernel = invalid_builtin_type::builder(()).build(Context::Host).unwrap();
+/// kernel.exec(()).unwrap();
+///```
+struct _InvalidBuiltinType {}
+
+///```compile_fail
+/// use krnl::{macros::kernel, kernel::KernelDef, context::Context};
+///
+/// #[kernel(no_build)]
+/// pub fn invalid_builtin(
+///   #[kernel(invalid)] invalid: usize,
+/// ) {}
+///
+/// let kernel = invalid_builtin::builder(()).build(Context::Host).unwrap();
+/// kernel.exec(()).unwrap();
+///```
+struct _InvalidBuiltin {}
+
 #[kernel]
 fn spec_constants(#[kernel(spec)] x: u32, #[kernel(item)] y: &mut u32) {
     *y = x;
@@ -82,7 +122,11 @@ fn _push_constants_array(x: [u32; 3], y: SliceMut<[u32; 4]>) {
 }
 
 #[kernel]
-unsafe fn group_buffer(#[kernel(thread_id)] thread_id: usize, x: &[u32], y: &[UnsafeCell<u32>]) {
+unsafe fn group_buffer_const_64(
+    #[kernel(thread_id)] thread_id: usize,
+    x: &[u32],
+    y: &[UnsafeCell<u32>],
+) {
     use krnl::spirv_std::{
         self,
         arch::{IndexUnchecked, workgroup_memory_barrier_with_group_sync as group_barrier},
@@ -108,10 +152,10 @@ unsafe fn group_buffer(#[kernel(thread_id)] thread_id: usize, x: &[u32], y: &[Un
 }
 
 #[cfg(not(target_arch = "spirv"))]
-pub unsafe fn _group_buffer(x: Slice<u32>, y: SliceMut<u32>) {
+pub unsafe fn _group_buffer_const_64(x: Slice<u32>, y: SliceMut<u32>) {
     assert!(x.len() == 64);
     assert!(y.len() == 1);
-    let kernel = group_buffer::builder(())
+    let kernel = group_buffer_const_64::builder(())
         .threads(64)
         .build(y.context())
         .unwrap();

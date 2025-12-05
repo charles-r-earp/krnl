@@ -211,7 +211,7 @@ impl RawBuffer {
         } else {
             usage |= BufferUsage::Storage as u32;
         }
-        let mut buffer_desc = web_sys::GpuBufferDescriptor::new(len as f64, usage);
+        let buffer_desc = web_sys::GpuBufferDescriptor::new(len as f64, usage);
         let buffer = device.device.create_buffer(&buffer_desc).unwrap();
         Ok(Arc::new(Self {
             device,
@@ -545,6 +545,14 @@ fn spirv_to_wgsl(
         front::spv::{Frontend as SpvFrontend, Options as SpvOptions},
         valid::{Capabilities, ValidationFlags, Validator},
     };
+
+    {
+        use rspirv::binary::Disassemble;
+
+        web_sys::console::log_1(&JsValue::from_str(
+            &rspirv::dr::load_words(spirv).unwrap().disassemble(),
+        ));
+    }
 
     let mut module = SpvFrontend::new(
         spirv.iter().copied(),

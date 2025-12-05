@@ -77,7 +77,6 @@ host_only! {
                     let key = KernelKey::new::<T>(&self.args, threads, subgroup_threads);
                     let raw = RawKernel::get_or_create(device, key, || KernelCreateInfo::new::<T>(&self.args, threads as u32, subgroup_threads)).unwrap();
                     Ok(Kernel {
-                        builder: self,
                         groups: 0,
                         raw,
                         _m: PhantomData,
@@ -272,7 +271,6 @@ host_only! {
     }
 
     pub struct Kernel<T: KernelDef, S = ()> {
-        builder: KernelBuilder<T>,
         groups: usize,
         #[cfg(feature = "device")]
         raw: RawKernel,

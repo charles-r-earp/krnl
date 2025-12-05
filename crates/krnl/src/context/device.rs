@@ -156,6 +156,16 @@ impl Device {
             raw: self.raw.event(),
         }
     }
+    pub fn max_buffer_size(&self) -> usize {
+        #[cfg(feature = "device")]
+        {
+            self.raw.properties().max_buffer_size()
+        }
+        #[cfg(not(feature = "device"))]
+        {
+            unreachable!()
+        }
+    }
     pub fn min_subgroup_threads(&self) -> usize {
         #[cfg(feature = "device")]
         {
@@ -274,6 +284,7 @@ pub(crate) struct Buffer<T> {
 
 #[cfg(feature = "device")]
 impl<T> Buffer<T> {
+    /*
     pub(super) fn device(&self) -> Device {
         Device {
             raw: self.raw.device().clone(),
@@ -282,6 +293,7 @@ impl<T> Buffer<T> {
     pub(super) fn len(&self) -> usize {
         self.raw.len() / size_of::<T>()
     }
+    */
     pub(super) unsafe fn uninit(device: Device, len: usize) -> Result<Self> {
         Ok(Self {
             raw: unsafe { RawBuffer::uninit(device.raw, len * size_of::<T>())? },
@@ -328,6 +340,7 @@ impl<T> Slice<'_, T> {
     pub(super) fn len(&self) -> usize {
         self.raw.len() / size_of::<T>()
     }
+    /*
     pub(super) fn as_slice(&self) -> Slice<'_, T> {
         Slice {
             #[cfg(feature = "device")]
@@ -335,6 +348,7 @@ impl<T> Slice<'_, T> {
             _m: PhantomData,
         }
     }
+    */
     pub(super) fn slice(self, bounds: impl RangeBounds<usize>) -> Self {
         let start_bound = bounds.start_bound().map(|x| *x * size_of::<T>());
         let end_bound = bounds.end_bound().map(|x| *x * size_of::<T>());
@@ -366,6 +380,20 @@ impl<T: Pod> Slice<'_, T> {
 }
 
 #[cfg(feature = "device")]
+impl<'a, T: Pod> Slice<'a, T> {
+    pub(super) fn try_bitcast<Y>(self) -> Option<Slice<'a, Y>> {
+        if self.raw.range().is_aligned_to(size_of::<Y>()) {
+            Some(Slice {
+                raw: self.raw,
+                _m: PhantomData,
+            })
+        } else {
+            None
+        }
+    }
+}
+
+#[cfg(feature = "device")]
 pub(crate) struct SliceMut<'a, T> {
     raw: Arc<RawSlice>,
     _m: PhantomData<&'a mut T>,
@@ -373,11 +401,13 @@ pub(crate) struct SliceMut<'a, T> {
 
 #[cfg(feature = "device")]
 impl<T> SliceMut<'_, T> {
+    /*
     pub(super) fn device(&self) -> Device {
         Device {
             raw: self.raw.device().clone(),
         }
     }
+    */
     pub(super) fn len(&self) -> usize {
         self.raw.len() / size_of::<T>()
     }

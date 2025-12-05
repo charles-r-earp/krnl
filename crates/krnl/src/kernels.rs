@@ -5,26 +5,27 @@ use crate::{
 };
 use num_traits::{AsPrimitive, FromPrimitive};
 host_only! {
-    use crate::{Result, scalar::Element, buffer::{BufferBase, Buffer, Data, DataMut}, kernel::KernelDef};
+    use bytemuck::Pod;
+    use crate::{Result, buffer::{BufferBase, Buffer, Slice, Data, DataMut}, kernel::KernelDef};
 }
 
 #[kernel]
-pub fn fill_u8(x: u8, #[kernel(item)] y: &mut u8) {
+pub(crate) fn fill_u8(x: u8, #[kernel(item)] y: &mut u8) {
     *y = x;
 }
 
 #[kernel]
-pub fn fill_u16(x: u16, #[kernel(item)] y: &mut u16) {
+pub(crate) fn fill_u16(x: u16, #[kernel(item)] y: &mut u16) {
     *y = x;
 }
 
 #[kernel]
-pub fn fill_u32(x: u32, #[kernel(item)] y: &mut u32) {
+pub(crate) fn fill_u32(x: u32, #[kernel(item)] y: &mut u32) {
     *y = x;
 }
 
 #[kernel]
-pub fn fill_u32x2(x1: u32, x2: u32, #[kernel(item)] y: &mut [u32; 2]) {
+pub(crate) fn fill_u32x2(x1: u32, x2: u32, #[kernel(item)] y: &mut [u32; 2]) {
     *y = [x1, x2];
 }
 
@@ -54,8 +55,28 @@ pub fn cast<X: Scalar + AsPrimitive<Y> + AsPrimitive<u32>, Y: Scalar + FromPrimi
     *y = x.as_();
 }
 
+#[kernel]
+pub(crate) fn copy_u8(#[kernel(item)] x: u8, #[kernel(item)] y: &mut u8) {
+    *y = x;
+}
+
+#[kernel]
+pub(crate) fn copy_u16(#[kernel(item)] x: u16, #[kernel(item)] y: &mut u16) {
+    *y = x;
+}
+
+#[kernel]
+pub(crate) fn copy_u32(#[kernel(item)] x: u32, #[kernel(item)] y: &mut u32) {
+    *y = x;
+}
+
+#[kernel]
+pub(crate) fn copy_u32x2(#[kernel(item)] x: [u32; 2], #[kernel(item)] y: &mut [u32; 2]) {
+    *y = x;
+}
+
 host_only! {
-    impl<T: Element, S: DataMut<Elem = T>> BufferBase<S> {
+    impl<T: Pod, S: DataMut<Elem = T>> BufferBase<S> {
         pub fn fill(&mut self, x: T) -> Result<()> {
             if let Some(y) = self.as_slice_mut().into_host_slice_mut() {
                 for y in y {
@@ -106,6 +127,22 @@ host_only! {
                 Ok(())
             }
         }
+        pub fn copy_from_slice(&mut self, slice: Slice<T>) -> Result<()> {
+            if self.context() != slice.context() || self.context().is_host() {
+                return self.as_slice_mut().as_context_slice_mut().copy_from_slice(slice.as_context_slice().clone());
+            }
+            if let Some((x, y)) = slice.clone().try_bitcast::<[u32; 2]>().zip(self.as_slice_mut().try_bitcast_mut::<[u32; 2]>()) {
+                copy_u32x2::builder(()).build(y.context())?.exec((x, y))
+            } else if let Some((x, y)) = slice.clone().try_bitcast::<u32>().zip(self.as_slice_mut().try_bitcast_mut::<u32>()) {
+                copy_u32::builder(()).build(y.context())?.exec((x, y))
+            } else if let Some((x, y)) = slice.clone().try_bitcast::<u16>().zip(self.as_slice_mut().try_bitcast_mut::<u16>()) {
+                copy_u16::builder(()).build(y.context())?.exec((x, y))
+            } else {
+                let x = slice.try_bitcast::<u8>().unwrap();
+                let y = self.as_slice_mut().try_bitcast_mut::<u8>().unwrap();
+                copy_u8::builder(()).build(y.context())?.exec((x, y))
+            }
+        }
     }
 
     impl<T: Scalar, S: Data<Elem = T>> BufferBase<S> {
@@ -120,7 +157,6 @@ host_only! {
             }
             let mut y = unsafe { Buffer::uninit(self.context(), self.len())? };
             cast::builder(())
-                .threads(1)
                 .build(y.context())?
                 .exec((x, y.as_slice_mut()))?;
             Ok(y)

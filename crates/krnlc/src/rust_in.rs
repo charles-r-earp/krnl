@@ -654,8 +654,6 @@ fn unify_push_constants(module: &mut Module) {
     let mut vars = IndexMap::default();
     let mut inputs = IndexSet::default();
 
-    let cx = module.cx();
-
     let entry_funcs: Vec<Func> = module
         .exports
         .values()
@@ -1186,16 +1184,3 @@ fn fix_group_slice_len(module: &mut Module) {
         module.funcs[func].inner_in_place_transform_with(&mut transformer);
     }
 }
-
-/*
-fn type_name(cx: &Context, ty: Type) -> &'static str {
-    let ty_def = &cx[ty];
-    match &ty_def.kind {
-        TypeKind::SpvInst {
-            spv_inst,
-            type_and_const_inputs,
-        } => spv_inst.opcode.name(),
-        _ => "",
-    }
-}
-*/

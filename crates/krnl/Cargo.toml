@@ -54,7 +54,6 @@ derive_more = { workspace = true, default-features = false, features = [
 parking_lot = { version = "0.12.4", features = ["arc_lock"] }
 bytemuck = { version = "1.23.1", features = ["extern_crate_alloc"] }
 fxhash.workspace = true
-rayon.workspace = true
 num-traits = { workspace = true, default-features = true }
 
 [target.'cfg(not(any(target_family = "wasm", target_arch = "spirv")))'.dependencies]
@@ -97,6 +96,7 @@ web-sys = { version = "0.3.77", features = [
 ], optional = true }
 wasm-bindgen-futures = { version = "0.4.50", optional = true }
 naga = { version = "27.0.0", features = ["spv-in", "spv-out", "wgsl-out"], optional = true }
+rspirv = { workspace = true, optional = true }
 
 [features]
 default = ["device"]
@@ -106,6 +106,7 @@ device = [
     "dep:web-sys",
     "dep:wasm-bindgen-futures",
     "dep:naga",
+    "dep:rspirv",
 ]
 
 [lints.rust]

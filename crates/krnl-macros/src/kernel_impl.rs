@@ -1,6 +1,6 @@
 use itertools::Itertools;
 use proc_macro2::{Span, TokenStream};
-use quote::{ToTokens, format_ident, quote};
+use quote::{ToTokens, TokenStreamExt, format_ident, quote};
 use syn::{
     Attribute, Block, Error, Expr, File, FnArg, Ident, LitInt, PatType, Result, Stmt, Type,
     TypeParamBound, TypePath, Visibility, WhereClause, bracketed, parenthesized,
@@ -126,7 +126,7 @@ impl ScalarType {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, ToTokens)]
 struct ScalarTypeIdent {
     ident: Ident,
 }
@@ -289,7 +289,7 @@ impl Kernel {
         Ok(tokens)
     }
     fn host_tokens(&self) -> Result<TokenStream> {
-        let Self { attrs: _, vis, .. } = self;
+        let Self { attrs, vis, .. } = self;
         let ident = &self.sig.ident;
         let ty_generic_idents: Vec<Ident> = self
             .sig
@@ -348,10 +348,15 @@ impl Kernel {
         };
         let type_check = self.input_type_check();
         Ok(quote! {
+            #(#attrs)*
             #[cfg(not(target_arch = "spirv"))]
             #[allow(non_camel_case_types)]
             #vis #kernel_struct
+
+            #(#attrs)*
             #type_check
+
+            #(#attrs)*
             #[cfg(not(target_arch = "spirv"))]
             unsafe impl #impl_generics krnl::kernel::KernelDef for #ident #ty_generics {
                 type Safety = #safety;
@@ -372,6 +377,7 @@ impl Kernel {
         })
     }
     fn device_tokens(&self) -> Result<TokenStream> {
+        let attrs = &self.attrs;
         let ident = &self.sig.ident;
         let unsafety = self.sig.unsafety;
         let (impl_generics, ty_generics, where_clause) = self.sig.generics.split_for_impl();
@@ -379,6 +385,7 @@ impl Kernel {
         let kernel_arg_idents = self.kernel_args().map(|x| x.pat);
         let kernel_block = &self.block;
         let kernel = quote! {
+            #(#attrs)*
             #unsafety fn __krnl_kernel #impl_generics (
                 #(#kernel_args,)*
             ) #where_clause
@@ -776,6 +783,18 @@ impl Parse for KernelAttr {
     }
 }
 
+impl ToTokens for KernelAttr {
+    fn to_tokens(&self, tokens: &mut TokenStream) {
+        self.pound_token.to_tokens(tokens);
+        self.bracket.surround(tokens, |tokens| {
+            self.kernel.to_tokens(tokens);
+            self.paren.surround(tokens, |tokens| {
+                self.args.to_tokens(tokens);
+            });
+        });
+    }
+}
+
 enum KernelAttrArg {
     Debug(kw::debug),
     DebugPretty(kw::debug_pretty),
@@ -815,7 +834,7 @@ impl ToTokens for KernelAttrArg {
     }
 }
 
-#[derive(Parse)]
+#[derive(Parse, ToTokens)]
 struct KernelSignature {
     unsafety: Option<Unsafe>,
     fn_token: syn::token::Fn,
@@ -828,7 +847,7 @@ struct KernelSignature {
     inputs: Punctuated<KernelInput, Comma>,
 }
 
-#[derive(Default)]
+#[derive(Default, ToTokens)]
 struct KernelGenerics {
     lt: Option<Lt>,
     params: Punctuated<KernelTypeParam, Comma>,
@@ -993,6 +1012,18 @@ impl Parse for KernelTypeParamAttr {
     }
 }
 
+impl ToTokens for KernelTypeParamAttr {
+    fn to_tokens(&self, tokens: &mut TokenStream) {
+        self.pound_token.to_tokens(tokens);
+        self.bracket_token.surround(tokens, |tokens| {
+            self.kernel.to_tokens(tokens);
+            self.paren_token.surround(tokens, |tokens| {
+                self.arg.to_tokens(tokens);
+            });
+        });
+    }
+}
+
 struct KernelTypeParamAttrArg {
     impl_token: Impl,
     eq_token: syn::token::Eq,
@@ -1013,6 +1044,16 @@ impl Parse for KernelTypeParamAttrArg {
             bracket_token,
             types,
         })
+    }
+}
+
+impl ToTokens for KernelTypeParamAttrArg {
+    fn to_tokens(&self, tokens: &mut TokenStream) {
+        self.impl_token.to_tokens(tokens);
+        self.eq_token.to_tokens(tokens);
+        self.bracket_token.surround(tokens, |tokens| {
+            self.types.to_tokens(tokens);
+        });
     }
 }
 
@@ -1063,21 +1104,18 @@ impl ToTokens for KernelTypeParam {
     }
 }
 
-/*
-struct KernelSpecParam {
-    attrs: Vec<Attribute>,
-    spec: kw::spec,
-    ident: Ident,
-    colon_token: Colon,
-    ty: Type,
-}
-*/
-
+#[derive(ToTokens)]
 struct KernelInputAttr {
     pound_token: Pound,
+    #[syn(bracketed)]
     bracket_token: Bracket,
+    #[syn(in=bracket_token)]
     kernel: kw::kernel,
+    #[syn(in=bracket_token)]
+    #[syn(parenthesized)]
     paren_token: Paren,
+    #[syn(in=bracket_token)]
+    #[syn(in=paren_token)]
     arg: KernelInputAttrArg,
 }
 
@@ -1228,7 +1266,9 @@ impl ToTokens for KernelImportInput {
     }
 }
 
+#[derive(ToTokens)]
 struct KernelInput {
+    #[to_tokens(|tokens, val| tokens.append_all(val))]
     attrs: Vec<Attribute>,
     kernel_attr: Option<KernelInputAttr>,
     ident: Ident,
@@ -1711,7 +1751,9 @@ impl ToTokens for KernelInputType {
     }
 }
 
+#[derive(ToTokens)]
 struct GroupInput {
+    #[to_tokens(|tokens, val| tokens.append_all(val))]
     attrs: Vec<Attribute>,
     kernel_attr: GroupInputAttr,
     let_token: Let,
@@ -1756,29 +1798,15 @@ impl Parse for GroupInput {
     }
 }
 
-impl ToTokens for GroupInput {
-    fn to_tokens(&self, tokens: &mut TokenStream) {
-        for attr in self.attrs.iter() {
-            attr.to_tokens(tokens);
-        }
-        self.kernel_attr.to_tokens(tokens);
-        self.let_token.to_tokens(tokens);
-        self.ident.to_tokens(tokens);
-        self.colon_token.to_tokens(tokens);
-        self.ty.to_tokens(tokens);
-        self.semi.to_tokens(tokens);
-    }
-}
-
 impl GroupInput {
     fn parse_body(body: &mut Vec<Stmt>) -> Result<Vec<Self>> {
         let mut output = Vec::new();
         for stmt in body.iter_mut() {
             if let Stmt::Local(stmt_local) = &stmt {
-                if let Some(i) = stmt_local
+                if stmt_local
                     .attrs
                     .iter()
-                    .position(|attr| attr.path().is_ident("kernel"))
+                    .any(|attr| attr.path().is_ident("kernel"))
                 {
                     let group_input: GroupInput = parse2(stmt.to_token_stream())?;
                     let ident = &group_input.ident;
@@ -1911,24 +1939,32 @@ impl GroupInputType {
     }
 }
 
+#[derive(ToTokens)]
 struct GroupInputAttr {
     pound_token: Pound,
+    #[syn(bracketed)]
     bracket_token: Bracket,
+    #[syn(in=bracket_token)]
     kernel: kw::kernel,
+    #[syn(in=bracket_token)]
+    #[syn(parenthesized)]
     paren_token: Paren,
+    #[syn(in=bracket_token)]
+    #[syn(in=paren_token)]
     group: kw::group,
+    #[syn(in=bracket_token)]
+    #[syn(in=paren_token)]
     comma: Option<Comma>,
+    #[syn(in=bracket_token)]
+    #[syn(in=paren_token)]
     args: Punctuated<GroupInputAttrArg, Comma>,
 }
 
 impl GroupInputAttr {
     fn slice_len(&self) -> Option<&GroupSliceLen> {
         self.args.iter().find_map(|x| {
-            if let GroupInputAttrArg::Len(_, _, len) = x {
-                Some(len)
-            } else {
-                None
-            }
+            let GroupInputAttrArg::Len(_, _, len) = x;
+            Some(len)
         })
     }
 }
@@ -1957,20 +1993,6 @@ impl Parse for GroupInputAttr {
             comma,
             args,
         })
-    }
-}
-
-impl ToTokens for GroupInputAttr {
-    fn to_tokens(&self, tokens: &mut TokenStream) {
-        self.pound_token.to_tokens(tokens);
-        self.bracket_token.surround(tokens, |tokens| {
-            self.kernel.to_tokens(tokens);
-            self.paren_token.surround(tokens, |tokens| {
-                self.group.to_tokens(tokens);
-                self.comma.to_tokens(tokens);
-                self.args.to_tokens(tokens);
-            });
-        });
     }
 }
 
