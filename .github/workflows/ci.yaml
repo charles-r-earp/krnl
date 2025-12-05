@@ -18,19 +18,16 @@ env:
 jobs:
   test:
     runs-on: ${{ matrix.os }}
-    timeout-minutes: ${{ matrix.timeout-minutes }}
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
         include:
           - os: ubuntu-latest
-            timeout-minutes: 20
             browser: firefox
           - os: windows-latest
-            timeout-minutes: 30
             browser: chrome
           - os: macos-latest
-            timeout-minutes: 30
             browser: safari
     steps:
       - uses: actions/checkout@v4
