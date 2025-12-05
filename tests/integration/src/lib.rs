@@ -373,7 +373,7 @@ async fn group_buffer_const_64() {
     let device = test_device().await;
     let n = 64;
     let x_vec: Vec<u32> = (1..=n as u32).collect();
-    let y_vec = vec![x_vec.iter().copied().sum()];
+    let y_vec: Vec<u32> = vec![x_vec.iter().copied().sum()];
     let x = Buffer::from(x_vec)
         .into_context(device.clone().into())
         .unwrap();
@@ -399,7 +399,7 @@ macro_for!($n in [1, 7, 32, 64, 128, 256] {
         async fn [<group_buffer_spec_ $n>]() {
             let device = test_device().await;
             let x_vec: Vec<u32> = (1..=$n).collect();
-            let y_vec = vec![x_vec.iter().copied().sum()];
+            let y_vec: Vec<u32> = vec![x_vec.iter().copied().sum()];
             let x = Buffer::from(x_vec)
                 .into_context(device.clone().into())
                 .unwrap();
