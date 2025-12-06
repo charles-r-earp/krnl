@@ -61,11 +61,11 @@ jobs:
       - name: wasm test
         working-directory: tests/integration
         run: wasm-pack test --headless --${{ matrix.browser }} --no-default-features -vv
-      - name: wasm device tests
-        # TODO install and run web gpu tests
-        if: ${{ runner.os == 'Linux' }}
-        working-directory: tests/integration
-        run: wasm-pack test --${{ matrix.browser }} -vv
+       # TODO install and run web gpu tests
+       # - name: wasm device tests 
+       # if: ${{ runner.os == 'Linux' }}
+       # working-directory: tests/integration
+       # run: wasm-pack test --${{ matrix.browser }} -vv
   lint:
     runs-on: ubuntu-latest
     timeout-minutes: 5
