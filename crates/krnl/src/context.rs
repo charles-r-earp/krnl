@@ -13,6 +13,19 @@ pub enum Context {
     Device(Device),
 }
 
+impl Context {
+    pub fn new_default() -> Result<Self> {
+        #[cfg(all(feature = "device", not(target_family = "wasm")))]
+        {
+            Device::builder().build().map(Self::Device)
+        }
+        #[cfg(any(not(feature = "device"), target_family = "wasm"))]
+        {
+            Ok(Self::Host)
+        }
+    }
+}
+
 pub(crate) enum Buffer<T> {
     Host(Vec<T>),
     #[cfg(feature = "device")]
@@ -31,6 +44,7 @@ impl<T: Pod> Buffer<T> {
             Context::Device(_) => unreachable!(),
         }
     }
+    /*
     pub(crate) fn into_context(self, context: Context) -> Result<Self> {
         if self.context() == context {
             Ok(self)
@@ -38,9 +52,11 @@ impl<T: Pod> Buffer<T> {
             self.as_slice().to_context(context)
         }
     }
+    */
 }
 
 impl<T> Buffer<T> {
+    /*
     pub(crate) fn context(&self) -> Context {
         match self {
             Self::Host(_) => Context::Host,
@@ -48,6 +64,7 @@ impl<T> Buffer<T> {
             Self::Device(x) => Context::Device(x.device()),
         }
     }
+    */
     pub(crate) fn as_slice(&self) -> Slice<'_, T> {
         match self {
             Self::Host(x) => Slice::Host(x.as_slice()),
@@ -95,6 +112,7 @@ impl<T> Slice<'_, T> {
             Self::Device(x) => x.len(),
         }
     }
+    /*
     pub(crate) fn as_slice(&self) -> Slice<'_, T> {
         match self {
             Self::Host(x) => Slice::Host(x),
@@ -102,6 +120,7 @@ impl<T> Slice<'_, T> {
             Self::Device(x) => Slice::Device(x.as_slice()),
         }
     }
+    */
     pub(crate) fn slice(self, bounds: impl RangeBounds<usize>) -> Self {
         match self {
             Self::Host(x) => {
@@ -130,9 +149,12 @@ impl<T: Pod> Slice<'_, T> {
             #[cfg(feature = "device")]
             (Self::Device(slice), Context::Device(device)) => {
                 if slice.device() == device {
-                    todo!()
+                    self.to_buffer()
                 } else {
-                    todo!()
+                    // TODO: device to device copies
+                    self.to_context(Context::Host)?
+                        .as_slice()
+                        .to_context(device.into())
                 }
             }
             #[cfg(all(feature = "device", not(target_family = "wasm")))]
@@ -149,7 +171,13 @@ impl<T: Pod> Slice<'_, T> {
         match self {
             Self::Host(x) => Ok(Buffer::Host(x.to_vec())),
             #[cfg(feature = "device")]
-            Self::Device(x) => todo!(),
+            Self::Device(_) => {
+                let mut output = unsafe { Buffer::uninit(self.context(), self.len())? };
+                let slice = crate::buffer::Slice::from_context_slice(self.clone());
+                crate::buffer::SliceMut::from_context_slice_mut(output.as_slice_mut())
+                    .copy_from_slice(slice)?;
+                Ok(output)
+            }
         }
     }
     #[cfg(target_family = "wasm")]
@@ -162,6 +190,16 @@ impl<T: Pod> Slice<'_, T> {
                 slice.download_async(&mut output).await?;
                 Ok(output)
             }
+        }
+    }
+}
+
+impl<'a, T: Pod> Slice<'a, T> {
+    pub(crate) fn try_bitcast<Y: Pod>(self) -> Option<Slice<'a, Y>> {
+        match self {
+            Self::Host(x) => bytemuck::try_cast_slice(x).ok().map(Slice::Host),
+            #[cfg(feature = "device")]
+            Self::Device(x) => x.try_bitcast().map(Slice::Device),
         }
     }
 }
@@ -196,6 +234,30 @@ impl<T> SliceMut<'_, T> {
             }
             #[cfg(feature = "device")]
             Self::Device(x) => Self::Device(x.slice_mut(bounds)),
+        }
+    }
+}
+
+impl<T: Pod> SliceMut<'_, T> {
+    pub(crate) fn copy_from_slice(&mut self, slice: Slice<T>) -> Result<()> {
+        match (slice, self) {
+            (Slice::Host(x), Self::Host(y)) => {
+                y.copy_from_slice(x);
+                Ok(())
+            }
+            #[cfg(not(feature = "device"))]
+            _ => unreachable!(),
+            #[cfg(feature = "device")]
+            (Slice::Host(x), Self::Device(y)) => y.upload(x),
+            #[cfg(all(feature = "device", not(target_family = "wasm")))]
+            (Slice::Device(x), Self::Host(y)) => x.download(y),
+            #[cfg(all(feature = "device", target_family = "wasm"))]
+            (Slice::Device(x), Self::Host(y)) => todo!(),
+            #[cfg(feature = "device")]
+            (x @ Slice::Device(_), y @ Self::Device(_)) => {
+                crate::buffer::SliceMut::from_context_slice_mut(y.as_slice_mut())
+                    .copy_from_slice(crate::buffer::Slice::from_context_slice(x))
+            }
         }
     }
 }

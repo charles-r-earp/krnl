@@ -56,7 +56,7 @@ use-installed-tools = ["spirv-tools/use-installed-tools"]
 use-compiled-tools = ["spirv-tools/use-compiled-tools"]
 cli = ["clap", "clap-cargo"]
 print = []
-rust-in = ["cargo-gpu", "cargo_metadata"]
+rust-in = ["cargo-gpu", "cargo_metadata", "clap-cargo"]
 bindings = ["proc-macro2", "quote", "syn", "rspirv"]
 
 [[bin]]

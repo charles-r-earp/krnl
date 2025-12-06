@@ -1,5 +1,5 @@
 use dry::macro_for;
-#[cfg(feature = "device")]
+#[cfg(all(test, feature = "device"))]
 use krnl::context::Device;
 #[cfg(test)]
 use krnl::{
@@ -7,19 +7,21 @@ use krnl::{
     context::Context,
     scalar::{bf16, f16},
 };
+#[cfg(feature = "device")]
+use maybe_async::maybe_async;
 #[cfg(test)]
 use num_traits::{AsPrimitive, Bounded};
 use paste::paste;
-#[cfg(feature = "device")]
-use {maybe_async::maybe_async, std::sync::OnceLock};
+#[cfg(all(test, feature = "device"))]
+use std::sync::OnceLock;
 
 #[cfg(target_family = "wasm")]
 use wasm_bindgen_test::{wasm_bindgen_test as test, wasm_bindgen_test_configure};
 
-#[cfg(all(feature = "run_in_browser", target_family = "wasm"))]
+#[cfg(target_family = "wasm")]
 wasm_bindgen_test_configure!(run_in_browser);
 
-#[cfg(feature = "device")]
+#[cfg(all(test, feature = "device"))]
 #[maybe_async]
 async fn test_device() -> Device {
     static DEVICE: OnceLock<Device> = OnceLock::new();
@@ -101,8 +103,6 @@ macro_for!($n in [1, 10, 100, 1_000, 1_000_000, 32_000_000] {
             let y = Slice::from(x.as_slice())
                 .into_context(device.clone().into())
                 .unwrap();
-            #[cfg(target_family = "wasm")]
-            device.event().wait_async().await.unwrap();
             #[cfg(not(target_family = "wasm"))]
             let y = y.into_vec().unwrap();
             #[cfg(target_family = "wasm")]
@@ -133,7 +133,7 @@ macro_for!($n in [1, 10, 100, 1000] {
                 assert_eq!(y, vec![$T::MAX; $n]);
             }
 
-            #[cfg(all(not(target_family = "wasm"), feature = "device"))]
+            #[cfg(all(feature = "device", not(target_family = "wasm")))]
             #[test]
             fn [<fill_ $T _ $n _device>]() {
                 let device = test_device();
@@ -144,12 +144,66 @@ macro_for!($n in [1, 10, 100, 1000] {
                 let y = y.into_vec().unwrap();
                 assert_eq!(y, vec![$T::MAX; $n]);
             }
+
+            #[test]
+            fn [<copy_ $T _ $n _host>]() {
+                let x_vec = gen_fill_vec($n);
+                let x = Slice::from(x_vec.as_slice());
+                let mut y = Buffer::from(vec![$T::default(); x.len()]);
+                y.copy_from_slice(x.as_slice()).unwrap();
+                let y = y.into_vec().unwrap();
+                assert_eq!(x_vec, y);
+            }
+
+            #[cfg(all(feature = "device", not(target_family = "wasm")))]
+            #[test]
+            fn [<copy_ $T _ $n _host_to_device>]() {
+                let device = test_device();
+                let x_vec = gen_fill_vec($n);
+                let x = Slice::from(x_vec.as_slice());
+                let mut y = Buffer::from(vec![$T::default(); x.len()])
+                    .into_context(device.clone().into())
+                    .unwrap();
+                y.copy_from_slice(x.as_slice()).unwrap();
+                let y = y.into_vec().unwrap();
+                assert_eq!(x_vec, y);
+            }
+
+            #[cfg(all(feature = "device", not(target_family = "wasm")))]
+            #[test]
+            fn [<copy_ $T _ $n _device_to_host>]() {
+                let device = test_device();
+                let x_vec = gen_fill_vec($n);
+                let x = Slice::from(x_vec.as_slice())
+                    .into_context(device.clone().into())
+                    .unwrap();
+                let mut y = Buffer::from(vec![$T::default(); x.len()]);
+                y.copy_from_slice(x.as_slice()).unwrap();
+                let y = y.into_vec().unwrap();
+                assert_eq!(x_vec, y);
+            }
+
+            #[cfg(all(feature = "device", not(target_family = "wasm")))]
+            #[test]
+            fn [<copy_ $T _ $n _device_to_device>]() {
+                let device = test_device();
+                let x_vec = gen_fill_vec($n);
+                let x = Slice::from(x_vec.as_slice())
+                    .into_context(device.clone().into())
+                    .unwrap();
+                let mut y = Buffer::from(vec![$T::default(); x.len()])
+                    .into_context(device.clone().into())
+                    .unwrap();
+                y.copy_from_slice(x.as_slice()).unwrap();
+                let y = y.into_vec().unwrap();
+                assert_eq!(x_vec, y);
+            }
         }
     });
 
+    #[cfg(all(feature = "device", target_family = "wasm"))]
     macro_for!($T in [u32, i32, f32] {
         paste! {
-            #[cfg(all(target_family = "wasm", feature = "device"))]
             #[test]
             async fn [<fill_ $T _ $n _device>]() {
                 let device = test_device().await;
@@ -159,6 +213,34 @@ macro_for!($n in [1, 10, 100, 1000] {
                 y.fill($T::MAX).unwrap();
                 let y = y.into_vec_async().await.unwrap();
                 assert_eq!(y, vec![$T::MAX; $n]);
+            }
+
+            #[test]
+            async fn [<copy_ $T _ $n _host_to_device>]() {
+                let device = test_device().await;
+                let x_vec = gen_fill_vec($n);
+                let x = Slice::from(x_vec.as_slice());
+                let mut y = Buffer::from(vec![$T::default(); x.len()])
+                    .into_context(device.clone().into())
+                    .unwrap();
+                y.copy_from_slice(x.as_slice()).unwrap();
+                let y = y.into_vec_async().await.unwrap();
+                assert_eq!(x_vec, y);
+            }
+
+            #[test]
+            async fn [<copy_ $T _ $n _device_to_device>]() {
+                let device = test_device().await;
+                let x_vec = gen_fill_vec($n);
+                let x = Slice::from(x_vec.as_slice())
+                    .into_context(device.clone().into())
+                    .unwrap();
+                let mut y = Buffer::from(vec![$T::default(); x.len()])
+                    .into_context(device.clone().into())
+                    .unwrap();
+                y.copy_from_slice(x.as_slice()).unwrap();
+                let y = y.into_vec_async().await.unwrap();
+                assert_eq!(x_vec, y);
             }
         }
     });
@@ -180,7 +262,7 @@ macro_for!($o in [1, 2, 5] {
                 assert_eq!(y, y_true);
             }
 
-            #[cfg(all(not(target_family = "wasm"), feature = "device"))]
+            #[cfg(all(feature = "device", not(target_family = "wasm")))]
             #[test]
             fn [<fill_10_offset_ $o _ $T _device>]() {
                 let device = test_device();
@@ -201,7 +283,7 @@ macro_for!($o in [1, 2, 5] {
 
     macro_for!($T in [u32, i32, f32] {
         paste! {
-            #[cfg(all(target_family = "wasm", feature = "device"))]
+            #[cfg(all(feature = "device", target_family = "wasm"))]
             #[test]
             async fn [<fill_10_offset_ $o _ $T _device>]() {
                 let device = test_device().await;
@@ -246,7 +328,7 @@ macro_for!($n in [1, 10, 100, 1000] {
                     assert_eq!(y, y_vec);
                 }
 
-                #[cfg(all(not(target_family = "wasm"), feature = "device"))]
+                #[cfg(all(feature = "device", not(target_family = "wasm")))]
                 #[test]
                 fn [<cast_ $X _ $Y _ $n _device>]() {
                     let device = test_device();
@@ -263,7 +345,7 @@ macro_for!($n in [1, 10, 100, 1000] {
         });
     });
 
-    #[cfg(all(target_family = "wasm", feature = "device"))]
+    #[cfg(all(feature = "device", target_family = "wasm"))]
     macro_for!($X in [u32, i32, f32] {
         macro_for!($Y in [u32, i32, f32] {
             paste! {
@@ -282,4 +364,54 @@ macro_for!($n in [1, 10, 100, 1000] {
             }
         });
     });
+});
+
+#[cfg(feature = "device")]
+#[maybe_async]
+#[test]
+async fn group_buffer_const_64() {
+    let device = test_device().await;
+    let n = 64;
+    let x_vec: Vec<u32> = (1..=n as u32).collect();
+    let y_vec: Vec<u32> = vec![x_vec.iter().copied().sum()];
+    let x = Buffer::from(x_vec)
+        .into_context(device.clone().into())
+        .unwrap();
+    let mut y = Buffer::zeros(device.into(), 1).unwrap();
+    unsafe {
+        compile_tests::_group_buffer_const_64(x.as_slice(), y.as_slice_mut());
+    }
+    #[cfg(not(target_family = "wasm"))]
+    let y = y.into_vec().unwrap();
+    #[cfg(target_family = "wasm")]
+    let y = y.into_vec_async().await.unwrap();
+    assert_eq!(y, y_vec);
+}
+
+// TODO spec constant array lengths don't work on web
+// need to be resolved via rspirv
+#[cfg(not(target_family = "wasm"))]
+macro_for!($n in [1, 7, 32, 64, 128, 256] {
+    paste! {
+        #[cfg(feature = "device")]
+        #[maybe_async]
+        #[test]
+        async fn [<group_buffer_spec_ $n>]() {
+            let device = test_device().await;
+            let x_vec: Vec<u32> = (1..=$n).collect();
+            let y_vec: Vec<u32> = vec![x_vec.iter().copied().sum()];
+            let x = Buffer::from(x_vec)
+                .into_context(device.clone().into())
+                .unwrap();
+            let mut y = Buffer::zeros(device.into(), 1).unwrap();
+            unsafe {
+                compile_tests::_group_buffer_spec(x.as_slice(), y.as_slice_mut());
+            }
+            #[cfg(not(target_family = "wasm"))]
+            let y = y.into_vec().unwrap();
+            #[cfg(target_family = "wasm")]
+            let y = y.into_vec_async().await.unwrap();
+            assert_eq!(y, y_vec);
+        }
+    }
 });

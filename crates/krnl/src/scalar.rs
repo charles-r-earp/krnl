@@ -9,10 +9,35 @@ mod sealed {
 }
 use sealed::Sealed;
 
+macro_for!($T in [u8, i8, u16, i16, f16, bf16, u32, i32, f32, u64, i64, f64] {
+    impl Sealed for $T {}
+});
+
+impl<T: Scalar, const N: usize> Sealed for [T; N] {}
+
 pub unsafe trait DeviceCopy: Copy + Send + Sync + Pod + Sealed {
     #[cfg(target_arch = "spirv")]
     unsafe fn __data_type<V>(#[allow(unused_variables)] var: *const V) {}
 }
+
+macro_for!($T in [u8, i8, u16, i16, u32, i32, f32, u64, i64, f64] {
+    paste! {
+        unsafe impl DeviceCopy for $T {}
+    }
+});
+
+macro_for!($T in [f16, bf16] {
+    paste! {
+        unsafe impl DeviceCopy for $T {
+            #[cfg(target_arch = "spirv")]
+            unsafe fn __data_type<V>(var: *const V) {
+                unsafe {
+                    krnl_core::__private::[<__data_type_$T>](var);
+                }
+            }
+        }
+    }
+});
 
 unsafe impl<T: Scalar, const N: usize> DeviceCopy for [T; N] {
     #[cfg(target_arch = "spirv")]
@@ -75,31 +100,6 @@ impl ScalarType {
 pub unsafe trait Element: DeviceCopy + Pod + Send + Sync + Sealed {
     type Scalar: Scalar;
 }
-
-macro_for!($T in [u8, i8, u16, i16, f16, bf16, u32, i32, f32, u64, i64, f64] {
-    impl Sealed for $T {}
-});
-
-impl<T: Scalar, const N: usize> Sealed for [T; N] {}
-
-macro_for!($T in [u8, i8, u16, i16, u32, i32, f32, u64, i64, f64] {
-    paste! {
-        unsafe impl DeviceCopy for $T {}
-    }
-});
-
-macro_for!($T in [f16, bf16] {
-    paste! {
-        unsafe impl DeviceCopy for $T {
-            #[cfg(target_arch = "spirv")]
-            unsafe fn __data_type<V>(var: *const V) {
-                unsafe {
-                    krnl_core::__private::[<__data_type_$T>](var);
-                }
-            }
-        }
-    }
-});
 
 macro_for!($T in [u8, i8, u16, i16, f16, bf16, u32, i32, f32, u64, i64, f64] {
     paste! {

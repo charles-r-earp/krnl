@@ -1,11 +1,7 @@
 #![cfg_attr(target_arch = "spirv", no_std)]
 
 #[cfg(not(target_arch = "spirv"))]
-use krnl::{
-    buffer::Buffer,
-    context::{Context, Device},
-    kernel::KernelDef,
-};
+use krnl::{buffer::Buffer, context::Context, kernel::KernelDef};
 use krnl::{macros::kernel, scalar::Scalar};
 use num_traits::{Num, NumAssign};
 
@@ -24,12 +20,7 @@ fn axpy<#[kernel(impl=[f32])] T: Scalar + Num + NumAssign>(
 
 #[cfg(not(target_arch = "spirv"))]
 pub fn main() {
-    let context = if cfg!(feature = "device") {
-        Context::Device(Device::builder().build().unwrap())
-    } else {
-        Context::Host
-    };
-
+    let context = Context::new_default().unwrap();
     let alpha = 2f32;
     let x = Buffer::from(vec![1f32])
         .into_context(context.clone())

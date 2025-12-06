@@ -15,6 +15,7 @@ dry.workspace = true
 krnl = { workspace = true }
 paste.workspace = true
 num-traits.workspace = true
+compile-tests = { path = "../compile" }
 
 [target.'cfg(target_family = "wasm")'.dependencies]
 wasm-bindgen-test = "0.3.50"
@@ -24,6 +25,5 @@ maybe-async = "0.2.10"
 maybe-async = { version = "0.2.10", features = ["is_sync"] }
 
 [features]
-default = []
-run_in_browser = []
+default = ["device"]
 device = ["krnl/device"]

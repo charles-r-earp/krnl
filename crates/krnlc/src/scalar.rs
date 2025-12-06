@@ -1,7 +1,7 @@
 #[cfg(feature = "bindings")]
 use quote::format_ident;
 #[cfg(feature = "bindings")]
-use syn::{parse_quote, Ident, TypePath};
+use syn::{Ident, TypePath, parse_quote};
 
 #[derive(Clone, Copy, PartialEq, Eq, derive_more::Display, Debug)]
 #[repr(u8)]

@@ -4,80 +4,58 @@ use crate::reflect::{
 };
 use crate::scalar::ScalarType;
 use crate::spirv::{
-    assemble, constant_name, get_constant_u32, get_element_size, get_name_from_attrs,
-    krnl_inst_set, op_access_chain, op_array_length, op_bitwise_and, op_constant,
-    op_decorate_block, op_i_add, op_i_sub, op_load, op_member_decorate_offset, op_member_name,
-    op_name, op_nop, op_shift_right_logical, op_type_int, op_type_pointer, op_type_struct,
-    op_variable, pointee_type, strip_krnl_insts, struct_element_type, validate, variable_name,
+    assemble, constant_name, get_constant_u32, get_spec_id, krnl_inst_set, op_access_chain,
+    op_array_length, op_bitwise_and, op_constant, op_decorate_block, op_i_add, op_i_sub, op_load,
+    op_member_decorate_offset, op_member_name, op_name, op_shift_right_logical, op_type_int,
+    op_type_pointer, op_type_struct, op_variable, pointee_type, strip_krnl_insts, validate,
+    variable_name,
 };
-use camino::{Utf8Path, Utf8PathBuf};
-use derive_more::IsVariant;
+use camino::Utf8PathBuf;
 use fxhash::FxBuildHasher;
-use indexmap::{
-    IndexMap, IndexSet,
-    map::{MutableEntryKey, MutableKeys},
-};
+use indexmap::{IndexMap, IndexSet};
 use krnl_core::__private::__KrnlInst as KrnlInst;
 use proc_macro2::{Span, TokenStream};
 use quote::{ToTokens, format_ident, quote};
-use rayon::iter::{
-    IndexedParallelIterator, IntoParallelIterator, IntoParallelRefMutIterator, ParallelIterator,
-};
-use smallvec::SmallVec;
-use spirt::spv::spec::Opcode;
+use rayon::iter::{IntoParallelRefMutIterator, ParallelIterator};
 use spirt::{
-    AddrSpace, Attr, AttrSet, AttrSetDef, Const, ConstDef, ConstKind, Context, ControlNodeKind,
-    DataInst, DataInstDef, DataInstForm, DataInstFormDef, DataInstKind, DeclDef, ExportKey,
-    Exportee, Func, GlobalVar, GlobalVarDecl, GlobalVarDefBody, InternedStr, Module, Type, TypeDef,
-    TypeKind, TypeOrConst, Value,
-    spv::{
-        Imm, Inst, encode_literal_string, extract_literal_string,
-        spec::{ExtInstSetDesc, ExtInstSetInstructionDesc, Spec},
-    },
+    AddrSpace, AttrSet, AttrSetDef, Const, ConstDef, ConstKind, Context, ControlNodeKind, DataInst,
+    DataInstDef, DataInstForm, DataInstKind, DeclDef, ExportKey, Exportee, Func, GlobalVar,
+    InternedStr, Module, Type, Value,
+    spv::{encode_literal_string, extract_literal_string, spec::Spec},
     transform::{InnerInPlaceTransform, Transformed, Transformer},
     visit::{InnerVisit, Visitor},
 };
 use spirt::{EntityList, FuncDefBody};
-use spirv_headers::{Decoration, ExecutionModel, StorageClass};
+use spirv_headers::StorageClass;
 use spirv_tools::{
     TargetEnv,
     binary::Binary,
     opt::{Optimizer, Options as OptimizerOptions, Passes},
-    val::Validator,
 };
-use std::array;
-use std::{
-    collections::{BTreeMap, BTreeSet},
-    rc::Rc,
-};
-use syn::{Ident, LitInt, buffer};
+use std::{collections::BTreeSet, rc::Rc};
+use syn::{Ident, LitInt};
 
-#[derive(Default)]
 pub struct BindingsBuilder {
-    spirv: Option<Vec<u8>>,
-    buffer_offsets: bool,
+    spirv: Vec<u8>,
 }
 
 impl BindingsBuilder {
-    /*
-    pub fn from_spirv_bytes(bytes: Vec<u8>) -> Self {
-        Self {
-            spirv: Some(bytes),
-            ..Self::default()
-        }
+    pub fn load() -> std::io::Result<Self> {
+        let manifest_dir = Utf8PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap());
+        let path = manifest_dir.join("krnl.spv");
+        let spirv = std::fs::read(path)?;
+        Ok(Self::from_spirv_bytes(spirv))
     }
-    */
+    pub fn from_spirv(spirv: Vec<u32>) -> Self {
+        Self::from_spirv_bytes(bytemuck::cast_slice(&spirv).to_vec())
+    }
+    pub fn from_spirv_bytes(spirv: Vec<u8>) -> Self {
+        Self { spirv }
+    }
     pub fn emit(self) -> std::io::Result<()> {
         let crate_name = std::env::var("CARGO_PKG_NAME").unwrap().replace("-", "_");
         let out_dir = Utf8PathBuf::from(std::env::var("OUT_DIR").unwrap());
-        let spirv = if let Some(spirv) = self.spirv {
-            spirv
-        } else {
-            let manifest_dir = Utf8PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap());
-            let path = manifest_dir.join("krnl.spv");
-            std::fs::read(path)?
-        };
-        let kernels = process(spirv);
+        let kernels = process(self.spirv);
         for kernel in kernels {
             let name = &kernel.sig.name;
             let path = name.replace("::", "__");
@@ -91,8 +69,9 @@ impl BindingsBuilder {
 
 fn process(spirv: Vec<u8>) -> Vec<Kernel> {
     let target_family = std::env::var("CARGO_CFG_TARGET_FAMILY").unwrap();
-    let debug_assertions = std::env::var("CARGO_CFG_DEBUG_ASSERTIONS").is_ok();
-    let non_semantic_info = target_family != "wasm" && debug_assertions;
+    let debug = std::env::var("DEBUG").is_ok();
+    let non_semantic_info = target_family != "wasm" && debug;
+    assert!(debug);
     let context = Rc::new(Context::new());
     context.register_custom_ext_inst_set(KrnlInst::SET_NAME, krnl_inst_set());
     let mut module = Module::lower_from_spv_bytes(context.clone(), spirv).unwrap();
@@ -112,9 +91,8 @@ fn process(spirv: Vec<u8>) -> Vec<Kernel> {
     spirt::passes::legalize::structurize_func_cfgs(&mut module);
     let mut kernels: Vec<_> = split_entry_points(&module, sigs, target_family == "wasm").collect();
     kernels.par_iter_mut().for_each(|kernel| {
-        use rspirv::binary::{Assemble, Disassemble};
         {
-            use rspirv::binary::{Assemble, Disassemble};
+            use rspirv::binary::Assemble;
 
             let module = rspirv::dr::load_words(&kernel.spirv).unwrap();
             let mut builder = rspirv::dr::Builder::new_from_module(module);
@@ -152,7 +130,7 @@ fn rename_entry_points(module: &mut Module, entry_point: &str) {
         .map(|(mut key, value)| {
             if let ExportKey::SpvEntryPoint {
                 imms,
-                interface_global_vars,
+                interface_global_vars: _,
             } = &mut key
             {
                 *imms = std::iter::once(imms[0])
@@ -308,7 +286,6 @@ fn add_buffer_offsets(module: &mut Module, sig: &mut KernelSig) {
             self.buffer_offsets.clear();
             self.array_lengths.clear();
             let ty_u32 = op_type_int(&cx, 32, false);
-            let zero_u32 = op_constant(&cx, ty_u32, [0]);
             let ptr_u32_push = op_type_pointer(&cx, ty_u32, StorageClass::PushConstant);
             let func_at_mut_body = func_def_body.at_mut_body();
             let func_at_mut_children = func_at_mut_body.at_children();
@@ -319,7 +296,7 @@ fn add_buffer_offsets(module: &mut Module, sig: &mut KernelSig) {
             let mask = op_constant(&cx, ty_u32, [255]);
             let num_loads = (self.buffer_offset_indices.len() / 4)
                 + (self.buffer_offset_indices.len() % 4 != 0) as usize;
-            let mut offset_loads: Vec<DataInst> = (0..num_loads as u32)
+            let offset_loads: Vec<DataInst> = (0..num_loads as u32)
                 .map(|index1| {
                     let index = op_constant(&cx, ty_u32, [self.buffer_offset_base + index1]);
                     let offset_access_chain = data_insts.define(
@@ -372,10 +349,7 @@ fn add_buffer_offsets(module: &mut Module, sig: &mut KernelSig) {
                 new_insts.insert_last(offset_mask, data_insts);
                 self.buffer_offsets.insert(gv, offset_load);
                 let array: Value = Value::Const(self.buffer_pointers.get(&gv).copied().unwrap());
-                let array_length = data_insts.define(
-                    &cx,
-                    op_array_length(&cx, array, Value::Const(zero_u32)).into(),
-                );
+                let array_length = data_insts.define(&cx, op_array_length(&cx, array).into());
                 new_insts.insert_last(array_length, data_insts);
                 self.array_lengths.insert(gv, array_length);
             }
@@ -415,9 +389,7 @@ fn add_buffer_offsets(module: &mut Module, sig: &mut KernelSig) {
             let cx = self.cx.clone();
             let data_inst_def = func_at_data_inst.reborrow().def();
             let ty_u32 = op_type_int(&cx, 32, false);
-            let buffer_offset_index = self.buffer_offset_indices.get(&base).copied().unwrap();
             let index = data_inst_def.inputs.last().copied().unwrap();
-
             let offset_load = self.buffer_offsets.get(&base).copied().unwrap();
             let index_add = func_at_data_inst.data_insts.define(
                 &cx,
@@ -434,15 +406,11 @@ fn add_buffer_offsets(module: &mut Module, sig: &mut KernelSig) {
         fn in_place_transform_buffer_array_length(
             &mut self,
             mut func_at_data_inst: spirt::func_at::FuncAtMut<'_, DataInst>,
-            insts: &mut EntityList<DataInst>,
+
             base: GlobalVar,
         ) {
             let cx = self.cx.clone();
-            let data_inst_def = func_at_data_inst.reborrow().def();
             let ty_u32 = op_type_int(&cx, 32, false);
-            let buffer_offset_index = self.buffer_offset_indices.get(&base).copied().unwrap();
-            let array_len_def = data_inst_def.clone();
-
             let offset_load = self.buffer_offsets.get(&base).copied().unwrap();
             let array_length = self.array_lengths.get(&base).copied().unwrap();
             let data_inst_def = func_at_data_inst.reborrow().def();
@@ -505,7 +473,7 @@ fn add_buffer_offsets(module: &mut Module, sig: &mut KernelSig) {
                                     {
                                         self.in_place_transform_buffer_array_length(
                                             func_at_data_inst,
-                                            &mut new_insts,
+                                            //&mut new_insts,
                                             base,
                                         );
                                     }
@@ -559,7 +527,7 @@ fn split_entry_points(
 
 fn fix_execution_mode(builder: &mut rspirv::dr::Builder) {
     use rspirv::{
-        dr::{Instruction, Operand},
+        dr::Operand,
         spirv::{ExecutionMode, Op},
     };
 
@@ -765,7 +733,7 @@ impl KernelSig {
     fn reflect(module: &Module, entry_point: &ExportKey) -> Self {
         let name = if let ExportKey::SpvEntryPoint {
             imms,
-            interface_global_vars,
+            interface_global_vars: _,
         } = entry_point
         {
             extract_literal_string(&imms[1..]).unwrap()
@@ -786,7 +754,7 @@ impl KernelSig {
             kernel_desc: &'a KernelDesc,
             items: IndexSet<GlobalVar, FxBuildHasher>,
             buffer_access: IndexMap<DataInst, GlobalVar, FxBuildHasher>,
-            push_access: IndexMap<DataInst, (GlobalVar, u32), FxBuildHasher>,
+            push_access: IndexMap<DataInst, u32, FxBuildHasher>,
             safe: bool,
             inputs: Vec<KernelInput>,
         }
@@ -810,16 +778,38 @@ impl KernelSig {
                 let cx = self.module.cx_ref();
                 let const_def = &cx[ct];
                 let ty = const_def.ty;
-                let name = constant_name(cx, ct).unwrap();
+                let name = if let Some(name) = constant_name(cx, ct) {
+                    name
+                } else {
+                    return;
+                };
                 let element_type = ElementType::from_type(cx, ty).unwrap();
                 let (scalar, array) = match element_type {
                     ElementType::Scalar(scalar) => (scalar, None),
                     ElementType::Array(scalar, array) => (scalar, Some(array)),
                 };
                 let scalar_type = get_scalar_type(cx, scalar).unwrap();
+                let id = if array.is_some() {
+                    if let ConstKind::SpvInst {
+                        spv_inst_and_const_inputs,
+                    } = &const_def.kind
+                    {
+                        let first = spv_inst_and_const_inputs.1[0];
+                        let first_const_def = &cx[first];
+                        let attrs = &cx[first_const_def.attrs].attrs;
+                        let spec_id = attrs.iter().filter_map(get_spec_id).nth(0).unwrap();
+                        spec_id
+                    } else {
+                        unreachable!()
+                    }
+                } else {
+                    let attrs = &cx[const_def.attrs].attrs;
+                    let spec_id = attrs.iter().filter_map(get_spec_id).nth(0).unwrap();
+                    spec_id
+                };
                 let input = KernelInput::Spec(SpecDesc {
                     name,
-                    id: todo!(),
+                    id,
                     scalar_type,
                     array,
                 });
@@ -827,7 +817,7 @@ impl KernelSig {
             }
             fn visit_buffer(&mut self, gv: GlobalVar) {
                 let name = variable_name(&self.module, gv).unwrap();
-                let mut desc = self
+                let desc = self
                     .kernel_desc
                     .buffers
                     .iter()
@@ -841,7 +831,7 @@ impl KernelSig {
                 };
                 self.inputs.push(input);
             }
-            fn visit_push(&mut self, gv: GlobalVar, member: u32) {
+            fn visit_push(&mut self, member: u32) {
                 let desc = self.kernel_desc.push_constants[member as usize].clone();
                 self.inputs.push(KernelInput::Push(desc));
             }
@@ -885,7 +875,7 @@ impl KernelSig {
                                         )
                                     {
                                         let member = get_constant_u32(&cx, member).unwrap();
-                                        self.push_access.insert(data_inst, (gv, member));
+                                        self.push_access.insert(data_inst, member);
                                     }
                                 }
                             }
@@ -894,6 +884,9 @@ impl KernelSig {
                     &DataInstKind::SpvExtInst { ext_set, inst } if ext_set == self.krnl_set => {
                         let inst = KrnlInst::from_u32(inst).unwrap();
                         match inst {
+                            KrnlInst::Safe => {
+                                self.safe = true;
+                            }
                             KrnlInst::Item => {
                                 if let &[Value::DataInstOutput(access_chain)] =
                                     data_inst_def.inputs.as_slice()
@@ -912,10 +905,10 @@ impl KernelSig {
                                     if let Some(gv) = self.buffer_access.get(&access_chain).copied()
                                     {
                                         self.visit_buffer(gv);
-                                    } else if let Some((gv, member)) =
+                                    } else if let Some(member) =
                                         self.push_access.get(&access_chain).copied()
                                     {
-                                        self.visit_push(gv, member);
+                                        self.visit_push(member);
                                     } else {
                                         /* group buffer */
                                         //unreachable!();
@@ -924,25 +917,6 @@ impl KernelSig {
                                 {
                                     self.visit_spec(ct);
                                 } else {
-                                    for value in data_inst_def.inputs.iter() {
-                                        match value {
-                                            Value::Const(_) => {
-                                                dbg!("Const");
-                                            }
-                                            Value::ControlNodeOutput {
-                                                control_node,
-                                                output_idx,
-                                            } => {
-                                                dbg!("Output");
-                                            }
-                                            Value::ControlRegionInput { region, input_idx } => {
-                                                dbg!("Input");
-                                            }
-                                            Value::DataInstOutput(_) => {
-                                                dbg!("DataInst");
-                                            }
-                                        }
-                                    }
                                     unreachable!()
                                 }
                             }
@@ -978,7 +952,7 @@ impl KernelSig {
                                                 }
                                             }
                                         }
-                                    } else if let Some((_gv, member)) =
+                                    } else if let Some(member) =
                                         self.push_access.get(&access_chain).copied()
                                     {
                                         let mut index = 0;
@@ -1015,7 +989,7 @@ impl KernelSig {
             fn visit_data_inst_form_use(&mut self, _data_inst_form: DataInstForm) {}
             fn visit_global_var_use(&mut self, _gv: GlobalVar) {}
             fn visit_func_use(&mut self, _func: Func) {}
-            fn visit_data_inst_def(&mut self, data_inst_def: &DataInstDef) {}
+            fn visit_data_inst_def(&mut self, _data_inst_def: &DataInstDef) {}
             fn visit_control_node_def(
                 &mut self,
                 func_at_control_node: spirt::func_at::FuncAt<'_, spirt::ControlNode>,
@@ -1031,7 +1005,6 @@ impl KernelSig {
                 }
             }
         }
-
         let mut visitor = KernelVisitor::new(module, entry_func, &kernel_desc);
         module.funcs[entry_func].inner_visit_with(&mut visitor);
         let safe = visitor.safe;
@@ -1054,13 +1027,19 @@ struct Kernel {
 impl Kernel {
     fn emit(&self) -> String {
         use proc_macro2::Span;
-        use quote::{format_ident, quote};
+        use quote::quote;
         use spirv_headers::Capability;
         use syn::LitInt;
 
         let inputs = self.sig.inputs.iter();
-        let safety = quote! {
-            krnl::kernel::Safe
+        let safety = if self.sig.safe {
+            quote! {
+                krnl::kernel::Safe
+            }
+        } else {
+            quote! {
+                ()
+            }
         };
         let visit_inputs = self.sig.inputs.iter().map(|x| match x {
             KernelInput::Spec(desc) => {
@@ -1149,7 +1128,7 @@ impl Kernel {
             }
 
             impl __krnl_Kernel {
-                fn visit<V:  krnl::kernel::__private::__BuildArgsVisitor>(&self, v: &mut V) {
+                fn __visit<V:  krnl::kernel::__private::__BuildArgsVisitor>(&self, v: &mut V) {
                     v.__visit_spirv([#(#spirv_lits),*].as_slice());
                     #visit_features
                     #(#visit_inputs)*

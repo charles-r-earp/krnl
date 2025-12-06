@@ -3,6 +3,9 @@ fn main() {
         .unwrap()
         .to_ascii_lowercase();
     if target_arch != "spirv" {
-        krnlc::bindings::BindingsBuilder::default().emit().unwrap();
+        krnlc::bindings::BindingsBuilder::load()
+            .unwrap()
+            .emit()
+            .unwrap();
     }
 }

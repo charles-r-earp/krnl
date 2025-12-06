@@ -1,6 +1,6 @@
 use proc_macro2::TokenStream;
 use quote::{ToTokens, quote};
-use syn::{Block, File, Result, Stmt, parse_quote};
+use syn::{Block, Result, parse_quote};
 
 pub enum Context {
     Host,
@@ -27,7 +27,7 @@ impl ToTokens for Context {
 }
 
 pub fn only(input: TokenStream, context: Context) -> Result<TokenStream> {
-    let Block { mut stmts, .. } = parse_quote!({ #input });
+    let Block { stmts, .. } = parse_quote!({ #input });
     Ok(quote! {
         #(
             #context

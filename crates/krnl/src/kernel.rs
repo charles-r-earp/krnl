@@ -2,13 +2,13 @@ use krnl_macros::host_only;
 
 host_only! {
     #[cfg(feature = "device")]
-    use crate::{scalar::DeviceCopy, context::device::BufferBindingVec};
+    use crate::{scalar::DeviceCopy, context::device::{Kernel as RawKernel, BufferBindingVec}};
     use crate::{
         Result,
         buffer::{Slice, SliceMut},
         context::{
             Context,
-            device::{Kernel as RawKernel, Features},
+            device::Features,
         },
         scalar::Element,
     };
@@ -77,7 +77,6 @@ host_only! {
                     let key = KernelKey::new::<T>(&self.args, threads, subgroup_threads);
                     let raw = RawKernel::get_or_create(device, key, || KernelCreateInfo::new::<T>(&self.args, threads as u32, subgroup_threads)).unwrap();
                     Ok(Kernel {
-                        builder: self,
                         groups: 0,
                         raw,
                         _m: PhantomData,
@@ -253,29 +252,25 @@ host_only! {
         fn __visit_spec_id<T: DeviceCopy>(&mut self, name: &'static str, id: u32) {
             self.spec_ids.insert(name, id);
         }
-        fn __visit_spec<T: DeviceCopy>(&mut self, _name: &'static str, _spec: &T) {
-            todo!()
-            /*
-            let mut words = [0u32; 2];
+        fn __visit_spec<T: DeviceCopy>(&mut self, name: &'static str, spec: &T) {
+            let mut words = ArrayVec::default();
             if const { size_of::<T>() == 1 } {
                 let x: u8 = bytemuck::cast(*spec);
-                words[0] = x as u32;
+                words.push(x as u32);
             } else if const { size_of::<T>() == 2 } {
                 let x: u16 = bytemuck::cast(*spec);
-                words[0] = x as u32;
+                words.push(x as u32);
             } else if const { size_of::<T>() == 4 } {
-                words[0] = bytemuck::cast(*spec);
+                words.push(bytemuck::cast(*spec));
             } else {
-                bytemuck::bytes_of_mut(&mut words).copy_from_slice(bytemuck::bytes_of(spec));
+                words.extend(bytemuck::cast_slice(bytemuck::bytes_of(spec)).iter().copied());
             }
-            self.spec_constants.insert(name.to_string(), words);
-            Ok(())
-            */
+            let id = self.spec_ids.get(name).copied().unwrap();
+            self.spec_constants.insert(id, words);
         }
     }
 
     pub struct Kernel<T: KernelDef, S = ()> {
-        builder: KernelBuilder<T>,
         groups: usize,
         #[cfg(feature = "device")]
         raw: RawKernel,
@@ -415,7 +410,6 @@ host_only! {
             self.__visit_slice_mut(name, slice)
         }
         fn __visit_push<T: DeviceCopy>(&mut self, _name: &'static str, push: &T) {
-            dbg!(_name);
             let offset = self.desc.push_offsets[self.push_index] as usize;
             let size = size_of::<T>();
             self.push_constants[offset..offset+size].copy_from_slice(bytemuck::bytes_of(push));
@@ -472,7 +466,7 @@ pub mod __private {
                 name: &'static str,
                 slice: &mut SliceMut<T>,
             ) -> Result<()>;
-            fn __visit_push<T: Element>(&mut self, name: &'static str, push: &T);
+            fn __visit_push<T: DeviceCopy>(&mut self, name: &'static str, push: &T);
         }
     }
     #[cfg(not(target_arch = "spirv"))]

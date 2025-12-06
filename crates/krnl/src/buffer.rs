@@ -4,9 +4,6 @@ use crate::{
 };
 use bytemuck::Pod;
 use core::ops::RangeBounds;
-use rayon::iter::{
-    IndexedParallelIterator, IntoParallelRefIterator, IntoParallelRefMutIterator, ParallelIterator,
-};
 use std::sync::Arc;
 
 pub trait Data: Sized {
@@ -19,11 +16,6 @@ pub trait Data: Sized {
 
 pub trait DataOwned: Data {
     fn __from_buffer(buffer: BufferRepr<Self::Elem>) -> Self;
-    /*
-    fn __try_into_buffer(self) -> Option<BufferRepr<Self::Elem>>
-    where
-        Self::Elem: Pod;
-    */
 }
 
 pub trait DataMut: DataTryMut {
@@ -62,11 +54,6 @@ impl<T> DataOwned for BufferRepr<T> {
     fn __from_buffer(buffer: BufferRepr<Self::Elem>) -> Self {
         buffer
     }
-    /*
-    fn __into_buffer(self) -> BufferRepr<Self::Elem> {
-        self
-    }
-    */
 }
 
 impl<T> DataMut for BufferRepr<T> {
@@ -89,6 +76,7 @@ impl<T> DataTryMut for BufferRepr<T> {
     }
 }
 
+#[derive(Clone)]
 pub struct SliceRepr<'a, T> {
     raw: RawSlice<'a, T>,
 }
@@ -155,6 +143,15 @@ pub struct ArcBufferRepr<T> {
     raw: Arc<RawBuffer<T>>,
 }
 
+impl<T> Clone for ArcBufferRepr<T> {
+    fn clone(&self) -> Self {
+        Self {
+            raw: self.raw.clone(),
+        }
+    }
+}
+
+#[derive(Clone)]
 pub struct BufferBase<S> {
     data: S,
 }
@@ -185,6 +182,11 @@ impl<'a, T> From<&'a [T]> for Slice<'a, T> {
 }
 
 impl<'a, T> Slice<'a, T> {
+    pub(crate) fn from_context_slice(slice: crate::context::Slice<'a, T>) -> Self {
+        Self {
+            data: SliceRepr { raw: slice },
+        }
+    }
     pub(crate) fn as_context_slice(&self) -> &crate::context::Slice<'a, T> {
         &self.data.raw
     }
@@ -219,6 +221,11 @@ impl<'a, T> SliceMut<'a, T> {
             data: SliceMutRepr {
                 raw: self.data.raw.slice_mut(bounds),
             },
+        }
+    }
+    pub(crate) fn from_context_slice_mut(slice: crate::context::SliceMut<'a, T>) -> Self {
+        Self {
+            data: SliceMutRepr { raw: slice },
         }
     }
     pub(crate) fn as_context_slice_mut(&mut self) -> &mut crate::context::SliceMut<'a, T> {
@@ -287,6 +294,14 @@ impl<S: Data> BufferBase<S> {
     }
 }
 
+impl<'a, T: Pod> Slice<'a, T> {
+    pub fn try_bitcast<Y: Pod>(self) -> Option<Slice<'a, Y>> {
+        self.data.raw.try_bitcast().map(|raw| Slice {
+            data: SliceRepr { raw },
+        })
+    }
+}
+
 impl<'a, T: Pod> SliceMut<'a, T> {
     pub fn try_bitcast_mut<Y: Pod>(self) -> Option<SliceMut<'a, Y>> {
         self.data.raw.try_bitcast_mut().map(|raw| SliceMut {
@@ -296,19 +311,6 @@ impl<'a, T: Pod> SliceMut<'a, T> {
 }
 
 impl<T: Pod, S: Data<Elem = T>> BufferBase<S> {
-    pub fn into_context(self, context: Context) -> Result<Buffer<T>> {
-        if self.context() == context {
-            Ok(Buffer {
-                data: self.data.__into_buffer()?,
-            })
-        } else {
-            Ok(Buffer {
-                data: BufferRepr {
-                    raw: self.data.__as_slice().raw.to_context(context)?,
-                },
-            })
-        }
-    }
     pub fn into_vec(self) -> Result<Vec<T>> {
         let buffer = self.into_context(Context::Host)?;
         match buffer.data.raw {
@@ -325,81 +327,29 @@ impl<T: Pod, S: Data<Elem = T>> BufferBase<S> {
             self.data.__as_slice().raw.to_vec_async().await
         }
     }
-}
-
-/*
-impl Slice<'_, u8> {
-    pub fn bytes_of<T: Pod>(slice: Slice<T>) -> Self {
-        todo!()
-    }
-}
-
-impl SliceMut<'_, u8> {
-    pub fn bytes_of_mut<T: Pod>(slice: SliceMut<T>) -> Self {
-        todo!()
-    }
-}
-*/
-
-pub struct Zip<T = ()>(pub T);
-
-impl Default for Zip {
-    fn default() -> Self {
-        Self(())
-    }
-}
-
-impl<T> Zip<(T,)> {
-    pub fn new(x: T) -> Self {
-        Self((x,))
-    }
-}
-
-impl<A> Zip<(A,)> {
-    pub fn and<T>(self, x: T) -> Zip<(A, T)> {
-        let Self((a,)) = self;
-        Zip((a, x))
-    }
-}
-
-impl<A, B> Zip<(A, B)> {
-    pub fn and<T>(self, x: T) -> Zip<(A, B, T)> {
-        let Self((a, b)) = self;
-        Zip((a, b, x))
-    }
-}
-
-impl<A, B> Zip<(A, B)> {
-    fn try_from<A1, B1>(input: Zip<(A1, B1)>) -> Result<Self, A::Error>
-    where
-        A: TryFrom<A1>,
-        B: TryFrom<B1, Error = A::Error>,
-    {
-        let Zip((a1, b1)) = input;
-        Ok(Self((A::try_from(a1)?, B::try_from(b1)?)))
-    }
-}
-
-impl<'a, A: Copy, B> Zip<(&'a [A], &'a mut [B])> {
-    pub fn for_each<F: FnMut(A, &mut B)>(self, mut f: F) {
-        let Self((a, b)) = self;
-        a.iter()
-            .copied()
-            .zip(b.iter_mut())
-            .for_each(move |(a, b)| f(a, b));
-    }
-    pub fn par_for_each<F: Fn(A, &mut B) + Send + Sync>(self, threads: usize, f: F)
-    where
-        A: Send + Sync,
-        B: Send + Sync,
-    {
-        if threads == 1 {
-            self.for_each(f);
-            return;
+    pub fn into_context(self, context: Context) -> Result<Buffer<T>> {
+        if self.context() == context {
+            Ok(Buffer {
+                data: self.data.__into_buffer()?,
+            })
+        } else {
+            Ok(Buffer {
+                data: BufferRepr {
+                    raw: self.data.__as_slice().raw.to_context(context)?,
+                },
+            })
         }
-        let Self((a, b)) = self;
-        a.par_iter()
-            .zip(b.par_iter_mut())
-            .for_each(|(a, b)| f(*a, b));
+    }
+}
+
+impl<'a> Slice<'a, u8> {
+    pub fn bytes_of<T: Pod>(slice: Slice<'a, T>) -> Self {
+        slice.try_bitcast().unwrap()
+    }
+}
+
+impl<'a> SliceMut<'a, u8> {
+    pub fn bytes_of_mut<T: Pod>(slice: SliceMut<'a, T>) -> Self {
+        slice.try_bitcast_mut().unwrap()
     }
 }

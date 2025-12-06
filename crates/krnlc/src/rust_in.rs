@@ -1,84 +1,97 @@
-use crate::reflect::{ElementType, Features, UsedGlobals};
+use crate::reflect::{ElementType, Features, UsedGlobals, get_scalar_type};
+use crate::scalar::ScalarType;
 use crate::spirv::{
-    assemble, get_constant_u32, get_element_size, krnl_inst_set, op_constant, op_constant_true,
-    op_decorate_block, op_member_decorate_offset, op_member_name, op_name, op_spec_constant,
-    op_spec_constant_select, op_type_array, op_type_bool, op_type_int, op_type_pointer,
-    op_type_struct, pointee_type, runtime_array_element_type, strip_krnl_insts,
+    assemble, get_element_size, krnl_inst_set, op_constant, op_constant_true, op_decorate_block,
+    op_member_decorate_offset, op_member_name, op_name, op_spec_constant,
+    op_spec_constant_composite, op_spec_constant_select, op_type_array, op_type_bool, op_type_int,
+    op_type_pointer, op_type_struct, pointee_type, runtime_array_element_type, strip_krnl_insts,
     struct_element_type, validate, variable_name,
 };
-use camino::Utf8Path;
+use camino::{Utf8Path, Utf8PathBuf};
 use cargo_gpu::spirv_builder;
-use cargo_metadata::{Metadata, Package};
+use cargo_metadata::Package;
+#[cfg(feature = "cli")]
 use clap_cargo::{Manifest, Workspace};
 use color_print::ceprintln;
-use derive_more::IsVariant;
 use fxhash::FxBuildHasher;
-use indexmap::{
-    IndexMap, IndexSet,
-    map::{MutableEntryKey, MutableKeys},
-};
+use indexmap::{IndexMap, IndexSet};
 use krnl_core::__private::__KrnlInst as KrnlInst;
-use num_traits::FromPrimitive;
-use rspirv::binary::Assemble;
 use smallvec::SmallVec;
 use spirt::spv::spec::Opcode;
-use spirt::spv::{Dialect, ModuleDebugInfo, spec};
-use spirt::transform::InnerTransform;
-use spirt::visit::Visit;
 use spirt::{
     AddrSpace, Attr, AttrSet, AttrSetDef, Const, ConstDef, ConstKind, Context, DataInst,
     DataInstDef, DataInstForm, DataInstFormDef, DataInstKind, DeclDef, ExportKey, Exportee, Func,
-    GlobalVar, GlobalVarDecl, GlobalVarDefBody, InternedStr, Module, ModuleDialect, Type, TypeDef,
-    TypeKind, TypeOrConst, Value,
-    print::Plan,
-    spv::{
-        Imm, Inst, encode_literal_string, extract_literal_string,
-        spec::{ExtInstSetDesc, ExtInstSetInstructionDesc, Spec},
-    },
+    GlobalVar, GlobalVarDecl, GlobalVarDefBody, InternedStr, Module, Type, Value,
+    spv::{Imm, Inst, encode_literal_string, extract_literal_string, spec::Spec},
     transform::{InnerInPlaceTransform, Transformed, Transformer},
     visit::{InnerVisit, Visitor},
 };
-use spirt::{ControlNodeKind, EntityDefs, EntityList};
+use spirt::{ControlNodeKind, EntityList};
 use spirv_builder::{MetadataPrintout, ShaderPanicStrategy, SpirvMetadata};
-use spirv_headers::{Decoration, ExecutionMode, ExecutionModel, StorageClass};
+use spirv_headers::{Decoration, StorageClass};
 use spirv_tools::{
     TargetEnv,
     binary::Binary,
     opt::{Optimizer, Options as OptimizerOptions},
-    val::Validator,
 };
-use std::time::Instant;
-use std::{
-    collections::{BTreeMap, BTreeSet},
-    rc::Rc,
-};
+use std::{collections::BTreeSet, rc::Rc, time::Instant};
 
-pub fn build_workspace(workspace: &Workspace, manifest: &Manifest) {
-    let metadata = manifest.metadata().exec().unwrap();
-    let (selected, _) = workspace.partition_packages(&metadata);
-    for package in selected.iter().copied() {
-        build_package(package, &metadata);
+pub struct ModuleBuilder {
+    package: Package,
+    target_dir: Utf8PathBuf,
+}
+
+impl ModuleBuilder {
+    pub fn new() -> Self {
+        let manifest_dir = Utf8PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap());
+        let manifest_path = manifest_dir.join("Cargo.toml");
+        Self::from_manifest_path(manifest_path, None)
+    }
+    pub fn from_manifest_path(manifest_path: Utf8PathBuf, target_dir: Option<Utf8PathBuf>) -> Self {
+        let metadata = cargo_metadata::MetadataCommand::new()
+            .manifest_path(manifest_path)
+            .exec()
+            .unwrap();
+        let package = metadata.root_package().cloned().unwrap();
+        let target_dir = target_dir.unwrap_or(metadata.target_directory);
+        Self::from_package(package, target_dir)
+    }
+    pub(crate) fn from_package(package: Package, target_dir: Utf8PathBuf) -> Self {
+        Self {
+            package,
+            target_dir,
+        }
+    }
+    pub fn build(self) -> Vec<u32> {
+        let start = Instant::now();
+        let package_dir = self.package.manifest_path.parent().unwrap();
+        let name = &self.package.name;
+        ceprintln!("<s><c>krnlc</c></s> <s><g>Compiling</g></s> {name} ({package_dir})");
+        let spirv = compile(name, package_dir, &self.target_dir);
+        let spirv = process(spirv);
+        ceprintln!(
+            "<s><c>krnlc</c></s> <s><g>Finished</g></s> {name} ({package_dir}) in {:.2?}s",
+            start.elapsed().as_secs_f32()
+        );
+        spirv
     }
 }
 
-fn build_package(package: &Package, metadata: &Metadata) {
-    let start = Instant::now();
-    let package_dir = package.manifest_path.parent().unwrap();
-    let name = &package.name;
-    ceprintln!("<s><c>krnlc</c></s> <s><g>Compiling</g></s> {name} ({package_dir})");
-    let spirv = compile(name, package_dir, &metadata.target_directory);
-    let spirv = process(name, spirv);
-    let spirv = bytemuck::cast_slice(spirv.as_slice());
-    let out_path = package_dir.join("krnl.spv");
-    ceprintln!(
-        "<s><c>krnlc</c></s> <s><g>Finished</g></s> {name} ({out_path}) in {:.2?}s",
-        start.elapsed().as_secs_f32()
-    );
-    std::fs::write(out_path, spirv).unwrap();
+#[cfg(feature = "cli")]
+pub(crate) fn build_workspace(workspace: &Workspace, manifest: &Manifest) {
+    let metadata = manifest.metadata().exec().unwrap();
+    let (selected, _) = workspace.partition_packages(&metadata);
+    for package in selected {
+        let spirv =
+            ModuleBuilder::from_package(package.clone(), metadata.target_directory.clone()).build();
+        let package_dir = package.manifest_path.parent().unwrap();
+        let out_path = package_dir.join("krnl.spv");
+        std::fs::write(out_path, bytemuck::cast_slice(&spirv)).unwrap();
+    }
 }
 
 fn compile(name: &str, path: &Utf8Path, target_dir: &Utf8Path) -> Vec<u8> {
-    let mut install = cargo_gpu::Install::from_shader_crate(path.as_std_path().to_path_buf());
+    let install = cargo_gpu::Install::from_shader_crate(path.as_std_path().to_path_buf());
     let installed_backend = install.run().unwrap();
     let mut builder = installed_backend
         .to_spirv_builder(path, "spirv-unknown-vulkan1.2")
@@ -130,7 +143,7 @@ fn compile(name: &str, path: &Utf8Path, target_dir: &Utf8Path) -> Vec<u8> {
     output
 }
 
-fn process(crate_name: &str, spirv: Vec<u8>) -> Vec<u32> {
+fn process(spirv: Vec<u8>) -> Vec<u32> {
     let context = Rc::new(Context::new());
     context.register_custom_ext_inst_set(KrnlInst::SET_NAME, krnl_inst_set());
     let mut module = Module::lower_from_spv_bytes(context.clone(), spirv).unwrap();
@@ -237,15 +250,18 @@ fn strip_op_line(module: &mut Module) {
 
 fn op_decorate_spec_id(spec_id: u32) -> Attr {
     let opcode = Spec::get().well_known.OpDecorate;
-    let operand_kinds = opcode.def().all_operands().map(|(_, x)| x);
-    let inst = Inst {
-        opcode,
-        imms: operand_kinds
-            .skip(1)
-            .zip([Decoration::SpecId as u32, spec_id])
-            .map(|(k, v)| Imm::Short(k, v))
-            .collect(),
-    };
+    let literal_integer = Spec::get().operand_kinds.lookup("LiteralInteger").unwrap();
+    let operand_kinds = opcode
+        .def()
+        .all_operands()
+        .map(|(_, x)| x)
+        .skip(1)
+        .chain(std::iter::once(literal_integer));
+    let imms = operand_kinds
+        .zip([Decoration::SpecId as u32, spec_id])
+        .map(|(k, v)| Imm::Short(k, v))
+        .collect();
+    let inst = Inst { opcode, imms };
     Attr::SpvAnnotation(inst)
 }
 
@@ -263,16 +279,16 @@ fn remap_spec_constants(module: &mut Module) {
         fn visit_spec(&mut self, gv: GlobalVar) {
             let cx = self.module.cx_ref();
             let gv_decl = &self.module.global_vars[gv];
+            let var_name = variable_name(&self.module, gv).unwrap();
             let struct_ty = pointee_type(cx, gv_decl.type_of_ptr_to).unwrap();
             let ty = struct_element_type(cx, struct_ty).unwrap();
             let element_ty = ElementType::from_type(cx, ty).unwrap();
-            let spec = Spec::get();
             let spec = match element_ty {
                 ElementType::Scalar(ty) => {
                     let attrs = {
-                        let mut attrs = cx[gv_decl.attrs].attrs.clone();
-                        let spec_id = self.spec_id;
-                        attrs.insert(op_decorate_spec_id(spec_id));
+                        let mut attrs = BTreeSet::default();
+                        attrs.insert(op_name(&var_name));
+                        attrs.insert(op_decorate_spec_id(self.spec_id));
                         self.spec_id += 1;
                         let attrs = cx.intern(AttrSetDef { attrs });
                         attrs
@@ -281,13 +297,44 @@ fn remap_spec_constants(module: &mut Module) {
                     if size == 8 {
                         op_spec_constant(cx, attrs, ty, [0; 2])
                     } else if size > 0 && size <= 4 {
-                        op_spec_constant(cx, attrs, ty, [0])
+                        let scalar_type = get_scalar_type(cx, ty).unwrap();
+                        if scalar_type == ScalarType::U32 {
+                            // for array len
+                            op_spec_constant(cx, attrs, ty, [1])
+                        } else {
+                            op_spec_constant(cx, attrs, ty, [0])
+                        }
                     } else {
                         unreachable!()
                     }
                 }
                 ElementType::Array(scalar_ty, len) => {
-                    todo!()
+                    let mut elements = Vec::new();
+                    let size = get_element_size(cx, scalar_ty).unwrap();
+                    for _ in 0..len {
+                        let attrs = {
+                            let mut attrs = BTreeSet::default();
+                            attrs.insert(op_decorate_spec_id(self.spec_id));
+                            self.spec_id += 1;
+                            let attrs = cx.intern(AttrSetDef { attrs });
+                            attrs
+                        };
+                        let elem = if size == 8 {
+                            op_spec_constant(cx, attrs, scalar_ty, [0; 2])
+                        } else if size > 0 && size <= 4 {
+                            op_spec_constant(cx, attrs, scalar_ty, [0])
+                        } else {
+                            unreachable!()
+                        };
+                        elements.push(elem);
+                    }
+                    let attrs = {
+                        let mut attrs = BTreeSet::default();
+                        attrs.insert(op_name(&var_name));
+                        let attrs = cx.intern(AttrSetDef { attrs });
+                        attrs
+                    };
+                    op_spec_constant_composite(cx, attrs, ty, elements)
                 }
             };
             *self.funcs.last_mut().unwrap().1 = true;
@@ -399,7 +446,6 @@ fn remap_spec_constants(module: &mut Module) {
     });
 
     struct SpecTransformer {
-        cx: Rc<Context>,
         vars: IndexMap<DataInst, GlobalVar, FxBuildHasher>,
         specs: IndexMap<GlobalVar, Const, FxBuildHasher>,
     }
@@ -450,7 +496,7 @@ fn remap_spec_constants(module: &mut Module) {
         .into_iter()
         .map(|(mut key, value)| {
             if let ExportKey::SpvEntryPoint {
-                imms,
+                imms: _,
                 interface_global_vars,
             } = &mut key
             {
@@ -459,11 +505,7 @@ fn remap_spec_constants(module: &mut Module) {
             (key, value)
         })
         .collect();
-    let mut transformer = SpecTransformer {
-        cx: module.cx(),
-        vars,
-        specs,
-    };
+    let mut transformer = SpecTransformer { vars, specs };
     for (func, transform) in funcs {
         if transform {
             module.funcs[func].inner_in_place_transform_with(&mut transformer);
@@ -483,31 +525,6 @@ fn unify_push_constants(module: &mut Module) {
     }
 
     impl PushCollector<'_> {
-        /*
-        fn visit_push(&mut self, gv: GlobalVar) {
-            let cx = self.module.cx_ref();
-            let gv_decl = &self.module.global_vars[gv];
-            let struct_ty = pointee_type(cx, gv_decl.type_of_ptr_to).unwrap();
-            let ty = struct_element_type(cx, struct_ty).unwrap();
-            let element_ty = ElementType::from_type(cx, ty).unwrap();
-            let spec = Spec::get();
-            let spec = match element_ty {
-                ElementType::Scalar(ty) => {
-                    let size = get_element_size(cx, ty).unwrap();
-                    match size {
-                        4 => op_spec_constant(cx, gv_decl.attrs, ty, [0]),
-                        8 => op_spec_constant(cx, gv_decl.attrs, ty, [0; 2]),
-                        _ => unreachable!(),
-                    }
-                }
-                ElementType::Array(scalar_ty, len) => {
-                    todo!()
-                }
-            };
-            *self.funcs.last_mut().unwrap().1 = true;
-            self.specs.insert(gv, spec);
-        }
-        */
         fn visit_data_inst(&mut self, data_inst: DataInst) {
             let cx = self.module.cx_ref();
             let func_decl = &self.module.funcs[self.func];
@@ -519,55 +536,23 @@ fn unify_push_constants(module: &mut Module) {
             let data_inst_def = &func_def.data_insts[data_inst];
             let data_inst_form_def = &cx[data_inst_def.form];
             let spec = Spec::get();
-            match &data_inst_form_def.kind {
-                DataInstKind::SpvInst(inst) => {
-                    if inst.opcode == spec.well_known.OpAccessChain {
-                        if let [Value::Const(var), Value::Const(_)] =
-                            data_inst_def.inputs.as_slice()
+            if let DataInstKind::SpvInst(inst) = &data_inst_form_def.kind
+                && inst.opcode == spec.well_known.OpAccessChain
+            {
+                if let [Value::Const(var), Value::Const(_)] = data_inst_def.inputs.as_slice() {
+                    let const_def = &cx[*var];
+                    if let ConstKind::PtrToGlobalVar(gv) = &const_def.kind {
+                        let gv = *gv;
+                        let var_def = &self.module.global_vars[gv];
+                        if var_def.addr_space
+                            == AddrSpace::SpvStorageClass(StorageClass::PushConstant as u32)
                         {
-                            let const_def = &cx[*var];
-                            if let ConstKind::PtrToGlobalVar(gv) = &const_def.kind {
-                                let gv = *gv;
-                                let var_def = &self.module.global_vars[gv];
-                                if var_def.addr_space
-                                    == AddrSpace::SpvStorageClass(StorageClass::PushConstant as u32)
-                                {
-                                    self.vars.insert(data_inst, gv);
-                                    self.inputs.insert((self.entry_func, gv));
-                                    self.funcs.insert(self.func);
-                                }
-                            }
-                        }
-                    } /*
-                    else if inst.opcode == spec.well_known.OpLoad {
-                    if let &[Value::DataInstOutput(access_chain)] =
-                    data_inst_def.inputs.as_slice()
-                    {
-                    if let Some(gv) = self.vars.get(&access_chain).copied() {
-                    self.vars.insert(data_inst, gv);
-                    }
-                    }
-                    }
-                     */
-                }
-                /*
-                DataInstKind::SpvExtInst { ext_set, inst } => {
-                    if *ext_set == self.krnl_set && *inst == KrnlInst:: as u32 {
-                        if let &[Value::DataInstOutput(access_chain), Value::Const(kind)] =
-                            data_inst_def.inputs.as_slice()
-                        {
-                            let kind = get_constant_u32(cx, kind).unwrap();
-                            if kind == InputKind::Push as u32 {
-                                if let Some(gv) = self.vars.get(&access_chain).copied() {
-                                    self.inputs.insert(gv, self.entry_func);
-                                    self.funcs[&func] = true;
-                                }
-                            }
+                            self.vars.insert(data_inst, gv);
+                            self.inputs.insert((self.entry_func, gv));
+                            self.funcs.insert(self.func);
                         }
                     }
                 }
-                */
-                _ => (),
             }
             data_inst_def.inner_visit_with(self);
         }
@@ -669,8 +654,6 @@ fn unify_push_constants(module: &mut Module) {
     let mut vars = IndexMap::default();
     let mut inputs = IndexSet::default();
 
-    let cx = module.cx();
-
     let entry_funcs: Vec<Func> = module
         .exports
         .values()
@@ -706,8 +689,6 @@ fn unify_push_constants(module: &mut Module) {
         })
         .collect();
     struct PushTransformer {
-        cx: Rc<Context>,
-        krnl_set: InternedStr,
         func: Option<Func>,
         vars: IndexMap<DataInst, GlobalVar, FxBuildHasher>,
         inputs: IndexSet<(Func, GlobalVar), FxBuildHasher>,
@@ -716,14 +697,14 @@ fn unify_push_constants(module: &mut Module) {
     impl Transformer for PushTransformer {
         fn in_place_transform_data_inst_def(
             &mut self,
-            mut func_at_data_inst: spirt::func_at::FuncAtMut<'_, DataInst>,
+            func_at_data_inst: spirt::func_at::FuncAtMut<'_, DataInst>,
         ) {
             let data_inst = func_at_data_inst.position;
             if let Some(gv) = self.vars.get(&data_inst).copied() {
                 let func = self.func.unwrap();
                 if self.inputs.contains(&(func, gv)) {
                     if let Some(var) = self.new_vars.get(&func) {
-                        let mut def = func_at_data_inst.def();
+                        let def = func_at_data_inst.def();
                         def.inputs[0] = Value::Const(var.ct);
                         let member = var.members[&gv];
                         def.inputs[1] = Value::Const(member);
@@ -741,7 +722,7 @@ fn unify_push_constants(module: &mut Module) {
                 unreachable!()
             };
             if let ExportKey::SpvEntryPoint {
-                imms,
+                imms: _,
                 interface_global_vars,
             } = &mut key
             {
@@ -751,10 +732,7 @@ fn unify_push_constants(module: &mut Module) {
             (key, value)
         })
         .collect();
-    let krnl_set = cx.intern(KrnlInst::SET_NAME);
     let mut transformer = PushTransformer {
-        cx: module.cx(),
-        krnl_set,
         func: None,
         vars,
         inputs,
@@ -943,14 +921,19 @@ fn fix_group_slice_len(module: &mut Module) {
                 &DataInstKind::SpvExtInst { ext_set, inst }
                     if ext_set == self.krnl_set && inst == KrnlInst::GroupSlice as u32 =>
                 {
-                    if let &[Value::DataInstOutput(access), Value::Const(len)] =
-                        data_inst_def.inputs.as_slice()
-                    {
+                    if let &[Value::DataInstOutput(access), len] = data_inst_def.inputs.as_slice() {
                         let gv = self.buffer_access[&access];
+                        let len = if let Value::Const(len) = len {
+                            len
+                        } else if let Value::DataInstOutput(len) = len {
+                            todo!()
+                        } else {
+                            unreachable!()
+                        };
                         self.lens.insert((gv, self.func), len);
                     } else {
                         unreachable!()
-                    }
+                    };
                 }
                 _ => (),
             }
@@ -983,13 +966,6 @@ fn fix_group_slice_len(module: &mut Module) {
         }
     }
 
-    let entry_points = module.exports.values().map(|entry_point| {
-        if let Exportee::Func(func) = entry_point {
-            func
-        } else {
-            unreachable!()
-        }
-    });
     let krnl_set = module.cx_ref().intern(KrnlInst::SET_NAME);
 
     let cx = module.cx();
@@ -1125,7 +1101,6 @@ fn fix_group_slice_len(module: &mut Module) {
             mut func_at_data_inst: spirt::func_at::FuncAtMut<'_, DataInst>,
         ) {
             let cx = &self.cx;
-            let data_inst = func_at_data_inst.position;
             let data_inst_def = func_at_data_inst.reborrow().def();
             let data_inst_form_def = &cx[data_inst_def.form];
             if let DataInstKind::SpvInst(inst) = &data_inst_form_def.kind {
@@ -1153,7 +1128,7 @@ fn fix_group_slice_len(module: &mut Module) {
                         let const_def = &cx[base];
                         if let ConstKind::PtrToGlobalVar(gv) = const_def.kind {
                             if let Some(len) = self.gv_lens.get(&gv).copied() {
-                                let (opcode, opname, opdef) =
+                                let (opcode, _opname, _opdef) =
                                     Opcode::try_from_u16_with_name_and_def(
                                         spirv_headers::Op::Select as u16,
                                     )
@@ -1162,7 +1137,6 @@ fn fix_group_slice_len(module: &mut Module) {
                                     opcode,
                                     imms: SmallVec::default(),
                                 };
-                                let ty_bool = op_type_bool(cx);
                                 let ty_u32 = op_type_int(cx, 32, false);
                                 let form = cx.intern(DataInstFormDef {
                                     kind: DataInstKind::SpvInst(inst),
@@ -1208,16 +1182,5 @@ fn fix_group_slice_len(module: &mut Module) {
             unreachable!()
         };
         module.funcs[func].inner_in_place_transform_with(&mut transformer);
-    }
-}
-
-fn type_name(cx: &Context, ty: Type) -> &'static str {
-    let ty_def = &cx[ty];
-    match &ty_def.kind {
-        TypeKind::SpvInst {
-            spv_inst,
-            type_and_const_inputs,
-        } => spv_inst.opcode.name(),
-        _ => "",
     }
 }
