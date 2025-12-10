@@ -1196,14 +1196,6 @@ fn normalize_file_paths(module: &mut Module, home: &str) {
     }
 
     impl Transformer for ModuleTransformer {
-        /*
-        fn transform_func_use(&mut self, _func: Func) -> Transformed<Func> {
-            todo!()
-        }
-        fn transform_value_use(&mut self, v: &Value) -> Transformed<Value> {
-            todo!()
-        }
-        */
         fn transform_const_use(&mut self, ct: Const) -> Transformed<Const> {
             let cx = self.cx.clone();
             let ct_def = &cx[ct];
