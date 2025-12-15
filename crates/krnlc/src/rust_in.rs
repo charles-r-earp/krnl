@@ -159,6 +159,10 @@ fn process(spirv: Vec<u8>) -> Vec<u32> {
         vec![KrnlInst::GroupSlice],
     );
     strip_op_line(&mut module);
+    if let Some(home_dir) = std::env::home_dir() {
+        let home = home_dir.to_string_lossy();
+        normalize_file_paths(&mut module, &home);
+    }
     spirt::passes::legalize::structurize_func_cfgs(&mut module);
     let words = assemble(&module).unwrap();
     //validate(&words).expect("val before rspirv");
@@ -1182,5 +1186,51 @@ fn fix_group_slice_len(module: &mut Module) {
             unreachable!()
         };
         module.funcs[func].inner_in_place_transform_with(&mut transformer);
+    }
+}
+
+fn normalize_file_paths(module: &mut Module, home: &str) {
+    struct ModuleTransformer {
+        cx: Rc<Context>,
+        space_home: String,
+    }
+
+    impl Transformer for ModuleTransformer {
+        fn transform_const_use(&mut self, ct: Const) -> Transformed<Const> {
+            let cx = self.cx.clone();
+            let ct_def = &cx[ct];
+            if let Transformed::Changed(ct_def) = self.transform_const_def(ct_def) {
+                Transformed::Changed(self.cx.intern(ct_def))
+            } else {
+                Transformed::Unchanged
+            }
+        }
+        fn transform_const_def(&mut self, ct_def: &ConstDef) -> Transformed<ConstDef> {
+            if let ConstKind::SpvStringLiteralForExtInst(s) = ct_def.kind {
+                let s = &self.cx[s];
+                if s.contains(&self.space_home) {
+                    let s = s.replace(&self.space_home, " $HOME");
+                    let s = self.cx.intern(s);
+                    let kind = ConstKind::SpvStringLiteralForExtInst(s);
+                    let ct_def = ConstDef {
+                        attrs: ct_def.attrs,
+                        ty: ct_def.ty,
+                        kind,
+                    };
+                    return Transformed::Changed(ct_def);
+                }
+            }
+            Transformed::Unchanged
+        }
+    }
+
+    let mut transformer = ModuleTransformer {
+        cx: module.cx(),
+        space_home: format!(" {home}"),
+    };
+    for exportee in module.exports.values().copied() {
+        if let Exportee::Func(func) = exportee {
+            module.funcs[func].inner_in_place_transform_with(&mut transformer);
+        }
     }
 }
