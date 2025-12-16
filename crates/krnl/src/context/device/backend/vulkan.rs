@@ -1280,14 +1280,14 @@ impl super::Slice for Slice {
                 self.range.start + offset,
                 chunk.len(),
             )?;
-            for event in std::mem::take(&mut *buffer_events) {
-                event.wait()?;
-            }
             if let Some(event) = host_buffer.event.take() {
                 event.wait()?;
             }
             unsafe {
                 (&mut *host_buffer.raw.mapped_slice.unwrap())[..chunk.len()].copy_from_slice(chunk);
+            }
+            for event in std::mem::take(&mut *buffer_events) {
+                event.wait()?;
             }
             let event = command_buffer.submit()?;
             offset += chunk.len();
@@ -1307,7 +1307,7 @@ impl super::Slice for Slice {
             return Ok(());
         }
         let device = &self.buffer.device;
-        let mut buffer_events = self.buffer.events.read().clone();
+        let buffer_events = self.buffer.events.read().clone();
         if device.transfer_queue.is_none() {
             if let Some(mapped_slice) = self.buffer.raw.as_ref().unwrap().mapped_slice {
                 for event in buffer_events {
@@ -1340,6 +1340,9 @@ impl super::Slice for Slice {
             0,
             host_buffer.len,
         )?;
+        for event in buffer_events {
+            event.wait()?;
+        }
         host_buffer.event.replace(command_buffer.submit()?);
         let mut chunk_iter = bytes.chunks_mut(HOST_BUFFER_LEN).peekable();
         while let Some(chunk) = chunk_iter.next() {
@@ -1358,9 +1361,6 @@ impl super::Slice for Slice {
             } else {
                 None
             };
-            for event in std::mem::take(&mut buffer_events) {
-                event.wait()?;
-            }
             let host_buffer = &mut host_buffers.first;
             if let Some(event) = host_buffer.event.take() {
                 event.wait()?;

@@ -69,10 +69,10 @@ host_only! {
                 #[cfg(feature = "device")]
                 Context::Device(device) => {
                     let threads = self.threads.unwrap_or(256) as u32;
-                    let subgroup_threads = if let Some(subgroup_threads) = self.subgroup_threads {
+                    let subgroup_threads = if let Some(subgroup_threads) = self.subgroup_threads && subgroup_threads != device.default_subgroup_threads() {
                         Some(subgroup_threads as u32)
                     } else {
-                        Some(device.default_subgroup_threads() as u32)
+                        None
                     };
                     let key = KernelKey::new::<T>(&self.args, threads, subgroup_threads);
                     let raw = RawKernel::get_or_create(device, key, || KernelCreateInfo::new::<T>(&self.args, threads as u32, subgroup_threads)).unwrap();
