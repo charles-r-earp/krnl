@@ -4,7 +4,7 @@
 name = "krnlc"
 version = "0.1.2-alpha"
 authors = ["Charles R Earp <charles-r-earp@gmail.com>"]
-edition = "2021"
+edition = "2024"
 description = "Kernel compiler for krnl."
 documentation = "https://docs.rs/krnl"
 readme = "../README.md"
@@ -17,31 +17,32 @@ autotests = false
 autobenches = false
 
 [build-dependencies]
-rustversion = "1.0.12"
-vergen = { version = "8.2.6", features = ["git", "gitcl"] }
+rustversion = "1.0.23"
+vergen = { version = "10.0.3" }
+vergen-gitcl = {  version = "10.0.3" }
 
 [dependencies]
-clap = { version = "4.2.4", features = ["derive"] }
-clap-cargo = { version = "0.13.0", features = ["cargo_metadata"] }
-anyhow = "1.0.60"
-syn = { version = "1.0.103", features = ["full", "visit", "extra-traits"] }
-cargo_metadata = "0.18.1"
-spirv-builder = { version = "=0.9.0", default-features = false }
-serde = { version = "1.0.143", default-features = false, features = ["derive"] }
+clap = { version = "4.6.7", features = ["derive"] }
+clap-cargo = { version = "0.19.0", features = ["cargo_metadata"] }
+anyhow = "1.0.104"
+syn = { version = "3.0.6", features = ["full", "visit", "extra-traits"] }
+cargo_metadata = "0.23.1"
+spirv-builder = { git="https://github.com/Rust-GPU/rust-gpu", rev="e6394e08eb3356083b12f732a01906f8e49f7c4a", default-features = false }
+serde = { version = "1.0.229", default-features = false, features = ["derive"] }
 bincode2 = "2.0.1"
 symlink = "0.1.0"
 rspirv = "0.11.0"
-spirv-tools = { version = "0.9.0", default-features = false }
-itertools = "0.10.5"
-rayon = "1.7.0"
-flate2 = "1.0.25"
+spirv-tools = { version = "0.13.0", default-features = false }
+itertools = "0.15.0"
+rayon = "1.12.0"
+flate2 = "1.1.10"
 hex = "0.4.3"
 fxhash = "0.2.1"
-semver = "1.0.17"
-serde_json = "1.0.96"
-bytemuck = "1.13.1"
-prettyplease = "0.1.25"
-walkdir = "2.4.0"
+semver = "1.0.28"
+serde_json = "1.0.151"
+bytemuck = "1.25.2"
+prettyplease = "0.3.0"
+walkdir = "2.5.0"
 zero85 = "0.2.0"
 
 [features]

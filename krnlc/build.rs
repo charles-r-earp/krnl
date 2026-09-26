@@ -8,11 +8,12 @@ use std::{
     process::Command,
 };
 
-#[rustversion::not(nightly(2023-05-26))]
+// rust toolchain is 2026-07-03, but the installed rustc is actually 2026-07-02 
+#[rustversion::not(nightly(2026-07-02))]
 compile_error!(
-    "krnlc requires nightly-2023-05-27, install with rustup:
-rustup toolchain install nightly-2023-05-27
-rustup component add --toolchain nightly-2023-05-27 rust-src rustc-dev llvm-tools-preview"
+    "krnlc requires nightly-2026-07-03, install with rustup:
+rustup toolchain install nightly-2026-07-03
+rustup component add --toolchain nightly-2026-07-03 rust-src rustc-dev llvm-tools-preview"
 );
 
 fn main() {
@@ -55,9 +56,6 @@ fn main() {
     }
     {
         let short = true;
-        vergen::EmitBuilder::builder()
-            .git_sha(short)
-            .emit()
-            .unwrap();
+        vergen::Emitter::default().add_instructions(&vergen_gitcl::Gitcl::builder().sha(short).build()).unwrap().emit().unwrap();
     }
 }

@@ -3,7 +3,6 @@ name = "compute-benches"
 version = "0.1.0"
 authors.workspace = true
 edition.workspace = true
-rust-version.workspace = true
 license.workspace = true
 publish = false
 autobins = false
@@ -17,13 +16,13 @@ anyhow.workspace = true
 [dependencies]
 approx = "0.5.1"
 anyhow.workspace = true
-criterion = { version = "0.4.0", default-features = false }
+criterion = { version = "0.8.2", default-features = false }
 cust = { version = "0.3.2", optional = true }
-futures = { version = "0.1", optional = true }
+futures = { version = "0.3.34", optional = true }
 krnl = { workspace = true, default-features = false }
-ocl = { version = "0.19.4", optional = true }
-qutex = { version = "=0.2.3", optional = true }
-rand = "0.8.5"
+ocl = { version = "0.19.7", optional = true }
+qutex = { version = "0.2.6", optional = true }
+rand = "0.10.3"
 
 [dev-dependencies]
 num-format = "0.4.4"
@@ -31,7 +30,7 @@ num-format = "0.4.4"
 [features]
 default = ["device"]
 device = ["krnl/device"]
-cuda = ["dep:cust"]
+#cuda = ["dep:cust"]
 ocl = ["dep:ocl", "dep:futures", "dep:qutex"]
 
 [[bench]]

@@ -1,11 +1,10 @@
 [workspace]
-members = ["benches/*", "tests/*"]
+members = ["benches/*", "tests/*", "examples/vector_sum"]
 
 [workspace.package]
 version = "0.1.2-alpha"
 authors = ["Charles R Earp <charles.r.earp@gmail.com>"]
-edition = "2021"
-rust-version = "1.70.0"
+edition = "2024"
 documentation = "https://docs.rs/krnl"
 readme = "README.md"
 homepage = "https://github.com/charles-r-earp/krnl"
@@ -19,30 +18,29 @@ krnl-core = { path = "krnl-core", version = "=0.1.2-alpha" }
 krnl = { path = ".", default-features = false }
 serde = { version = "1.0.143", default-features = false, features = ["derive"] }
 dry = "0.1.1"
-paste = "1.0.7"
-bytemuck = "1.13.1"
-derive_more = { version = "0.99.11", default-features = false }
-anyhow = "1.0.60"
-half = { version = "2.1.0", default-features = false, features = [
+paste = "1.0.15"
+bytemuck = "1.25.2"
+derive_more = { version = "2.1.1", default-features = false }
+anyhow = "1.0.104"
+half = { version = "2.7.1", default-features = false, features = [
     "num-traits",
 ] }
-num-traits = { version = "0.2.14", default-features = false }
-thiserror = "1.0.31"
+num-traits = { version = "0.2.19", default-features = false }
+thiserror = "2.0.21"
 bincode2 = "2.0.1"
 rspirv = "0.11.0"
 flate2 = "1.0.25"
 hex = "0.4.3"
-rustversion = "1.0.12"
-clap = { version = "4.2.4", features = ["derive"] }
+rustversion = "1.0.23"
+clap = { version = "4.6.7", features = ["derive"] }
 fxhash = "0.2.1"
-itertools = "0.12.1"
+itertools = "0.15.0"
 
 [package]
 name = "krnl"
 version.workspace = true
 authors.workspace = true
 edition.workspace = true
-rust-version.workspace = true
 description = "Safe, portable, high performance compute (GPGPU) kernels."
 documentation.workspace = true
 readme.workspace = true
@@ -64,7 +62,7 @@ serde = { workspace = true, default-features = false, features = [
     "derive",
     "rc",
 ], optional = true }
-serde_bytes = { version = "0.11.9", optional = true }
+serde_bytes = { version = "0.11.19", optional = true }
 anyhow.workspace = true
 half = { workspace = true, features = ["std"] }
 num-traits = { workspace = true, features = ["std"] }
@@ -117,8 +115,8 @@ harness = false
 
 [dev-dependencies]
 bincode2.workspace = true
-serde_json = "1.0.96"
-serde_test = "1.0.160"
+serde_json = "1.0.151"
+serde_test = "1.0.177"
 
 [target.'cfg(not(target_family = "wasm"))'.dev-dependencies]
 libtest-mimic = "0.6.0"

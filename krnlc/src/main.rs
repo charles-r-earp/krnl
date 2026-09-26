@@ -1,5 +1,3 @@
-#![forbid(unsafe_code)]
-
 use anyhow::{bail, Error, Result};
 use cargo_metadata::{Metadata, Package, PackageId};
 use clap::Parser;
@@ -8,7 +6,7 @@ use fxhash::{FxHashMap, FxHashSet};
 use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
 use semver::Version;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
-use spirv_builder::{MetadataPrintout, ShaderPanicStrategy, SpirvBuilder, SpirvMetadata};
+use spirv_builder::{ShaderPanicStrategy, SpirvBuilder, SpirvMetadata};
 use std::{
     fmt::{self, Debug},
     path::{Path, PathBuf},
@@ -259,10 +257,10 @@ impl KrnlcMetadata {
                                 let path = path.canonicalize()?;
                                 format!("path = {path:?}")
                             } else if let Some(source) = dependency.source.as_ref() {
-                                if source == "registry+https://github.com/rust-lang/crates.io-index"
+                                if source.repr == "registry+https://github.com/rust-lang/crates.io-index"
                                 {
                                     format!("version = \"{}\"", dependency.req)
-                                } else if let Some((key, value)) = source.split_once('+') {
+                                } else if let Some((key, value)) = source.repr.split_once('+') {
                                     format!("{key} = {value:?}")
                                 } else {
                                     bail!("Unsupported source {source:?} for dependency {dep:?}!");
@@ -548,7 +546,9 @@ fn compile(
         } else {
             lib_dir.into_os_string()
         };
-        std::env::set_var(path_var, path);
+        unsafe {
+            std::env::set_var(path_var, path);
+        }
         INIT_LIB_DIR.call_once(|| {});
     }
     let crate_name = package.name.as_str();
@@ -626,8 +626,7 @@ crate-type = ["dylib"]
         std::fs::create_dir_all(&kernels_dir)?;
     }
     let mut builder = SpirvBuilder::new(&device_crate_dir, "spirv-unknown-vulkan1.2")
-        .spirv_metadata(SpirvMetadata::NameVariables)
-        .print_metadata(MetadataPrintout::None);
+        .spirv_metadata(SpirvMetadata::NameVariables);
     if debug_printf {
         builder = builder
             .extension("SPV_KHR_non_semantic_info")
