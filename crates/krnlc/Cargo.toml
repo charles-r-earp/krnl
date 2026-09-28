@@ -26,7 +26,7 @@ vergen = { version = "8.2.6", features = ["git", "gitcl"] }
 
 [dependencies]
 krnl-core.workspace = true
-cargo-gpu = { git = "https://github.com/Rust-GPU/cargo-gpu", optional = true }
+cargo-gpu = { git = "https://github.com/Rust-GPU/cargo-gpu", rev="cc8f3221", optional = true }
 spirv-tools = { version = "0.12", default-features = false }
 spirt = "0.4.0"
 camino = "1.1.10"
