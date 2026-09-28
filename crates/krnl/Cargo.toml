@@ -45,7 +45,7 @@ tinyvec = "1.10.0"
 [target.'cfg(target_arch = "spirv")'.dependencies]
 spirv-std.workspace = true
 # patch glam version
-glam = { version = ">=0.30.8", default-features = false }
+glam = { version = "=0.30.9", default-features = false }
 
 [target.'cfg(not(target_arch = "spirv"))'.dependencies]
 derive_more = { workspace = true, default-features = false, features = [
