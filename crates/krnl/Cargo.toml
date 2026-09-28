@@ -55,6 +55,7 @@ parking_lot = { version = "0.12.4", features = ["arc_lock"] }
 bytemuck = { version = "1.23.1", features = ["extern_crate_alloc"] }
 fxhash.workspace = true
 num-traits = { workspace = true, default-features = true }
+rspirv = { workspace = true, optional = true }
 
 [target.'cfg(not(any(target_family = "wasm", target_arch = "spirv")))'.dependencies]
 ash = { version = "0.38.0", optional = true }

@@ -199,6 +199,13 @@ host_only! {
             builder.desc.subgroup_threads = subgroup_threads;
             builder.spec_constants.insert(0, ArrayVec::from_array_len([threads, 0], 1));
             let spirv = builder.spirv.expect("no spirv!");
+            /*
+            {
+                use rspirv::binary::Disassemble;
+
+                println!("{}", rspirv::dr::load_words(&spirv).unwrap().disassemble());
+            }
+            */
             let mut desc = builder.desc;
             while desc.push_constant_bytes % 4 != 0 {
                 desc.push_constant_bytes += 1;

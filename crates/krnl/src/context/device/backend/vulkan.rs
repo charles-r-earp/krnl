@@ -135,13 +135,15 @@ impl RawDevice {
             .push_next(&mut vulkan11_features)
             .push_next(&mut vulkan12_features)
             .push_next(&mut vulkan13_features);
+        let maintenance_ext_name = std::ffi::CString::new("VK_KHR_maintenance4").unwrap();
+        let extensions = [maintenance_ext_name.as_ptr()];
         let device_create_info = ash::vk::DeviceCreateInfo::default()
             .queue_create_infos(&queue_create_infos)
-            .push_next(&mut physical_device_features2);
+            .push_next(&mut physical_device_features2)
+            .enabled_extension_names(&extensions);
         let mut physical_device_properties = ash::vk::PhysicalDeviceProperties2::default();
         let mut vulkan13_properties = ash::vk::PhysicalDeviceVulkan13Properties::default();
-        // TODO: This doesn't work
-        //physical_device_properties.push_next(&mut vulkan13_properties);
+        let _ = physical_device_properties.push_next(&mut vulkan13_properties);
         physical_device_properties.p_next = <*mut _>::cast(&mut vulkan13_properties);
         unsafe {
             backend
