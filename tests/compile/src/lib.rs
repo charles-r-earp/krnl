@@ -6,6 +6,7 @@ use krnl::macros::kernel;
 #[cfg(not(target_arch = "spirv"))]
 use krnl::{
     buffer::{Slice, SliceMut},
+    context::Device,
     kernel::KernelDef,
 };
 
@@ -127,9 +128,8 @@ unsafe fn group_buffer_const_64(
     x: &[u32],
     y: &[UnsafeCell<u32>],
 ) {
-    use krnl::spirv_std::{
-        self,
-        arch::{IndexUnchecked, workgroup_memory_barrier_with_group_sync as group_barrier},
+    use krnl::spirv_std::arch::{
+        IndexUnchecked, workgroup_memory_barrier_with_group_sync as group_barrier,
     };
 
     #[kernel(group, len = 64)]
@@ -161,6 +161,81 @@ pub unsafe fn _group_buffer_const_64(x: Slice<u32>, y: SliceMut<u32>) {
         .unwrap();
     unsafe {
         kernel.groups(1).exec((x, y)).unwrap();
+    }
+}
+
+#[kernel]
+unsafe fn group_buffer_debug() {
+    use krnl::spirv_std::{self, macros::debug_printfln};
+
+    #[kernel(group, len = 1)]
+    let x_group: &[UnsafeCell<u32>];
+
+    unsafe {
+        *x_group[0].get() = 1;
+        debug_printfln!("%u", *x_group[0].get());
+    }
+}
+
+#[cfg(not(target_arch = "spirv"))]
+pub unsafe fn _group_buffer_debug(device: Device) {
+    let kernel = group_buffer_debug::builder(())
+        .threads(1)
+        .build(device.into())
+        .unwrap();
+    unsafe {
+        kernel.groups(1).exec(()).unwrap();
+    }
+}
+
+#[kernel]
+unsafe fn group_buffer_write(#[kernel(thread_id)] thread_id: usize, y: &[UnsafeCell<u32>]) {
+    use krnl::spirv_std::arch::IndexUnchecked;
+
+    #[kernel(group, len = 2)]
+    let x_group: &[UnsafeCell<u32>];
+
+    unsafe {
+        *x_group.index_unchecked(thread_id).get() = 1;
+        *y.index_unchecked(0).get() = *x_group.index_unchecked(thread_id).get();
+    }
+}
+
+#[cfg(not(target_arch = "spirv"))]
+pub unsafe fn _group_buffer_write(y: SliceMut<u32>) {
+    let kernel = group_buffer_write::builder(())
+        .threads(1)
+        .build(y.context())
+        .unwrap();
+    unsafe {
+        kernel.groups(1).exec((y,)).unwrap();
+    }
+}
+
+#[kernel]
+unsafe fn group_buffer_write_barrier(#[kernel(thread_id)] thread_id: usize, y: &[UnsafeCell<u32>]) {
+    use krnl::spirv_std::arch::{
+        IndexUnchecked, workgroup_memory_barrier_with_group_sync as group_barrier,
+    };
+
+    #[kernel(group, len = 1)]
+    let x_group: &[UnsafeCell<u32>];
+
+    unsafe {
+        *x_group.index_unchecked(thread_id).get() = 1;
+        group_barrier();
+        *y.index_unchecked(0).get() = *x_group.index_unchecked(thread_id).get();
+    }
+}
+
+#[cfg(not(target_arch = "spirv"))]
+pub unsafe fn _group_buffer_write_barrier(y: SliceMut<u32>) {
+    let kernel = group_buffer_write_barrier::builder(())
+        .threads(1)
+        .build(y.context())
+        .unwrap();
+    unsafe {
+        kernel.groups(1).exec((y,)).unwrap();
     }
 }
 

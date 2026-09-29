@@ -69,10 +69,10 @@ host_only! {
                 #[cfg(feature = "device")]
                 Context::Device(device) => {
                     let threads = self.threads.unwrap_or(256) as u32;
-                    let subgroup_threads = if let Some(subgroup_threads) = self.subgroup_threads {
+                    let subgroup_threads = if let Some(subgroup_threads) = self.subgroup_threads && subgroup_threads != device.default_subgroup_threads() {
                         Some(subgroup_threads as u32)
                     } else {
-                        Some(device.default_subgroup_threads() as u32)
+                        None
                     };
                     let key = KernelKey::new::<T>(&self.args, threads, subgroup_threads);
                     let raw = RawKernel::get_or_create(device, key, || KernelCreateInfo::new::<T>(&self.args, threads as u32, subgroup_threads)).unwrap();
@@ -199,6 +199,13 @@ host_only! {
             builder.desc.subgroup_threads = subgroup_threads;
             builder.spec_constants.insert(0, ArrayVec::from_array_len([threads, 0], 1));
             let spirv = builder.spirv.expect("no spirv!");
+            /*
+            {
+                use rspirv::binary::Disassemble;
+
+                println!("{}", rspirv::dr::load_words(&spirv).unwrap().disassemble());
+            }
+            */
             let mut desc = builder.desc;
             while desc.push_constant_bytes % 4 != 0 {
                 desc.push_constant_bytes += 1;
