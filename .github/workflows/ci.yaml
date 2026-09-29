@@ -44,6 +44,8 @@ jobs:
         run: vulkaninfo --summary
       - name: check krnl no-default-features
         run: cargo check -p krnl --no-default-features -vv
+      - name: patch spirv-std glam version
+        run: cargo update glam@0.33.11 --precise 0.30.9
       - name: check compile tests
         # TODO forces toolchain install to fix failure when run concurrently
         run: cargo check -p compile-tests -vv
