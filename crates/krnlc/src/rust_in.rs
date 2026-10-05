@@ -27,7 +27,7 @@ use spirt::{
     visit::{InnerVisit, Visitor},
 };
 use spirt::{ControlNodeKind, EntityList};
-use spirv_builder::{MetadataPrintout, ShaderPanicStrategy, SpirvMetadata};
+use spirv_builder::{ShaderPanicStrategy, SpirvMetadata};
 use spirv_headers::{Decoration, StorageClass};
 use spirv_tools::{
     TargetEnv,
@@ -91,12 +91,11 @@ pub(crate) fn build_workspace(workspace: &Workspace, manifest: &Manifest) {
 }
 
 fn compile(name: &str, path: &Utf8Path, target_dir: &Utf8Path) -> Vec<u8> {
-    let install = cargo_gpu::Install::from_shader_crate(path.as_std_path().to_path_buf());
+    let install = cargo_gpu::install::Install::from_shader_crate(path.as_std_path().to_path_buf());
     let installed_backend = install.run().unwrap();
     let mut builder = installed_backend
         .to_spirv_builder(path, "spirv-unknown-vulkan1.2")
         .spirv_metadata(SpirvMetadata::Full)
-        .print_metadata(MetadataPrintout::None)
         .shader_panic_strategy(ShaderPanicStrategy::DebugPrintfThenExit {
             print_inputs: true,
             print_backtrace: true,
