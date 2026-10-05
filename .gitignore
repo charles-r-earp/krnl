@@ -11,3 +11,7 @@ Cargo.lock
 **/*.rs.bk
 
 */target/
+
+# RustRover
+.idea/
+*/.idea/
