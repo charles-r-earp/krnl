@@ -1043,8 +1043,11 @@ fn fix_group_slice_len(module: &mut Module) {
         let ptr_ty = {
             let struct_ty = pointee_type(&cx, var_decl.type_of_ptr_to).unwrap();
             let buffer_array_ty = struct_element_type(&cx, struct_ty).unwrap();
-            let elem_ty = runtime_array_element_type(&cx, buffer_array_ty).unwrap();
-            let array_ty = op_type_array(&cx, AttrSet::default(), elem_ty, *gv_len);
+            let array_ty = if let Some(elem_ty) = runtime_array_element_type(&cx, buffer_array_ty) {
+                op_type_array(&cx, AttrSet::default(), elem_ty, *gv_len)
+            } else {
+                buffer_array_ty
+            };
             let struct_ty = op_type_struct(&cx, AttrSet::default(), [array_ty]);
             let ptr_ty = op_type_pointer(&cx, struct_ty, StorageClass::Workgroup);
             ptr_ty

@@ -497,6 +497,7 @@ pub(crate) fn op_spec_constant(
     cx.intern(const_def)
 }
 
+#[cfg(feature = "rust-in")]
 pub(crate) fn op_spec_constant_composite(
     cx: &Context,
     attrs: AttrSet,

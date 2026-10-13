@@ -415,3 +415,49 @@ macro_for!($n in [1, 7, 32, 64, 128, 256] {
         }
     }
 });
+
+#[cfg(not(target_family = "wasm"))]
+#[cfg(feature = "device")]
+#[test]
+fn group_buffer_debug() {
+    let device = test_device();
+    unsafe {
+        compile_tests::_group_buffer_debug(device);
+    }
+}
+
+#[cfg(feature = "device")]
+#[maybe_async]
+#[test]
+async fn group_buffer_write() {
+    let device = test_device().await;
+    let mut y = Buffer::from(vec![0u32])
+        .into_context(device.into())
+        .unwrap();
+    unsafe {
+        compile_tests::_group_buffer_write(y.as_slice_mut());
+    }
+    #[cfg(not(target_family = "wasm"))]
+    let y = y.into_vec().unwrap();
+    #[cfg(target_family = "wasm")]
+    let y = y.into_vec_async().await.unwrap();
+    assert_eq!(y, vec![1u32]);
+}
+
+#[cfg(feature = "device")]
+#[maybe_async]
+#[test]
+async fn group_buffer_write_barrier() {
+    let device = test_device().await;
+    let mut y = Buffer::from(vec![0u32])
+        .into_context(device.into())
+        .unwrap();
+    unsafe {
+        compile_tests::_group_buffer_write_barrier(y.as_slice_mut());
+    }
+    #[cfg(not(target_family = "wasm"))]
+    let y = y.into_vec().unwrap();
+    #[cfg(target_family = "wasm")]
+    let y = y.into_vec_async().await.unwrap();
+    assert_eq!(y, vec![1u32]);
+}
